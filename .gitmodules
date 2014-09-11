@@ -13,8 +13,8 @@
 	branch = v2-ceph
 [submodule "src/erasure-code/jerasure/gf-complete"]
 	path = src/erasure-code/jerasure/gf-complete
-	url = https://github.com/ceph/gf-complete.git
-	branch = v1-ceph
+	url = https://bitbucket.org/jimplank/gf-complete.git
+	branch = master
 [submodule "src/rocksdb"]
 	path = src/rocksdb
 	url = git://github.com/ceph/rocksdb
