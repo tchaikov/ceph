@@ -593,6 +593,8 @@ namespace librados
     int stat(const std::string& oid, uint64_t *psize, time_t *pmtime);
     int exec(const std::string& oid, const char *cls, const char *method,
 	     bufferlist& inbl, bufferlist& outbl);
+    int exec_mutable(const std::string& oid, const char *cls, const char *method,
+	             bufferlist& bl);
     /**
      * modify object tmap based on encoded update sequence
      *

@@ -905,6 +905,13 @@ int librados::IoCtx::exec(const std::string& oid, const char *cls, const char *m
   return io_ctx_impl->exec(obj, cls, method, inbl, outbl);
 }
 
+int librados::IoCtx::exec_mutable(const std::string& oid, const char *cls,
+				  const char *method, bufferlist& bl)
+{
+  object_t obj(oid);
+  return io_ctx_impl->exec_mutable(obj, cls, method, bl);
+}
+
 int librados::IoCtx::tmap_update(const std::string& oid, bufferlist& cmdbl)
 {
   object_t obj(oid);
@@ -3086,6 +3093,20 @@ extern "C" int rados_exec(rados_ioctx_t io, const char *o, const char *cls, cons
     }
   }
   tracepoint(librados, rados_exec_exit, ret, buf, ret);
+  return ret;
+}
+
+extern "C" int rados_exec_mutable(rados_ioctx_t io, const char *o,
+				  const char *cls, const char *method,
+				  const char *buf, size_t len)
+{
+  tracepoint(librados, rados_exec_mutable_enter, io, o, cls, method, buf, len);
+  librados::IoCtxImpl *ctx = (librados::IoCtxImpl *)io;
+  object_t oid(o);
+  bufferlist bl;
+  bl.append(buf, len);
+  int ret = ctx->exec_mutable(oid, cls, method, bl);
+  tracepoint(librados, rados_exec_mutable_exit, ret);
   return ret;
 }
 

@@ -134,6 +134,8 @@ struct librados::IoCtxImpl {
   int tmap_to_omap(const object_t& oid, bool nullok=false);
 
   int exec(const object_t& oid, const char *cls, const char *method, bufferlist& inbl, bufferlist& outbl);
+  int exec_mutable(const object_t& oid, const char *cls, const char *method,
+		   bufferlist& bl);
 
   int getxattr(const object_t& oid, const char *name, bufferlist& bl);
   int setxattr(const object_t& oid, const char *name, bufferlist& bl);

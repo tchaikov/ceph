@@ -327,6 +327,9 @@ class TestIoctx(object):
         eq(retval[0], payload)
         [i.remove() for i in self.ioctx.list_objects()]
 
+    def test_exec_mutable(self):
+        self.ioctx.exec_mutable('abc', 'hello', 'writes_dont_return_data', '')
+
 class TestObject(object):
 
     def setUp(self):

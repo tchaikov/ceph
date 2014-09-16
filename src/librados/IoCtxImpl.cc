@@ -846,6 +846,16 @@ int librados::IoCtxImpl::exec(const object_t& oid,
   return operate_read(oid, &rd, &outbl);
 }
 
+int librados::IoCtxImpl::exec_mutable(const object_t& oid,
+				      const char *cls, const char *method,
+				      bufferlist& bl)
+{
+  ::ObjectOperation op;
+  prepare_assert_ops(&op);
+  op.call(cls, method, bl);
+  return operate(oid, &op, NULL);
+}
+
 int librados::IoCtxImpl::aio_exec(const object_t& oid, AioCompletionImpl *c,
 				  const char *cls, const char *method,
 				  bufferlist& inbl, bufferlist *outbl)

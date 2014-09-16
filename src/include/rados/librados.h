@@ -1424,7 +1424,8 @@ int rados_tmap_get(rados_ioctx_t io, const char *o, char *buf, size_t buflen);
  */
 int rados_exec(rados_ioctx_t io, const char *oid, const char *cls, const char *method,
 	       const char *in_buf, size_t in_len, char *buf, size_t out_len);
-
+int rados_exec_mutable(rados_ioctx_t io, const char *oid, const char *cls,
+		       const char *method, const char *in_buf, size_t in_len);
 
 /** @} Synchronous I/O */
 

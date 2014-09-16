@@ -1625,6 +1625,31 @@ TRACEPOINT_EVENT(librados, rados_exec_exit,
     )
 )
 
+TRACEPOINT_EVENT(librados, rados_exec_mutable_enter,
+    TP_ARGS(
+        rados_ioctx_t, ioctx,
+        const char*, oid,
+        const char*, cls,
+        const char*, method,
+        const char*, buf,
+        size_t, len),
+    TP_FIELDS(
+        ctf_integer_hex(rados_ioctx_t, ioctx, ioctx)
+        ctf_string(oid, oid)
+        ctf_string(cls, cls)
+        ctf_string(method, method)
+        ceph_ctf_sequence(unsigned char, buf, buf, size_t, len)
+    )
+)
+
+TRACEPOINT_EVENT(librados, rados_exec_mutable_exit,
+    TP_ARGS(
+        int, retval),
+    TP_FIELDS(
+        ctf_integer(int, retval, retval)
+    )
+)
+
 TRACEPOINT_EVENT(librados, rados_objects_list_open_enter,
     TP_ARGS(
         rados_ioctx_t, ioctx),

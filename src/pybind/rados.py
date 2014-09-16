@@ -1705,6 +1705,40 @@ returned %d, but should return zero on success." % (self.name, ret))
         self.require_ioctx_open()
         return run_in_thread(self.librados.rados_get_last_version, (self.io,))
 
+    def exec_mutable(self, key, cls, method, data):
+        """
+        Execute a mutable OSD class method on an object
+
+        :param key: name of the object
+        :type key: str
+        :param cls: name of the class
+        :type cls: str
+        :param method: name of the method
+        :type method: str
+        :param data: input data
+        :type method: str
+
+        :raises: :class:`TypeError`
+        :returns: int - 0 on success
+        """
+        self.require_ioctx_open()
+        if not isinstance(key, str):
+            raise TypeError('key must be a string')
+        if not isinstance(cls, str):
+            raise TypeError('cls must be a string')
+        if not isinstance(method, str):
+            raise TypeError('method must be a string')
+        if not isinstance(data, str):
+            raise TypeError('data must be a string')
+        length = len(data)
+        ret = run_in_thread(self.librados.rados_exec_mutable,
+                            (self.io, c_char_p(key), c_char_p(cls),
+                            c_char_p(method), c_char_p(data), c_size_t(length)))
+        if ret < 0:
+            raise make_ex(ret, "Ioctx.exec_mutable(%s): failed to write %s" % \
+                (self.name, key))
+        return 0;
+
 def set_object_locator(func):
     def retfunc(self, *args, **kwargs):
         if self.locator_key is not None:
