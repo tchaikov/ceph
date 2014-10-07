@@ -242,9 +242,13 @@ check_SCRIPTS += \
 	test/osd/osd-config.sh \
 	test/osd/osd-bench.sh \
 	test/ceph-disk.sh \
-	test/ceph-disk-root.sh \
 	test/mon/mon-handle-forward.sh \
 	test/vstart_wrapped_tests.sh
+
+if ENABLE_DOCKER
+check_SCRIPTS += \
+	test/ceph-disk-root.sh
+endif
 
 EXTRA_DIST += \
 	$(srcdir)/test/mon/mon-test-helpers.sh \
