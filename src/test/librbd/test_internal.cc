@@ -34,7 +34,7 @@ public:
       return r;
     }
 
-    r = librbd::snap_create(ictx, snap_name);
+    r = librbd::snap_create(ictx, snap_name, true);
     if (r < 0) {
       return r;
     }
@@ -107,7 +107,7 @@ TEST_F(TestInternal, SnapCreateLocksImage) {
   librbd::ImageCtx *ictx;
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
 
-  ASSERT_EQ(0, librbd::snap_create(ictx, "snap1"));
+  ASSERT_EQ(0, librbd::snap_create(ictx, "snap1", true));
   BOOST_SCOPE_EXIT( (ictx) ) {
     ASSERT_EQ(0, librbd::snap_remove(ictx, "snap1"));
   } BOOST_SCOPE_EXIT_END;
@@ -124,7 +124,7 @@ TEST_F(TestInternal, SnapCreateFailsToLockImage) {
   ASSERT_EQ(0, open_image(m_image_name, &ictx));
   ASSERT_EQ(0, lock_image(*ictx, LOCK_EXCLUSIVE, "manually locked"));
 
-  ASSERT_EQ(-EROFS, librbd::snap_create(ictx, "snap1"));
+  ASSERT_EQ(-EROFS, librbd::snap_create(ictx, "snap1", true));
 }
 
 TEST_F(TestInternal, SnapRollbackLocksImage) {
