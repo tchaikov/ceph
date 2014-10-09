@@ -48,6 +48,9 @@ using ::librbd::cls_client::get_stripe_unit_count;
 using ::librbd::cls_client::set_stripe_unit_count;
 using ::librbd::cls_client::old_snapshot_add;
 using ::librbd::cls_client::get_mutable_metadata;
+using ::librbd::cls_client::object_map_load;
+using ::librbd::cls_client::object_map_resize;
+using ::librbd::cls_client::object_map_update;
 
 static char *random_buf(size_t len)
 {
@@ -950,6 +953,96 @@ TEST(cls_rbd, get_mutable_metadata_features)
   ASSERT_EQ(static_cast<uint64_t>(RBD_FEATURE_EXCLUSIVE_LOCK), features);
   ASSERT_EQ(static_cast<uint64_t>(RBD_FEATURE_EXCLUSIVE_LOCK),
 	    incompatible_features);
+
+  ioctx.close();
+  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
+}
+
+TEST(cls_rbd, object_map_resize)
+{
+  librados::Rados rados;
+  string pool_name = get_temp_pool_name();
+  ASSERT_EQ("", create_one_pool_pp(pool_name, rados));
+
+  librados::IoCtx ioctx;
+  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
+
+  BitVector<2> ref_bit_vector;
+  ref_bit_vector.resize(32);
+  for (uint64_t i = 0; i < ref_bit_vector.size(); ++i) {
+    ref_bit_vector[i] = 1;
+  }
+  ASSERT_EQ(0, object_map_resize(&ioctx, "bar", ref_bit_vector.size(), 1));
+
+  BitVector<2> osd_bit_vector;
+  ASSERT_EQ(0, object_map_load(&ioctx, "bar", &osd_bit_vector));
+  ASSERT_EQ(ref_bit_vector, osd_bit_vector);
+
+  ref_bit_vector.resize(64);
+  for (uint64_t i = 32; i < ref_bit_vector.size(); ++i) {
+    ref_bit_vector[i] = 2;
+  }
+  ASSERT_EQ(0, object_map_resize(&ioctx, "bar", ref_bit_vector.size(), 2));
+  ASSERT_EQ(0, object_map_load(&ioctx, "bar", &osd_bit_vector));
+  ASSERT_EQ(ref_bit_vector, osd_bit_vector);
+
+  ref_bit_vector.resize(16);
+  ASSERT_EQ(0, object_map_resize(&ioctx, "bar", ref_bit_vector.size(), 1));
+  ASSERT_EQ(0, object_map_load(&ioctx, "bar", &osd_bit_vector));
+  ASSERT_EQ(ref_bit_vector, osd_bit_vector);
+
+  ioctx.close();
+  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
+}
+
+TEST(cls_rbd, object_map_update)
+{
+  librados::Rados rados;
+  string pool_name = get_temp_pool_name();
+  ASSERT_EQ("", create_one_pool_pp(pool_name, rados));
+
+  librados::IoCtx ioctx;
+  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
+
+  BitVector<2> ref_bit_vector;
+  ref_bit_vector.resize(16);
+  for (uint64_t i = 0; i < ref_bit_vector.size(); ++i) {
+    ref_bit_vector[i] = 2;
+  }
+
+  BitVector<2> osd_bit_vector;
+  ASSERT_EQ(0, object_map_resize(&ioctx, "bar", ref_bit_vector.size(), 2));
+  ASSERT_EQ(0, object_map_load(&ioctx, "bar", &osd_bit_vector));
+  ASSERT_EQ(ref_bit_vector, osd_bit_vector);
+
+  ref_bit_vector[7] = 1;
+  ref_bit_vector[8] = 1;
+  ASSERT_EQ(0, object_map_update(&ioctx, "bar", 7, 9, 1,
+				 boost::optional<uint8_t>()));
+  ASSERT_EQ(0, object_map_load(&ioctx, "bar", &osd_bit_vector));
+  ASSERT_EQ(ref_bit_vector, osd_bit_vector);
+
+  ref_bit_vector[7] = 3;
+  ref_bit_vector[8] = 3;
+  ASSERT_EQ(0, object_map_update(&ioctx, "bar", 6, 10, 3, 1));
+  ASSERT_EQ(0, object_map_load(&ioctx, "bar", &osd_bit_vector));
+  ASSERT_EQ(ref_bit_vector, osd_bit_vector);
+
+  ioctx.close();
+  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
+}
+
+TEST(cls_rbd, object_map_load_enoent)
+{
+  librados::Rados rados;
+  string pool_name = get_temp_pool_name();
+  ASSERT_EQ("", create_one_pool_pp(pool_name, rados));
+
+  librados::IoCtx ioctx;
+  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
+
+  BitVector<2> osd_bit_vector;
+  ASSERT_EQ(-ENOENT, object_map_load(&ioctx, "bar", &osd_bit_vector));
 
   ioctx.close();
   ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
