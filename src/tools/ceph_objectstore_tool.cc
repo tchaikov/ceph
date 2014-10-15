@@ -175,7 +175,7 @@ struct pg_begin {
     pgid(pg), superblock(sb) { }
   pg_begin() { }
 
-  void encode(bufferlist& bl) const {
+  void encode(bufferlist& bl, uint64_t features) const {
     // If superblock doesn't include CEPH_FS_FEATURE_INCOMPAT_SHARDS then
     // shard will be NO_SHARD for a replicated pool.  This means
     // that we allow the decode by struct_v 2.
@@ -214,7 +214,7 @@ struct object_begin {
   // If superblock doesn't include CEPH_FS_FEATURE_INCOMPAT_SHARDS then
   // generation will be NO_GEN, shard_id will be NO_SHARD for a replicated
   // pool.  This means we will allow the decode by struct_v 1.
-  void encode(bufferlist& bl) const {
+  void encode(bufferlist& bl, uint64_t features) const {
     ENCODE_START(3, 1, bl);
     ::encode(hoid.hobj, bl);
     ::encode(hoid.generation, bl);
@@ -247,7 +247,7 @@ struct data_section {
      offset(offset), len(len), databl(bl) { }
   data_section(): offset(0), len(0) { }
 
-  void encode(bufferlist& bl) const {
+  void encode(bufferlist& bl, uint64_t features) const {
     ENCODE_START(1, 1, bl);
     ::encode(offset, bl);
     ::encode(len, bl);
@@ -268,7 +268,7 @@ struct attr_section {
   attr_section(const map<string,bufferptr> &data) : data(data) { }
   attr_section() { }
 
-  void encode(bufferlist& bl) const {
+  void encode(bufferlist& bl, uint64_t features) const {
     ENCODE_START(1, 1, bl);
     ::encode(data, bl);
     ENCODE_FINISH(bl);
@@ -285,7 +285,7 @@ struct omap_hdr_section {
   omap_hdr_section(bufferlist hdr) : hdr(hdr) { }
   omap_hdr_section() { }
 
-  void encode(bufferlist& bl) const {
+  void encode(bufferlist& bl, uint64_t features) const {
     ENCODE_START(1, 1, bl);
     ::encode(hdr, bl);
     ENCODE_FINISH(bl);
@@ -303,7 +303,7 @@ struct omap_section {
     omap(omap) { }
   omap_section() { }
 
-  void encode(bufferlist& bl) const {
+  void encode(bufferlist& bl, uint64_t features) const {
     ENCODE_START(1, 1, bl);
     ::encode(omap, bl);
     ENCODE_FINISH(bl);
@@ -333,7 +333,7 @@ struct metadata_section {
     : struct_ver(0),
       map_epoch(0) { }
 
-  void encode(bufferlist& bl) const {
+  void encode(bufferlist& bl, uint64_t features) const {
     ENCODE_START(2, 1, bl);
     ::encode(struct_ver, bl);
     ::encode(map_epoch, bl);
@@ -366,9 +366,9 @@ super_header sh;
 uint64_t testalign;
 
 template <typename T>
-int write_section(sectiontype_t type, const T& obj, int fd) {
+int write_section(sectiontype_t type, const T& obj, int fd, uint64_t features = 0) {
   bufferlist blhdr, bl, blftr;
-  obj.encode(bl);
+  obj.encode(bl, features);
   header hdr(type, bl.length());
   hdr.encode(blhdr);
   footer ft;
