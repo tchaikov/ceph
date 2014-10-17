@@ -789,6 +789,21 @@ int export_files(ObjectStore *store, coll_t coll)
   return 0;
 }
 
+int get_osdmap(ObjectStore *store, epoch_t e, OSDMap &osdmap)
+{
+  bufferlist bl;
+  bool found = store->read(
+      META_COLL, OSD::get_osdmap_pobject_name(e), 0, 0, bl) >= 0;
+  if (!found) {
+    cerr << "Can't find OSDMap for pg epoch " << e << std::endl;
+    return ENOENT;
+  }
+  osdmap.decode(bl);
+  if (debug)
+    cerr << osdmap << std::endl;
+  return 0;
+}
+
 //Write super_header with its fixed 16 byte length
 void write_super()
 {
@@ -1393,6 +1408,18 @@ int do_import(ObjectStore *store, OSDSuperblock& sb)
   if (sb.compat_features.compare(pgb.superblock.compat_features) == -1) {
     cerr << "Export has incompatible features set "
       << pgb.superblock.compat_features << std::endl;
+    return 1;
+  }
+
+  // Don't import if pool no longer exists
+  OSDMap curmap;
+  ret = get_osdmap(store, sb.current_epoch, curmap);
+  if (ret) {
+    cerr << "Can't find local OSDMap" << std::endl;
+    return ret;
+  }
+  if (curmap.get_pg_pool(pgid.pgid.m_pool) == NULL) {
+    cerr << "Pool " << pgid.pgid.m_pool << " no longer exists" << std::endl;
     return 1;
   }
 
