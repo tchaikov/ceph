@@ -1273,7 +1273,7 @@ function test_osd_bench()
 #
 
 set +x
-TESTS=(
+MON_TESTS=(
   mon_injectargs_SI
   tiering
   auth
@@ -1289,9 +1289,21 @@ TESTS=(
   mon_osd_erasure_code
   mon_osd_misc
   mon_heap_profiler
+)
+
+OSD_TESTS=(
   osd_bench
+)
+
+MDS_TESTS=(
   mds_tell
   mon_mds
+)
+
+TESTS=(
+  $MON_TESTS
+  $OSD_TESTS
+  $MDS_TESTS
 )
 
 #
@@ -1327,6 +1339,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     "--no-sanity-check" )
       sanity_check=false
+      ;;
+    "--test-mon" )
+      tests_to_run=("${tests_to_run[@]}" $MON_TESTS)
+      ;;
+    "--test-osd" )
+      tests_to_run=("${tests_to_run[@]}" $OSD_TESTS)
+      ;;
+    "--test-mds" )
+      tests_to_run=("${tests_to_run[@]}" $MDS_TESTS)
       ;;
     "-t" )
       shift
