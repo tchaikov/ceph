@@ -266,7 +266,7 @@ TEST_P(LibRadosWatchNotifyPP, WatchNotify2TestPP) {
   ASSERT_EQ(1, notify_cookies.size());
   ASSERT_EQ(1, notify_cookies.count(handle));
   ASSERT_EQ(1u, reply_map.size());
-  ASSERT_EQ(5, reply_map.begin()->second.length());
+  ASSERT_EQ(5U, reply_map.begin()->second.length());
   ASSERT_EQ(0, strncmp("reply", reply_map.begin()->second.c_str(), 5));
   ioctx.unwatch(notify_oid, handle);
 }
