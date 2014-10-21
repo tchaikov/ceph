@@ -34,6 +34,7 @@ namespace librbd {
     int register_watch();
     int unregister_watch();
 
+    bool has_pending_aio_operations();
     void flush_aio_operations();
 
     int try_lock();

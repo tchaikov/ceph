@@ -85,6 +85,11 @@ int ImageWatcher::unregister_watch() {
   return m_image_ctx.md_ctx.unwatch(m_image_ctx.header_oid, m_handle);;
 }
 
+bool ImageWatcher::has_pending_aio_operations() {
+  Mutex::Locker l(m_aio_request_lock);
+  return !m_aio_requests.empty();
+}
+
 void ImageWatcher::flush_aio_operations() {
   Mutex::Locker l(m_aio_request_lock);
   while (m_aio_requests_pending || !m_aio_requests.empty()) {
