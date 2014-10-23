@@ -1044,6 +1044,12 @@ void CInode::store_backtrace(MDSInternalContextBase *fin, int op_prio)
   dout(10) << "store_backtrace on " << *this << dendl;
   assert(is_dirty_parent());
 
+  if (g_conf->mds_inject_bad_backtrace &&
+      (rand() % 10000 < g_conf->mds_inject_bad_backtrace * 10000.0)) {
+    dout(5) << "deliberately skip storeing backtrace for " << ino() << dendl;
+    return;
+  }
+
   if (op_prio < 0)
     op_prio = CEPH_MSG_PRIO_DEFAULT;
 

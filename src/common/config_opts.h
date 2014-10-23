@@ -404,6 +404,7 @@ OPTION(mds_op_log_threshold, OPT_INT, 5) // how many op log messages to show in 
 OPTION(mds_snap_min_uid, OPT_U32, 0) // The minimum UID required to create a snapshot
 OPTION(mds_snap_max_uid, OPT_U32, 65536) // The maximum UID allowed to create a snapshot
 OPTION(mds_verify_backtrace, OPT_BOOL, 0)
+OPTION(mds_inject_bad_backtrace, OPT_DOUBLE, 0)
 
 // If true, compact leveldb store on mount
 OPTION(osd_compact_leveldb_on_mount, OPT_BOOL, false)
