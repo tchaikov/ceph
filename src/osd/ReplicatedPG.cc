@@ -144,10 +144,10 @@ bool ReplicatedPG::is_degraded_object(const hobject_t& soid)
       return true;
 
     // Object is degraded if after last_backfill AND
-    // we have are backfilling it
+    // we are backfilling it
     if (peer == backfill_target &&
 	peer_info[peer].last_backfill <= soid &&
-	backfill_pos >= soid &&
+	last_backfill_started >= soid &&
 	backfills_in_flight.count(soid))
       return true;
   }
@@ -184,16 +184,6 @@ void ReplicatedPG::wait_for_degraded_object(const hobject_t& soid, OpRequestRef 
   }
   waiting_for_degraded_object[soid].push_back(op);
   op->mark_delayed("waiting for degraded object");
-}
-
-void ReplicatedPG::wait_for_backfill_pos(OpRequestRef op)
-{
-  waiting_for_backfill_pos.push_back(op);
-}
-
-void ReplicatedPG::release_waiting_for_backfill_pos()
-{
-  requeue_ops(waiting_for_backfill_pos);
 }
 
 bool PGLSParentFilter::filter(bufferlist& xattr_data, bufferlist& outdata)
@@ -694,11 +684,6 @@ void ReplicatedPG::do_op(OpRequestRef op)
     return;
   }
 
-  if (head == backfill_pos) {
-    wait_for_backfill_pos(op);
-    return;
-  }
-
   // missing snapdir?
   hobject_t snapdir(m->get_oid(), m->get_object_locator().key,
 		    CEPH_SNAPDIR, m->get_pg().ps(), info.pgid.pool(),
@@ -815,11 +800,11 @@ void ReplicatedPG::do_op(OpRequestRef op)
   // operation won't apply properly on the backfill_target.  (the
   // opposite is not a problem; if the target is after the line, we
   // don't apply on the backfill_target and it doesn't matter.)
-  pg_info_t *backfill_target_info = NULL;
+  // The last_backfill_started is used as the backfill line since
+  // that determines the boundary for writes.
   bool before_backfill = false;
   if (backfill_target >= 0) {
-    backfill_target_info = &peer_info[backfill_target];
-    before_backfill = obc->obs.oi.soid < backfill_target_info->last_backfill;
+    before_backfill = obc->obs.oi.soid <= last_backfill_started;
   }
 
   // src_oids
@@ -863,8 +848,13 @@ void ReplicatedPG::do_op(OpRequestRef op)
 		  << obc->obs.oi.soid << dendl;
 	    osd->reply_op_error(op, -EINVAL);
 	  } else if (is_degraded_object(sobc->obs.oi.soid) ||
-		   (before_backfill && sobc->obs.oi.soid > backfill_target_info->last_backfill)) {
-	    wait_for_degraded_object(sobc->obs.oi.soid, op);
+		   (before_backfill && sobc->obs.oi.soid > last_backfill_started)) {
+	    if (is_degraded_object(sobc->obs.oi.soid)) {
+	      wait_for_degraded_object(sobc->obs.oi.soid, op);
+	    } else {
+	      waiting_for_degraded_object[sobc->obs.oi.soid].push_back(op);
+	      op->mark_delayed("waiting for degraded object");
+	    }
 	    dout(10) << " writes for " << obc->obs.oi.soid << " now blocked by "
 		   << sobc->obs.oi.soid << dendl;
 	    obc->get();
@@ -1306,10 +1296,14 @@ void ReplicatedPG::do_scan(
       }
 
       BackfillInterval bi;
-      osr->flush();
+      bi.begin = m->begin;
+      // No need to flush, there won't be any in progress writes occuring
+      // past m->begin
       scan_range(
-	m->begin, g_conf->osd_backfill_scan_min,
-	g_conf->osd_backfill_scan_max, &bi, handle);
+	g_conf->osd_backfill_scan_min,
+	g_conf->osd_backfill_scan_max,
+	&bi,
+	handle);
       MOSDPGScan *reply = new MOSDPGScan(MOSDPGScan::OP_SCAN_DIGEST,
 					 get_osdmap()->get_epoch(), m->query_epoch,
 					 info.pgid, bi.begin, bi.end);
@@ -1341,11 +1335,6 @@ void ReplicatedPG::do_scan(
 	  bi.objects[first] = i->second;
 	}
       }
-
-      backfill_pos = backfill_info.begin > peer_backfill_info.begin ?
-	peer_backfill_info.begin : backfill_info.begin;
-      release_waiting_for_backfill_pos();
-      dout(10) << " backfill_pos now " << backfill_pos << dendl;
 
       assert(waiting_on_backfill);
       waiting_on_backfill = false;
@@ -1745,10 +1734,6 @@ void ReplicatedPG::snap_trimmer()
 	     last_complete_ondisk.epoch > info.history.last_epoch_started) {
     // replica collection trimming
     snap_trimmer_machine.process_event(SnapTrim());
-  }
-  if (snap_trimmer_machine.requeue) {
-    dout(10) << "snap_trimmer requeue" << dendl;
-    queue_snap_trim();
   }
   unlock();
   return;
@@ -3896,9 +3881,9 @@ int ReplicatedPG::prepare_transaction(OpContext *ctx)
 
   if (backfill_target >= 0) {
     pg_info_t& pinfo = peer_info[backfill_target];
-    if (soid < pinfo.last_backfill)
+    if (soid <= pinfo.last_backfill)
       pinfo.stats.stats.add(ctx->delta_stats, ctx->obc->obs.oi.category);
-    else if (soid < backfill_pos)
+    else if (soid <= last_backfill_started)
       pending_backfill_updates[soid].stats.add(ctx->delta_stats, ctx->obc->obs.oi.category);
   }
 
@@ -4261,9 +4246,11 @@ void ReplicatedPG::issue_repop(RepGather *repop, utime_t now,
       wr->set_data(repop->ctx->op->request->get_data());   // _copy_ bufferlist
     } else {
       // ship resulting transaction, log entries, and pg_stats
-      if (peer == backfill_target && soid >= backfill_pos) {
-	dout(10) << "issue_repop shipping empty opt to osd." << peer << ", object beyond backfill_pos "
-		 << backfill_pos << ", last_backfill is " << pinfo.last_backfill << dendl;
+      if (peer == backfill_target && soid > last_backfill_started) {
+	dout(10) << "issue_repop shipping empty opt to osd." << peer
+		 <<", object beyond last_backfill_started"
+		 << last_backfill_started << ", last_backfill is "
+		 << pinfo.last_backfill << dendl;
 	ObjectStore::Transaction t;
 	::encode(t, wr->get_data());
       } else {
@@ -6761,9 +6748,9 @@ void ReplicatedPG::on_activate()
     if (peer_info[acting[i]].last_backfill != hobject_t::get_max()) {
       assert(backfill_target == -1);
       backfill_target = acting[i];
-      backfill_pos = peer_info[acting[i]].last_backfill;
+      last_backfill_started = peer_info[acting[i]].last_backfill;
       dout(10) << " chose backfill target osd." << backfill_target
-	       << " from " << backfill_pos << dendl;
+	       << " from " << last_backfill_started << dendl;
     }
   }
 }
@@ -6781,7 +6768,6 @@ void ReplicatedPG::on_change(ObjectStore::Transaction *t)
   context_registry_on_change();
 
   // requeue object waiters
-  requeue_ops(waiting_for_backfill_pos);
   requeue_object_waiters(waiting_for_missing_object);
   for (map<hobject_t,list<OpRequestRef> >::iterator p = waiting_for_degraded_object.begin();
        p != waiting_for_degraded_object.end();
@@ -6833,7 +6819,7 @@ void ReplicatedPG::_clear_recovery_state()
 #ifdef DEBUG_RECOVERY_OIDS
   recovering_oids.clear();
 #endif
-  backfill_pos = hobject_t();
+  last_backfill_started = hobject_t();
   backfills_in_flight.clear();
   pending_backfill_updates.clear();
   pulling.clear();
@@ -7326,8 +7312,13 @@ int ReplicatedPG::recover_replicas(int max, ThreadPool::TPHandle &handle)
  * All objects < MIN(peer_backfill_info.begin, backfill_info.begin) in PG are
  * backfilled.  No deleted objects in this interval remain on backfill_target.
  *
- * peer_info[backfill_target].last_backfill = MIN(peer_backfill_info.begin,
- * backfill_info.begin, backfills_in_flight)
+ * All objects <= peer_info[backfill_target].last_backfill have been backfilled
+ * to backfill_target
+ *
+ * There *MAY* be objects between last_backfill_started and
+ * MIN(peer_backfill_info.begin, backfill_info.begin) in the event that client
+ * io created objects since the last scan.  For this reason, we call
+ * update_range() again before continuing backfill.
  */
 int ReplicatedPG::recover_backfill(
   int max,
@@ -7346,37 +7337,32 @@ int ReplicatedPG::recover_backfill(
   }
 
   dout(10) << " peer osd." << backfill_target
-	   << " pos " << backfill_pos
+	   << " last_backfill_started " << last_backfill_started
 	   << " info " << pinfo
 	   << " interval " << pbi.begin << "-" << pbi.end
 	   << " " << pbi.objects.size() << " objects" << dendl;
 
-  int local_min = osd->store->get_ideal_list_min();
-  int local_max = osd->store->get_ideal_list_max();
-
-  // re-scan our local interval to cope with recent changes
-  // FIXME: we could track the eversion_t when we last scanned, and invalidate
-  // that way.  or explicitly modify/invalidate when we actually change specific
-  // objects.
-  dout(10) << " rescanning local backfill_info from " << backfill_pos << dendl;
-  backfill_info.clear();
-  osr->flush();
-  scan_range(backfill_pos, local_min, local_max, &backfill_info, handle);
+  // update our local interval to cope with recent changes
+  backfill_info.begin = last_backfill_started;
+  update_range(&backfill_info, handle);
 
   int ops = 0;
   map<hobject_t, pair<eversion_t, eversion_t> > to_push;
   map<hobject_t, eversion_t> to_remove;
   set<hobject_t> add_to_stat;
 
-  pbi.trim();
-  backfill_info.trim();
+  pbi.trim_to(last_backfill_started);
+  backfill_info.trim_to(last_backfill_started);
 
+  hobject_t backfill_pos = backfill_info.begin > pbi.begin ? pbi.begin : backfill_info.begin;
   while (ops < max) {
     if (backfill_info.begin <= pbi.begin &&
 	!backfill_info.extends_to_end() && backfill_info.empty()) {
-      osr->flush();
-      scan_range(backfill_info.end, local_min, local_max, &backfill_info,
-		 handle);
+      hobject_t next = backfill_info.end;
+      backfill_info.clear();
+      backfill_info.begin = next;
+      backfill_info.end = hobject_t::get_max();
+      update_range(&backfill_info, handle);
       backfill_info.trim();
     }
     backfill_pos = backfill_info.begin > pbi.begin ? pbi.begin : backfill_info.begin;
@@ -7412,6 +7398,7 @@ int ReplicatedPG::recover_backfill(
 	  waiting_for_degraded_object[pbi.begin]);
 	waiting_for_degraded_object.erase(pbi.begin);
       }
+      last_backfill_started = pbi.begin;
       pbi.pop_front();
       // Don't increment ops here because deletions
       // are cheap and not replied to unlike real recovery_ops,
@@ -7435,6 +7422,7 @@ int ReplicatedPG::recover_backfill(
 	  waiting_for_degraded_object.erase(pbi.begin);
 	}
       }
+      last_backfill_started = pbi.begin;
       add_to_stat.insert(pbi.begin);
       backfill_info.pop_front();
       pbi.pop_front();
@@ -7446,6 +7434,7 @@ int ReplicatedPG::recover_backfill(
 	make_pair(backfill_info.objects.begin()->second,
 		  eversion_t());
       add_to_stat.insert(backfill_info.begin);
+      last_backfill_started = backfill_info.begin;
       backfill_info.pop_front();
       ops++;
     }
@@ -7482,7 +7471,6 @@ int ReplicatedPG::recover_backfill(
   }
   send_pushes(g_conf->osd_recovery_op_priority, pushes);
 
-  release_waiting_for_backfill_pos();
   dout(5) << "backfill_pos is " << backfill_pos << " and pinfo.last_backfill is "
 	  << pinfo.last_backfill << dendl;
   for (set<hobject_t>::iterator i = backfills_in_flight.begin();
@@ -7491,20 +7479,27 @@ int ReplicatedPG::recover_backfill(
     dout(20) << *i << " is still in flight" << dendl;
   }
 
-  hobject_t next_to_complete = backfills_in_flight.size() ?
+  hobject_t next_backfill_to_complete = backfills_in_flight.size() ?
     *(backfills_in_flight.begin()) : backfill_pos;
-  hobject_t pending_last_backfill = pinfo.last_backfill;
+  hobject_t new_last_backfill = pinfo.last_backfill;
   for (map<hobject_t, pg_stat_t>::iterator i = pending_backfill_updates.begin();
-       i != pending_backfill_updates.end() && i->first < next_to_complete;
+       i != pending_backfill_updates.end() &&
+	 i->first < next_backfill_to_complete;
        pending_backfill_updates.erase(i++)) {
     pinfo.stats.add(i->second);
-    pending_last_backfill = i->first;
+    assert(i->first > new_last_backfill);
+    new_last_backfill = i->first;
   }
-  if (backfills_in_flight.empty() && backfill_pos.is_max())
-    pending_last_backfill = hobject_t::get_max();
-
-  if (pending_last_backfill > pinfo.last_backfill) {
-    pinfo.last_backfill = pending_last_backfill;
+  assert(!pending_backfill_updates.empty() ||
+	 new_last_backfill == last_backfill_started);
+  if (pending_backfill_updates.empty() &&
+      backfill_pos.is_max()) {
+    assert(backfills_in_flight.empty());
+    new_last_backfill = backfill_pos;
+    last_backfill_started = backfill_pos;
+  }
+  if (new_last_backfill > pinfo.last_backfill) {
+    pinfo.last_backfill = new_last_backfill;
     epoch_t e = get_osdmap()->get_epoch();
     MOSDPGBackfill *m = NULL;
     if (pinfo.last_backfill.is_max()) {
@@ -7548,18 +7543,79 @@ void ReplicatedPG::prep_backfill_object_push(
   put_object_context(obc);
 }
 
+void ReplicatedPG::update_range(
+  BackfillInterval *bi,
+  ThreadPool::TPHandle &handle)
+{
+  int local_min = g_conf->osd_backfill_scan_min;
+  int local_max = g_conf->osd_backfill_scan_max;
+
+  if (bi->version < info.log_tail) {
+    dout(10) << __func__<< ": bi is old, rescanning local backfill_info"
+	     << dendl;
+    if (last_update_applied >= info.log_tail) {
+      bi->version = last_update_applied;
+    } else {
+      osr->flush();
+      bi->version = info.last_update;
+    }
+    scan_range(local_min, local_max, bi, handle);
+  }
+
+  if (bi->version >= info.last_update) {
+    dout(10) << __func__<< ": bi is current " << dendl;
+    assert(bi->version == info.last_update);
+  } else if (bi->version >= info.log_tail) {
+    assert(!pg_log.get_log().empty());
+    dout(10) << __func__<< ": bi is old, (" << bi->version
+	     << ") can be updated with log" << dendl;
+    list<pg_log_entry_t>::const_iterator i =
+      pg_log.get_log().log.end();
+    --i;
+    while (i != pg_log.get_log().log.begin() &&
+           i->version > bi->version) {
+      --i;
+    }
+    if (i->version == bi->version)
+      ++i;
+
+    assert(i != pg_log.get_log().log.end());
+    dout(10) << __func__ << ": updating from version " << i->version
+	     << dendl;
+    for (; i != pg_log.get_log().log.end(); ++i) {
+      const hobject_t &soid = i->soid;
+      if (soid >= bi->begin && soid < bi->end) {
+	if (i->is_update()) {
+	  dout(10) << __func__ << ": " << i->soid << " updated to version "
+		   << i->version << dendl;
+	  bi->objects.erase(i->soid);
+	  bi->objects.insert(
+	    make_pair(
+	      i->soid,
+	      i->version));
+	} else if (i->is_delete()) {
+	  dout(10) << __func__ << ": " << i->soid << " removed" << dendl;
+	  bi->objects.erase(i->soid);
+	}
+      }
+    }
+    bi->version = info.last_update;
+  } else {
+    assert(0 == "scan_range should have raised bi->version past log_tail");
+  }
+}
+
 void ReplicatedPG::scan_range(
-  hobject_t begin, int min, int max, BackfillInterval *bi,
+  int min, int max, BackfillInterval *bi,
   ThreadPool::TPHandle &handle)
 {
   assert(is_locked());
-  dout(10) << "scan_range from " << begin << dendl;
-  bi->begin = begin;
+  dout(10) << "scan_range from " << bi->begin << dendl;
   bi->objects.clear();  // for good measure
 
   vector<hobject_t> ls;
   ls.reserve(max);
-  int r = osd->store->collection_list_partial(coll, begin, min, max,
+  int r = osd->store->collection_list_partial(coll, bi->begin, min, max,
 					      0, &ls, &bi->end);
   assert(r >= 0);
   dout(10) << " got " << ls.size() << " items, next " << bi->end << dendl;
@@ -7848,13 +7904,11 @@ void ReplicatedPG::SnapTrimmer::log_exit(const char *state_name, utime_t enter_t
 ReplicatedPG::NotTrimming::NotTrimming(my_context ctx) : my_base(ctx)
 {
   state_name = "NotTrimming";
-  context< SnapTrimmer >().requeue = false;
   context< SnapTrimmer >().log_enter(state_name);
 }
 
 void ReplicatedPG::NotTrimming::exit()
 {
-  context< SnapTrimmer >().requeue = true;
   context< SnapTrimmer >().log_exit(state_name, enter_time);
 }
 
@@ -7906,33 +7960,48 @@ boost::statechart::result ReplicatedPG::TrimmingObjects::react(const SnapTrim&)
 
   dout(10) << "TrimmingObjects: trimming snap " << snap_to_trim << dendl;
 
-  // Get next
-  int r = pg->snap_mapper.get_next_object_to_trim(snap_to_trim, &pos);
-  if (r != 0 && r != -ENOENT) {
-    derr << __func__ << ": get_next returned " << cpp_strerror(r) << dendl;
-    assert(0);
-  } else if (r == -ENOENT) {
-    // Done!
-    dout(10) << "TrimmingObjects: got ENOENT" << dendl;
-    post_event(SnapTrim());
-    return transit< WaitingOnReplicas >();
+  for (set<RepGather *>::iterator i = repops.begin();
+       i != repops.end(); 
+       ) {
+    if ((*i)->done) {
+      (*i)->put();
+      repops.erase(i++);
+    } else {
+      ++i;
+    }
   }
 
-  dout(10) << "TrimmingObjects react trimming " << pos << dendl;
-  RepGather *repop = pg->trim_object(pos);
-  assert(repop);
+  while (repops.size() < g_conf->osd_pg_max_concurrent_snap_trims) {
+    // Get next
+    hobject_t old_pos = pos;
+    int r = pg->snap_mapper.get_next_object_to_trim(snap_to_trim, &pos);
+    if (r != 0 && r != -ENOENT) {
+      derr << __func__ << ": get_next returned " << cpp_strerror(r) << dendl;
+      assert(0);
+    } else if (r == -ENOENT) {
+      // Done!
+      dout(10) << "TrimmingObjects: got ENOENT" << dendl;
+      post_event(SnapTrim());
+      return transit< WaitingOnReplicas >();
+    }
 
-  repop->queue_snap_trimmer = true;
-  eversion_t old_last_update = pg->pg_log.get_head();
-  bool old_exists = repop->obc->obs.exists;
-  uint64_t old_size = repop->obc->obs.oi.size;
-  eversion_t old_version = repop->obc->obs.oi.version;
+    dout(10) << "TrimmingObjects react trimming " << pos << dendl;
+    RepGather *repop = pg->trim_object(pos);
+    assert(repop);
 
-  pg->append_log(repop->ctx->log, eversion_t(), repop->ctx->local_t);
-  pg->issue_repop(repop, repop->ctx->mtime, old_last_update, old_exists, old_size, old_version);
-  pg->eval_repop(repop);
+    repop->queue_snap_trimmer = true;
 
-  repops.insert(repop);
+    eversion_t old_last_update = pg->pg_log.get_head();
+    bool old_exists = repop->obc->obs.exists;
+    uint64_t old_size = repop->obc->obs.oi.size;
+    eversion_t old_version = repop->obc->obs.oi.version;
+
+    pg->append_log(repop->ctx->log, eversion_t(), repop->ctx->local_t);
+    pg->issue_repop(repop, repop->ctx->mtime, old_last_update, old_exists, old_size, old_version);
+    pg->eval_repop(repop);
+
+    repops.insert(repop);
+  }
   return discard_event();
 }
 /* WaitingOnReplicasObjects */
@@ -7940,7 +8009,6 @@ ReplicatedPG::WaitingOnReplicas::WaitingOnReplicas(my_context ctx) : my_base(ctx
 {
   state_name = "Trimming/WaitingOnReplicas";
   context< SnapTrimmer >().log_enter(state_name);
-  context< SnapTrimmer >().requeue = false;
 }
 
 void ReplicatedPG::WaitingOnReplicas::exit()
@@ -7965,7 +8033,7 @@ boost::statechart::result ReplicatedPG::WaitingOnReplicas::react(const SnapTrim&
   for (set<RepGather *>::iterator i = repops.begin();
        i != repops.end();
        repops.erase(i++)) {
-    if (!(*i)->applied || !(*i)->waitfor_ack.empty()) {
+    if (!(*i)->done) {
       return discard_event();
     } else {
       (*i)->put();
@@ -7990,7 +8058,7 @@ boost::statechart::result ReplicatedPG::WaitingOnReplicas::react(const SnapTrim&
   context<SnapTrimmer>().need_share_pg_info = true;
 
   // Back to the start
-  post_event(SnapTrim());
+  pg->queue_snap_trim();
   return transit< NotTrimming >();
 }
 
