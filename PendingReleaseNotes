@@ -12,3 +12,5 @@ v0.89
   eliminated, so there is now a single stat object per pool.  The structure of
   the JSON output is different, and the plaintext output has one less column.
 
+* The 'rados create <objectname> [category]' optional category argument is no
+  longer supported or recognized.
