@@ -295,6 +295,11 @@ private:
 
 public:
   void trim(int max=-1);
+  int trim_all();
+  bool expiry_done() const
+  {
+    return expiring_segments.empty() && expired_segments.empty();
+  };
 
 private:
   void write_head(MDSInternalContextBase *onfinish);

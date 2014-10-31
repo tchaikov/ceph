@@ -562,6 +562,57 @@ void MDLog::trim(int m)
 }
 
 
+/**
+ * Like ::trim, but instead of trimming to max_segments, trim all but the latest
+ * segment.
+ */
+int MDLog::trim_all()
+{
+  submit_mutex.Lock();
+
+  dout(10) << __func__ << ": "
+	   << segments.size()
+           << "/" << expiring_segments.size()
+           << "/" << expired_segments.size() << dendl;
+
+  map<uint64_t,LogSegment*>::iterator p = segments.begin();
+  for (; (p != segments.end()) && (p->second != peek_current_segment());) {
+    LogSegment *ls = p->second;
+    ++p;
+
+    // Caller should have flushed journaler before calling this
+    if (pending_events.count(ls->seq)) {
+      dout(5) << __func__ << ": segment " << ls->seq << " has pending events" << dendl;
+      submit_mutex.Unlock();
+      return -EAGAIN;
+    }
+
+    if (expiring_segments.count(ls)) {
+      dout(5) << "trim already expiring segment " << ls->seq << "/" << ls->offset
+	      << ", " << ls->num_events << " events" << dendl;
+    } else if (expired_segments.count(ls)) {
+      dout(5) << "trim already expired segment " << ls->seq << "/" << ls->offset
+	      << ", " << ls->num_events << " events" << dendl;
+    } else {
+      assert(expiring_segments.count(ls) == 0);
+      expiring_segments.insert(ls);
+      expiring_events += ls->num_events;
+      submit_mutex.Unlock();
+
+      uint64_t last_seq = ls->seq;
+      try_expire(ls, CEPH_MSG_PRIO_HIGH);  // high prio because this is administrative op
+
+      submit_mutex.Lock();
+      p = segments.lower_bound(last_seq + 1);
+    }
+  }
+
+  _trim_expired_segments();
+
+  return 0;
+}
+
+
 void MDLog::try_expire(LogSegment *ls, int op_prio)
 {
   MDSGatherBuilder gather_bld(g_ceph_context);
