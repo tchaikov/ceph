@@ -3279,7 +3279,7 @@ void object_copy_data_t::encode(bufferlist& bl) const
   ENCODE_START(3, 1, bl);
   ::encode(size, bl);
   ::encode(mtime, bl);
-  ::encode(category, bl);
+  ::encode((__u32)0, bl);  // was category; no longer used
   ::encode(attrs, bl);
   ::encode(data, bl);
   ::encode(omap, bl);
@@ -3295,7 +3295,10 @@ void object_copy_data_t::decode(bufferlist::iterator& bl)
   DECODE_START(2, bl);
   ::decode(size, bl);
   ::decode(mtime, bl);
-  ::decode(category, bl);
+  {
+    string category;
+    ::decode(category, bl);  // no longer used
+  }
   ::decode(attrs, bl);
   ::decode(data, bl);
   ::decode(omap, bl);
