@@ -170,14 +170,6 @@ struct ObjectOperation {
     osd_op.indata.append(method, osd_op.op.cls.method_len);
     osd_op.indata.append(indata);
   }
-  void add_watch(int op, uint64_t cookie, uint64_t ver, uint8_t flag, bufferlist& inbl) {
-    OSDOp& osd_op = add_op(op);
-    osd_op.op.op = op;
-    osd_op.op.watch.cookie = cookie;
-    osd_op.op.watch.ver = ver;
-    osd_op.op.watch.flag = flag;
-    osd_op.indata.append(inbl);
-  }
   void add_pgls(int op, uint64_t count, collection_list_handle_t cookie, epoch_t start_epoch) {
     OSDOp& osd_op = add_op(op);
     osd_op.op.op = op;
@@ -856,20 +848,26 @@ struct ObjectOperation {
   }
 
   // watch/notify
-  void watch(uint64_t cookie, uint64_t ver, bool set) {
-    bufferlist inbl;
-    add_watch(CEPH_OSD_OP_WATCH, cookie, ver, (set ? 1 : 0), inbl);
+  void watch(uint64_t cookie, __u8 op) {
+    OSDOp& osd_op = add_op(CEPH_OSD_OP_WATCH);
+    osd_op.op.watch.cookie = cookie;
+    osd_op.op.watch.op = op;
   }
 
-  void notify(uint64_t cookie, uint64_t ver, bufferlist& inbl) {
-    add_watch(CEPH_OSD_OP_NOTIFY, cookie, ver, 1, inbl); 
+  void notify(uint64_t cookie, bufferlist& inbl) {
+    OSDOp& osd_op = add_op(CEPH_OSD_OP_NOTIFY);
+    osd_op.op.notify.cookie = cookie;
+    osd_op.indata.append(inbl);
   }
 
-  void notify_ack(uint64_t notify_id, uint64_t ver, uint64_t cookie) {
+  void notify_ack(uint64_t notify_id, uint64_t cookie,
+		  bufferlist& reply_bl) {
+    OSDOp& osd_op = add_op(CEPH_OSD_OP_NOTIFY_ACK);
     bufferlist bl;
     ::encode(notify_id, bl);
     ::encode(cookie, bl);
-    add_watch(CEPH_OSD_OP_NOTIFY_ACK, notify_id, ver, 0, bl);
+    ::encode(reply_bl, bl);
+    osd_op.indata.append(bl);
   }
 
   void list_watchers(list<obj_watch_t> *out,
@@ -902,8 +900,8 @@ struct ObjectOperation {
     osd_op.op.assert_ver.ver = ver;
   }
   void assert_src_version(const object_t& srcoid, snapid_t srcsnapid, uint64_t ver) {
-    bufferlist bl;
-    add_watch(CEPH_OSD_OP_ASSERT_SRC_VERSION, 0, ver, 0, bl);
+    OSDOp& osd_op = add_op(CEPH_OSD_OP_ASSERT_SRC_VERSION);
+    osd_op.op.assert_ver.ver = ver;
     ops.rbegin()->soid = sobject_t(srcoid, srcsnapid);
   }
 
@@ -1398,24 +1396,36 @@ public:
     bufferlist *poutbl;
     version_t *pobjver;
 
+    uint64_t cookie;   ///< non-zero if this is a watch
+    utime_t watch_valid_thru; ///< send time for last acked ping
+    int last_error;  ///< error from last failed ping|reconnect, if any
+    Mutex watch_lock;
+    Cond watch_cond;
+
     bool registered;
     bool canceled;
-    Context *on_reg_ack, *on_reg_commit;
+    Context *on_reg_ack, *on_reg_commit, *on_error;
 
     OSDSession *session;
 
     ceph_tid_t register_tid;
+    ceph_tid_t ping_tid;
     epoch_t map_dne_bound;
 
     LingerOp() : linger_id(0),
 		 target(object_t(), object_locator_t(), 0),
 		 snap(CEPH_NOSNAP),
 		 poutbl(NULL), pobjver(NULL),
+		 cookie(0),
+		 last_error(0),
+		 watch_lock("Objecter::LingerOp::watch_lock"),
 		 registered(false),
 		 canceled(false),
 		 on_reg_ack(NULL), on_reg_commit(NULL),
+		 on_error(NULL),
 		 session(NULL),
 		 register_tid(0),
+		 ping_tid(0),
 		 map_dne_bound(0) {}
 
     // no copy!
@@ -1425,17 +1435,17 @@ public:
     ~LingerOp() {}
   };
 
-  struct C_Linger_Ack : public Context {
+  struct C_Linger_Register : public Context {
     Objecter *objecter;
     LingerOp *info;
-    C_Linger_Ack(Objecter *o, LingerOp *l) : objecter(o), info(l) {
+    C_Linger_Register(Objecter *o, LingerOp *l) : objecter(o), info(l) {
       info->get();
     }
-    ~C_Linger_Ack() {
+    ~C_Linger_Register() {
       info->put();
     }
     void finish(int r) {
-      objecter->_linger_ack(info, r);
+      objecter->_linger_register(info, r);
     }
   };
   
@@ -1450,6 +1460,35 @@ public:
     }
     void finish(int r) {
       objecter->_linger_commit(info, r);
+    }
+  };
+
+  struct C_Linger_Reconnect : public Context {
+    Objecter *objecter;
+    LingerOp *info;
+    C_Linger_Reconnect(Objecter *o, LingerOp *l) : objecter(o), info(l) {
+      info->get();
+    }
+    ~C_Linger_Reconnect() {
+      info->put();
+    }
+    void finish(int r) {
+      objecter->_linger_reconnect(info, r);
+    }
+  };
+
+  struct C_Linger_Ping : public Context {
+    Objecter *objecter;
+    LingerOp *info;
+    utime_t sent;
+    C_Linger_Ping(Objecter *o, LingerOp *l) : objecter(o), info(l) {
+      info->get();
+    }
+    ~C_Linger_Ping() {
+      info->put();
+    }
+    void finish(int r) {
+      objecter->_linger_ping(info, r, sent);
     }
   };
 
@@ -1558,8 +1597,11 @@ public:
 
   void _linger_submit(LingerOp *info);
   void _send_linger(LingerOp *info);
-  void _linger_ack(LingerOp *info, int r);
+  void _linger_register(LingerOp *info, int r);
   void _linger_commit(LingerOp *info, int r);
+  void _linger_reconnect(LingerOp *info, int r);
+  void _send_linger_ping(LingerOp *info);
+  void _linger_ping(LingerOp *info, int r, utime_t sent);
 
   void _check_op_pool_dne(Op *op, bool session_locked);
   void _send_op_map_check(Op *op);
@@ -1857,11 +1899,11 @@ public:
     return op_submit(o, ctx_budget);
   }
   ceph_tid_t linger_mutate(const object_t& oid, const object_locator_t& oloc,
-		      ObjectOperation& op,
-		      const SnapContext& snapc, utime_t mtime,
-		      bufferlist& inbl, int flags,
-		      Context *onack, Context *onfinish,
-		      version_t *objver);
+			   ObjectOperation& op,
+			   const SnapContext& snapc, utime_t mtime,
+			   bufferlist& inbl, uint64_t cookie, int flags,
+			   Context *onack, Context *onfinish, Context *onerror,
+			   version_t *objver);
   ceph_tid_t linger_read(const object_t& oid, const object_locator_t& oloc,
 		    ObjectOperation& op,
 		    snapid_t snap, bufferlist& inbl, bufferlist *poutbl, int flags,

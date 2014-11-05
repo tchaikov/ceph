@@ -30,7 +30,7 @@ class PerfCounters;
 
 namespace librbd {
 
-  class WatchCtx;
+  class ImageWatcher;
 
   struct ImageCtx {
     CephContext *cct;
@@ -55,14 +55,15 @@ namespace librbd {
     std::string name;
     std::string snap_name;
     IoCtx data_ctx, md_ctx;
-    WatchCtx *wctx;
+    ImageWatcher *image_watcher;
     int refresh_seq;    ///< sequence for refresh requests
     int last_refresh;   ///< last completed refresh
 
     /**
      * Lock ordering:
-     * md_lock, cache_lock, snap_lock, parent_lock, refresh_lock
+     * owner_lock, md_lock, cache_lock, snap_lock, parent_lock, refresh_lock
      */
+    RWLock owner_lock; // protects exclusive lock leadership updates
     RWLock md_lock; // protects access to the mutable image metadata that
                    // isn't guarded by other locks below
                    // (size, features, image locks, etc)

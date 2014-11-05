@@ -47,6 +47,7 @@ using ::librbd::cls_client::set_protection_status;
 using ::librbd::cls_client::get_stripe_unit_count;
 using ::librbd::cls_client::set_stripe_unit_count;
 using ::librbd::cls_client::old_snapshot_add;
+using ::librbd::cls_client::get_mutable_metadata;
 
 static char *random_buf(size_t len)
 {
@@ -913,6 +914,42 @@ TEST(cls_rbd, stripingv2)
   ASSERT_EQ(-EINVAL, set_stripe_unit_count(&ioctx, "bar", 0, 1));
   ASSERT_EQ(-EINVAL, set_stripe_unit_count(&ioctx, "bar", 1, 0));
   ASSERT_EQ(-EINVAL, set_stripe_unit_count(&ioctx, "bar", 0, 0));
+
+  ioctx.close();
+  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
+}
+
+TEST(cls_rbd, get_mutable_metadata_features)
+{
+  librados::Rados rados;
+  librados::IoCtx ioctx;
+  string pool_name = get_temp_pool_name();
+
+  ASSERT_EQ("", create_one_pool_pp(pool_name, rados));
+  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
+
+  ASSERT_EQ(0, create_image(&ioctx, "bar", 10, 22, RBD_FEATURE_EXCLUSIVE_LOCK, "bar"));
+
+  uint64_t size, features, incompatible_features;
+  std::map<rados::cls::lock::locker_id_t,
+           rados::cls::lock::locker_info_t> lockers;
+  bool exclusive_lock;
+  std::string lock_tag;
+  ::SnapContext snapc;
+  parent_info parent;
+
+  ASSERT_EQ(0, get_mutable_metadata(&ioctx, "bar", true, &size, &features,
+				    &incompatible_features, &lockers,
+				    &exclusive_lock, &lock_tag, &snapc, &parent));
+  ASSERT_EQ(static_cast<uint64_t>(RBD_FEATURE_EXCLUSIVE_LOCK), features);
+  ASSERT_EQ(0U, incompatible_features);
+
+  ASSERT_EQ(0, get_mutable_metadata(&ioctx, "bar", false, &size, &features,
+                                    &incompatible_features, &lockers,
+                                    &exclusive_lock, &lock_tag, &snapc, &parent));
+  ASSERT_EQ(static_cast<uint64_t>(RBD_FEATURE_EXCLUSIVE_LOCK), features);
+  ASSERT_EQ(static_cast<uint64_t>(RBD_FEATURE_EXCLUSIVE_LOCK),
+	    incompatible_features);
 
   ioctx.close();
   ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));

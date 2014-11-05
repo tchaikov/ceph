@@ -17,12 +17,15 @@
 #include "librbd/AioCompletion.h"
 #include "librbd/AioRequest.h"
 #include "librbd/ImageCtx.h"
+#include "librbd/ImageWatcher.h"
 
 #include "librbd/internal.h"
 #include "librbd/parent_types.h"
 #include "include/util.h"
 
 #include "librados/snap_set_diff.h"
+
+#include <boost/bind.hpp>
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
@@ -256,11 +259,8 @@ namespace librbd {
     return 0;
   }
 
-  int notify_change(IoCtx& io_ctx, const string& oid, uint64_t *pver,
-		    ImageCtx *ictx)
+  int notify_change(IoCtx& io_ctx, const string& oid, ImageCtx *ictx)
   {
-    uint64_t ver;
-
     if (ictx) {
       ictx->refresh_lock.Lock();
       ldout(ictx->cct, 20) << "notify_change refresh_seq = " << ictx->refresh_seq
@@ -269,12 +269,7 @@ namespace librbd {
       ictx->refresh_lock.Unlock();
     }
 
-    if (pver)
-      ver = *pver;
-    else
-      ver = io_ctx.get_last_version();
-    bufferlist bl;
-    io_ctx.notify(oid, ver, bl);
+    ImageWatcher::notify_header_update(io_ctx, oid);
     return 0;
   }
 
@@ -297,7 +292,7 @@ namespace librbd {
     bufferlist bl;
     int r = io_ctx.write(header_oid, header, header.length(), 0);
 
-    notify_change(io_ctx, header_oid, NULL, NULL);
+    notify_change(io_ctx, header_oid, NULL);
 
     return r;
   }
@@ -456,6 +451,29 @@ namespace librbd {
     return 0;
   }
 
+  static int prepare_image_update(ImageCtx *ictx)
+  {
+    assert(ictx->owner_lock.is_locked() && !ictx->owner_lock.is_wlocked());
+    if (ictx->image_watcher == NULL) {
+      return -EROFS;;
+    } else if (!ictx->image_watcher->is_lock_supported() ||
+	       ictx->image_watcher->is_lock_owner()) {
+      return 0;
+    }
+
+    // need to upgrade to a write lock
+    int r = 0;
+    ictx->owner_lock.put_read();
+    {
+      RWLock::WLocker l(ictx->owner_lock);
+      if (!ictx->image_watcher->is_lock_owner()) {
+	r = ictx->image_watcher->try_lock();
+      }
+    }
+    ictx->owner_lock.get_read();
+    return r;
+  }
+
   int snap_create(ImageCtx *ictx, const char *snap_name)
   {
     ldout(ictx->cct, 20) << "snap_create " << ictx << " " << snap_name << dendl;
@@ -467,7 +485,18 @@ namespace librbd {
     if (r < 0)
       return r;
 
-    RWLock::RLocker l(ictx->md_lock);
+    RWLock::RLocker l(ictx->owner_lock);
+    r = prepare_image_update(ictx);
+    if (r < 0) {
+      return -EROFS;
+    }
+    if (ictx->image_watcher->is_lock_supported() &&
+        !ictx->image_watcher->is_lock_owner()) {
+      // TODO: temporary until request proxied to lock owner
+      return -EROFS;
+    }
+
+    RWLock::RLocker l2(ictx->md_lock);
     do {
       r = add_snap(ictx, snap_name);
     } while (r == -ESTALE);
@@ -475,7 +504,7 @@ namespace librbd {
     if (r < 0)
       return r;
 
-    notify_change(ictx->md_ctx, ictx->header_oid, NULL, ictx);
+    notify_change(ictx->md_ctx, ictx->header_oid, ictx);
 
     ictx->perfcounter->inc(l_librbd_snap_create);
     return 0;
@@ -547,7 +576,7 @@ namespace librbd {
     if (r < 0)
       return r;
 
-    notify_change(ictx->md_ctx, ictx->header_oid, NULL, ictx);
+    notify_change(ictx->md_ctx, ictx->header_oid, ictx);
 
     ictx->perfcounter->inc(l_librbd_snap_remove);
     return 0;
@@ -592,7 +621,7 @@ namespace librbd {
 					  RBD_PROTECTION_STATUS_PROTECTED);
     if (r < 0)
       return r;
-    notify_change(ictx->md_ctx, ictx->header_oid, NULL, ictx);
+    notify_change(ictx->md_ctx, ictx->header_oid, ictx);
     return 0;
   }
 
@@ -638,7 +667,7 @@ namespace librbd {
 					  RBD_PROTECTION_STATUS_UNPROTECTING);
     if (r < 0)
       return r;
-    notify_change(ictx->md_ctx, ictx->header_oid, NULL, ictx);
+    notify_change(ictx->md_ctx, ictx->header_oid, ictx);
 
     parent_spec pspec(ictx->md_ctx.get_id(), ictx->id, snap_id);
     // search all pools for children depending on this snapshot
@@ -689,7 +718,7 @@ namespace librbd {
 		       << dendl;
       goto reprotect_and_return_err;
     }
-    notify_change(ictx->md_ctx, ictx->header_oid, NULL, ictx);
+    notify_change(ictx->md_ctx, ictx->header_oid, ictx);
     return 0;
 
 reprotect_and_return_err:
@@ -700,7 +729,7 @@ reprotect_and_return_err:
     if (proterr < 0) {
       lderr(ictx->cct) << "snap_unprotect: can't reprotect image" << dendl;
     }
-    notify_change(ictx->md_ctx, ictx->header_oid, NULL, ictx);
+    notify_change(ictx->md_ctx, ictx->header_oid, ictx);
     return r;
   }
 
@@ -1188,7 +1217,7 @@ reprotect_and_return_err:
     }
 
     if (old_format) {
-      notify_change(io_ctx, old_header_name(srcname), NULL, NULL);
+      notify_change(io_ctx, old_header_name(srcname), NULL);
     }
 
     return 0;
@@ -1381,6 +1410,13 @@ reprotect_and_return_err:
     return 0;
   }
 
+  int is_exclusive_lock_owner(ImageCtx *ictx, bool *is_owner)
+  {
+    *is_owner = (ictx->image_watcher != NULL &&
+		 ictx->image_watcher->is_lock_owner());
+    return 0;
+  }
+
   int remove(IoCtx& io_ctx, const char *imgname, ProgressContext& prog_ctx)
   {
     CephContext *cct((CephContext *)io_ctx.cct());
@@ -1522,7 +1558,7 @@ reprotect_and_return_err:
       lderr(cct) << "error writing header: " << cpp_strerror(-r) << dendl;
       return r;
     } else {
-      notify_change(ictx->md_ctx, ictx->header_oid, NULL, ictx);
+      notify_change(ictx->md_ctx, ictx->header_oid, ictx);
     }
 
     return 0;
@@ -1543,7 +1579,18 @@ reprotect_and_return_err:
       return r;
     }
 
-    RWLock::WLocker l(ictx->md_lock);
+    RWLock::RLocker l(ictx->owner_lock);
+    r = prepare_image_update(ictx);
+    if (r < 0) {
+      return -EROFS;
+    }
+    if (ictx->image_watcher->is_lock_supported() &&
+        !ictx->image_watcher->is_lock_owner()) {
+      // TODO: temporary until request proxied to lock owner
+      return -EROFS;
+    }
+
+    RWLock::WLocker l2(ictx->md_lock);
     if (size < ictx->size && ictx->object_cacher) {
       // need to invalidate since we're deleting objects, and
       // ObjectCacher doesn't track non-existent objects
@@ -1760,7 +1807,9 @@ reprotect_and_return_err:
 	} else {
 	  do {
 	    uint64_t incompatible_features;
+	    bool read_only = ictx->read_only || ictx->snap_id != CEPH_NOSNAP;
 	    r = cls_client::get_mutable_metadata(&ictx->md_ctx, ictx->header_oid,
+						 read_only,
 						 &ictx->size, &ictx->features,
 						 &incompatible_features,
 						 &ictx->lockers,
@@ -1871,12 +1920,13 @@ reprotect_and_return_err:
     if (r < 0)
       return r;
 
-    RWLock::WLocker l(ictx->md_lock);
+    RWLock::RLocker l(ictx->owner_lock);
+    RWLock::WLocker l2(ictx->md_lock);
     snap_t snap_id;
     uint64_t new_size;
     {
       // need to drop snap_lock before invalidating cache
-      RWLock::RLocker l2(ictx->snap_lock);
+      RWLock::RLocker l3(ictx->snap_lock);
       if (!ictx->snap_exists)
 	return -ENOENT;
 
@@ -1889,6 +1939,15 @@ reprotect_and_return_err:
 	return -ENOENT;
       }
       new_size = ictx->get_image_size(snap_id);
+    }
+
+    r = prepare_image_update(ictx);
+    if (r < 0) {
+      return -EROFS;
+    }
+    if (ictx->image_watcher->is_lock_supported() &&
+        !ictx->image_watcher->is_lock_owner()) {
+      return -EROFS;
     }
 
     // need to flush any pending writes before resizing and rolling back -
@@ -1913,7 +1972,7 @@ reprotect_and_return_err:
       return r;
     }
 
-    notify_change(ictx->md_ctx, ictx->header_oid, NULL, ictx);
+    notify_change(ictx->md_ctx, ictx->header_oid, ictx);
 
     ictx->perfcounter->inc(l_librbd_snap_rollback);
     return r;
@@ -2079,8 +2138,10 @@ reprotect_and_return_err:
 
   int _snap_set(ImageCtx *ictx, const char *snap_name)
   {
-    RWLock::WLocker l1(ictx->snap_lock);
-    RWLock::WLocker l2(ictx->parent_lock);
+    RWLock::WLocker l(ictx->owner_lock);
+    RWLock::RLocker l1(ictx->md_lock);
+    RWLock::WLocker l2(ictx->snap_lock);
+    RWLock::WLocker l3(ictx->parent_lock);
     int r;
     if ((snap_name != NULL) && (strlen(snap_name) != 0)) {
       r = ictx->snap_set(snap_name);
@@ -2091,6 +2152,18 @@ reprotect_and_return_err:
     if (r < 0) {
       return r;
     }
+
+    if (ictx->image_watcher != NULL) {
+      if (!ictx->image_watcher->is_lock_supported() &&
+	  ictx->image_watcher->is_lock_owner()) {
+	r = ictx->image_watcher->unlock();
+	if (r < 0) {
+	  lderr(ictx->cct) << "error unlocking image: "
+			   << cpp_strerror(r) << dendl;
+	}
+      }
+    }
+
     refresh_parent(ictx);
     return 0;
   }
@@ -2153,6 +2226,9 @@ reprotect_and_return_err:
 
     ictx->readahead.wait_for_pending();
 
+    if (ictx->image_watcher != NULL) {
+      ictx->image_watcher->flush_aio_operations();
+    }
     if (ictx->object_cacher)
       ictx->shutdown_cache(); // implicitly flushes
     else
@@ -2163,8 +2239,17 @@ reprotect_and_return_err:
       ictx->parent = NULL;
     }
 
-    if (ictx->wctx)
+    if (ictx->image_watcher) {
+      if (ictx->image_watcher->is_lock_owner()) {
+        RWLock::WLocker l(ictx->owner_lock);
+        int r = ictx->image_watcher->unlock();
+        if (r < 0) {
+	  lderr(ictx->cct) << "error unlocking object map: " << cpp_strerror(r)
+			   << dendl;
+        }
+      }
       ictx->unregister_watch();
+    }
 
     delete ictx;
   }
@@ -2212,6 +2297,17 @@ reprotect_and_return_err:
       object_size = ictx->get_object_size();
       overlap = ictx->parent_md.overlap;
       overlap_objects = Striper::get_num_objects(ictx->layout, overlap); 
+    }
+
+    RWLock::RLocker l(ictx->owner_lock);
+    r = prepare_image_update(ictx);
+    if (r < 0) {
+      return -EROFS;
+    }
+    if (ictx->image_watcher->is_lock_supported() &&
+        !ictx->image_watcher->is_lock_owner()) {
+      // TODO: temporary until request proxied to lock owner
+      return -EROFS;
     }
 
     SimpleThrottle throttle(cct->_conf->rbd_concurrent_management_ops, false);
@@ -2278,7 +2374,7 @@ reprotect_and_return_err:
       }
     }
     ictx->snap_lock.put_read();
-    notify_change(ictx->md_ctx, ictx->header_oid, NULL, ictx);
+    notify_change(ictx->md_ctx, ictx->header_oid, ictx);
 
     ldout(cct, 20) << "finished flattening" << dendl;
 
@@ -2343,7 +2439,7 @@ reprotect_and_return_err:
 			       cookie, tag, "", utime_t(), 0);
     if (r < 0)
       return r;
-    notify_change(ictx->md_ctx, ictx->header_oid, NULL, ictx);
+    notify_change(ictx->md_ctx, ictx->header_oid, ictx);
     return 0;
   }
 
@@ -2362,7 +2458,7 @@ reprotect_and_return_err:
 				 RBD_LOCK_NAME, cookie);
     if (r < 0)
       return r;
-    notify_change(ictx->md_ctx, ictx->header_oid, NULL, ictx);
+    notify_change(ictx->md_ctx, ictx->header_oid, ictx);
     return 0;
   }
 
@@ -2387,7 +2483,7 @@ reprotect_and_return_err:
 				     RBD_LOCK_NAME, cookie, lock_client);
     if (r < 0)
       return r;
-    notify_change(ictx->md_ctx, ictx->header_oid, NULL, ictx);
+    notify_change(ictx->md_ctx, ictx->header_oid, ictx);
     return 0;
   }
 
@@ -2876,6 +2972,9 @@ reprotect_and_return_err:
       return r;
     }
 
+    if (ictx->image_watcher != NULL) {
+      ictx->image_watcher->flush_aio_operations();
+    }
     ictx->user_flushed();
 
     c->get();
@@ -2907,6 +3006,9 @@ reprotect_and_return_err:
       return r;
     }
 
+    if (ictx->image_watcher != NULL) {
+      ictx->image_watcher->flush_aio_operations();
+    }
     ictx->user_flushed();
     r = _flush(ictx);
     ictx->perfcounter->inc(l_librbd_flush);
@@ -2938,6 +3040,10 @@ reprotect_and_return_err:
     int r = ictx_check(ictx);
     if (r < 0) {
       return r;
+    }
+
+    if (ictx->image_watcher != NULL) {
+      ictx->image_watcher->flush_aio_operations();
     }
 
     RWLock::WLocker l(ictx->md_lock);
@@ -2978,6 +3084,17 @@ reprotect_and_return_err:
 
     ldout(cct, 20) << "  parent overlap " << overlap << dendl;
 
+    c->get();
+    c->init_time(ictx, AIO_TYPE_WRITE);
+
+    RWLock::RLocker l(ictx->owner_lock);
+    if (ictx->image_watcher->is_lock_supported() &&
+	!ictx->image_watcher->is_lock_owner()) {
+      c->put();
+      return ictx->image_watcher->request_lock(
+	boost::bind(&librbd::aio_write, ictx, off, len, buf, _1), c);
+    }
+
     // map
     vector<ObjectExtent> extents;
     if (len > 0) {
@@ -2985,8 +3102,6 @@ reprotect_and_return_err:
 			       &ictx->layout, off, mylen, 0, extents);
     }
 
-    c->get();
-    c->init_time(ictx, AIO_TYPE_WRITE);
     for (vector<ObjectExtent>::iterator p = extents.begin(); p != extents.end(); ++p) {
       ldout(cct, 20) << " oid " << p->oid << " " << p->offset << "~" << p->length
 		     << " from " << p->buffer_extents << dendl;
@@ -3060,6 +3175,17 @@ reprotect_and_return_err:
       return -EROFS;
     }
 
+    c->get();
+    c->init_time(ictx, AIO_TYPE_DISCARD);
+
+    RWLock::RLocker l(ictx->owner_lock);
+    if (ictx->image_watcher->is_lock_supported() &&
+	!ictx->image_watcher->is_lock_owner()) {
+      c->put();
+      return ictx->image_watcher->request_lock(
+	boost::bind(&librbd::aio_discard, ictx, off, len, _1), c);
+    }
+
     // map
     vector<ObjectExtent> extents;
     if (len > 0) {
@@ -3067,8 +3193,6 @@ reprotect_and_return_err:
 			       &ictx->layout, off, len, 0, extents);
     }
 
-    c->get();
-    c->init_time(ictx, AIO_TYPE_DISCARD);
     for (vector<ObjectExtent>::iterator p = extents.begin(); p != extents.end(); ++p) {
       ldout(cct, 20) << " oid " << p->oid << " " << p->offset << "~" << p->length
 		     << " from " << p->buffer_extents << dendl;
