@@ -51,6 +51,8 @@ using ::librbd::cls_client::get_mutable_metadata;
 using ::librbd::cls_client::object_map_load;
 using ::librbd::cls_client::object_map_resize;
 using ::librbd::cls_client::object_map_update;
+using ::librbd::cls_client::get_flags;
+using ::librbd::cls_client::set_flags;
 
 static char *random_buf(size_t len)
 {
@@ -1043,6 +1045,40 @@ TEST(cls_rbd, object_map_load_enoent)
 
   BitVector<2> osd_bit_vector;
   ASSERT_EQ(-ENOENT, object_map_load(&ioctx, "bar", &osd_bit_vector));
+
+  ioctx.close();
+  ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
+}
+
+TEST(cls_rbd, flags)
+{
+  librados::Rados rados;
+  string pool_name = get_temp_pool_name();
+  ASSERT_EQ("", create_one_pool_pp(pool_name, rados));
+
+  librados::IoCtx ioctx;
+  ASSERT_EQ(0, rados.ioctx_create(pool_name.c_str(), ioctx));
+
+  ASSERT_EQ(0, create_image(&ioctx, "foo", 0, 22, 0, "foo"));
+
+  uint64_t flags;
+  ASSERT_EQ(0, get_flags(&ioctx, "foo", CEPH_NOSNAP, &flags));
+  ASSERT_EQ(0U, flags);
+
+  ASSERT_EQ(0, set_flags(&ioctx, "foo", 3, 2));
+  ASSERT_EQ(0, get_flags(&ioctx, "foo", CEPH_NOSNAP, &flags));
+  ASSERT_EQ(2U, flags);
+
+  uint64_t snap_id = 10;
+  ASSERT_EQ(-ENOENT, get_flags(&ioctx, "foo", snap_id, &flags));
+  ASSERT_EQ(0, snapshot_add(&ioctx, "foo", snap_id, "snap"));
+
+  ASSERT_EQ(0, set_flags(&ioctx, "foo", 31, 4));
+  ASSERT_EQ(0, get_flags(&ioctx, "foo", CEPH_NOSNAP, &flags));
+  ASSERT_EQ(6U, flags);
+
+  ASSERT_EQ(0, get_flags(&ioctx, "foo", snap_id, &flags));
+  ASSERT_EQ(2U, flags);
 
   ioctx.close();
   ASSERT_EQ(0, destroy_one_pool_pp(pool_name, rados));
