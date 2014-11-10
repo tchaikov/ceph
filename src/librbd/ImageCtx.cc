@@ -46,6 +46,7 @@ namespace librbd {
       snap_lock("librbd::ImageCtx::snap_lock"),
       parent_lock("librbd::ImageCtx::parent_lock"),
       refresh_lock("librbd::ImageCtx::refresh_lock"),
+      object_map_lock("librbd::ImageCtx::object_map_lock"),
       extra_read_flags(0),
       old_format(true),
       order(0), size(0), features(0),
@@ -53,8 +54,7 @@ namespace librbd {
       id(image_id), parent(NULL),
       stripe_unit(0), stripe_count(0),
       object_cacher(NULL), writeback_handler(NULL), object_set(NULL),
-      readahead(),
-      total_bytes_read(0)
+      readahead(), total_bytes_read(0)
   {
     md_ctx.dup(p);
     data_ctx.dup(p);
@@ -652,5 +652,118 @@ namespace librbd {
 		   << ", object overlap " << len
 		   << " from image extents " << objectx << dendl;
     return len;
- }
+  }
+
+  int ImageCtx::refresh_object_map()
+  {
+    if ((features & RBD_FEATURE_OBJECT_MAP) == 0) {
+      return 0;
+    }
+
+    int r = cls_client::object_map_load(&data_ctx, object_map_name(id),
+					&object_map);
+    if (r < 0) {
+      lderr(cct) << "error refreshing object map: " << cpp_strerror(r)
+		 << dendl;
+      // TODO: flag object map as invalid
+      object_map.clear();
+      return r;
+    }
+
+    ldout(cct, 20) << "refreshed object map: " << object_map.size()
+                   << dendl;
+
+    uint64_t num_objs = Striper::get_num_objects(layout, get_current_size());
+    if (object_map.size() != num_objs) {
+      // resize op might have been interrupted
+      lderr(cct) << "incorrect object map size: " << object_map.size()
+		 << " != " << num_objs << dendl;
+      // TODO: flag object map as invalid
+      return -EINVAL;
+    }
+    return 0;
+  }
+
+  int ImageCtx::resize_object_map(uint8_t default_object_state)
+  {
+    if ((features & RBD_FEATURE_OBJECT_MAP) == 0) {
+      return 0;
+    }
+
+    uint64_t num_objs = Striper::get_num_objects(layout, get_current_size());
+    ldout(cct, 20) << "resizing object map: " << num_objs << dendl;
+    int r = cls_client::object_map_resize(&data_ctx, object_map_name(id),
+					  num_objs, default_object_state);
+    if (r < 0) {
+      lderr(cct) << "error resizing object map: size=" << num_objs << ", "
+                 << "state=" << default_object_state << ", "
+                 << "error=" << cpp_strerror(r) << dendl;
+      // TODO: flag object map as invalid
+      return 0;
+    }
+
+    size_t orig_object_map_size = object_map.size();
+    object_map.resize(num_objs);
+    for (uint64_t i = orig_object_map_size; i < object_map.size(); ++i) {
+      object_map[i] = default_object_state;
+    }
+    return 0;
+  }
+
+  int ImageCtx::update_object_map(uint64_t object_no, uint8_t object_state)
+  {
+    return update_object_map(object_no, object_no + 1, object_state,
+		             boost::optional<uint8_t>());
+  }
+
+  int ImageCtx::update_object_map(uint64_t start_object_no,
+                                  uint64_t end_object_no, uint8_t new_state,
+				  const boost::optional<uint8_t> &current_state)
+  {
+    if ((features & RBD_FEATURE_OBJECT_MAP) == 0) {
+      return 0;
+    }
+
+    assert(start_object_no <= end_object_no);
+    assert(/* flagged as invalid || */ end_object_no <= object_map.size());
+    if (end_object_no > object_map.size()) {
+      ldout(cct, 20) << "skipping update of invalid object map" << dendl;
+      return 0;
+    }
+
+    bool update_required = false;
+    for (uint64_t object_no = start_object_no; object_no < end_object_no;
+	 ++object_no) {
+      if ((!current_state || object_map[object_no] == *current_state) &&
+	  object_map[object_no] != new_state) {
+	update_required = true;
+	break;
+      }
+    }
+
+    if (!update_required) {
+      return 0;
+    }
+
+    ldout(cct, 20) << "updating object map: [" << start_object_no << ","
+		   << end_object_no << ") = "
+		   << static_cast<uint32_t>(new_state) << dendl;
+
+    int r = cls_client::object_map_update(&data_ctx, object_map_name(id),
+					  start_object_no, end_object_no,
+					  new_state, current_state);
+    if (r < 0) {
+      lderr(cct) << "object map update failed: " << cpp_strerror(r) << dendl;
+      // TODO: disable object map
+    } else {
+      for (uint64_t object_no = start_object_no; object_no < end_object_no;
+           ++object_no) {
+	if (!current_state || object_map[object_no] == *current_state) {
+	  object_map[object_no] = new_state;
+        }
+      }
+    }
+    return r;
+  }
+
 }
