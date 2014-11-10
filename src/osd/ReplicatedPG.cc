@@ -3783,8 +3783,12 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  uint64_t watch_cookie = 0;
 	  ::decode(notify_id, bp);
 	  ::decode(watch_cookie, bp);
+	  bufferlist reply_bl;
+	  if (!bp.end()) {
+	    ::decode(reply_bl, bp);
+	  }
 	  tracepoint(osd, do_osd_op_pre_notify_ack, soid.oid.name.c_str(), soid.snap.val, notify_id, watch_cookie, "Y");
-	  OpContext::NotifyAck ack(notify_id, watch_cookie);
+	  OpContext::NotifyAck ack(notify_id, watch_cookie, reply_bl);
 	  ctx->notify_acks.push_back(ack);
 	} catch (const buffer::error &e) {
 	  tracepoint(osd, do_osd_op_pre_notify_ack, soid.oid.name.c_str(), soid.snap.val, op.watch.cookie, 0, "N");
@@ -4132,17 +4136,17 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
     case CEPH_OSD_OP_WATCH:
       ++ctx->num_write;
       {
-	tracepoint(osd, do_osd_op_pre_watch, soid.oid.name.c_str(), soid.snap.val, op.watch.cookie, op.watch.flag);
+	tracepoint(osd, do_osd_op_pre_watch, soid.oid.name.c_str(), soid.snap.val, op.watch.cookie, op.watch.op);
 	if (!obs.exists) {
 	  result = -ENOENT;
 	  break;
 	}
         uint64_t cookie = op.watch.cookie;
-	bool do_watch = op.watch.flag & 1;
         entity_name_t entity = ctx->reqid.name;
 	ObjectContextRef obc = ctx->obc;
 
-	dout(10) << "watch: ctx->obc=" << (void *)obc.get() << " cookie=" << cookie
+	dout(10) << "watch " << ceph_osd_watch_op_name(op.watch.op)
+		 << ": ctx->obc=" << (void *)obc.get() << " cookie=" << cookie
 		 << " oi.version=" << oi.version.version << " ctx->at_version=" << ctx->at_version << dendl;
 	dout(10) << "watch: oi.user_version=" << oi.user_version<< dendl;
 	dout(10) << "watch: peer_addr="
@@ -4150,7 +4154,7 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 
 	watch_info_t w(cookie, cct->_conf->osd_client_watch_timeout,
 	  ctx->op->get_req()->get_connection()->get_peer_addr());
-	if (do_watch) {
+	if (op.watch.op == CEPH_OSD_WATCH_OP_WATCH) {
 	  if (oi.watchers.count(make_pair(cookie, entity))) {
 	    dout(10) << " found existing watch " << w << " by " << entity << dendl;
 	  } else {
@@ -4159,7 +4163,21 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	    t->nop();  // make sure update the object_info on disk!
 	  }
 	  ctx->watch_connects.push_back(w);
-        } else {
+        } else if (op.watch.op == CEPH_OSD_WATCH_OP_RECONNECT) {
+	  if (!oi.watchers.count(make_pair(cookie, entity))) {
+	    result = -ENOTCONN;
+	    break;
+	  }
+	  dout(10) << " found existing watch " << w << " by " << entity << dendl;
+	  ctx->watch_connects.push_back(w);
+        } else if (op.watch.op == CEPH_OSD_WATCH_OP_PING) {
+	  if (!oi.watchers.count(make_pair(cookie, entity))) {
+	    result = -ENOTCONN;
+	    break;
+	  }
+	  dout(10) << " found existing watch " << w << " by " << entity << dendl;
+	  result = 0;
+        } else if (op.watch.op == CEPH_OSD_WATCH_OP_UNWATCH) {
 	  map<pair<uint64_t, entity_name_t>, watch_info_t>::iterator oi_iter =
 	    oi.watchers.find(make_pair(cookie, entity));
 	  if (oi_iter != oi.watchers.end()) {
@@ -5251,6 +5269,7 @@ void ReplicatedPG::do_osd_op_effects(OpContext *ctx)
     NotifyRef notif(
       Notify::makeNotifyRef(
 	conn,
+	ctx->reqid.name.num(),
 	ctx->obc->watchers.size(),
 	p->bl,
 	p->timeout,
@@ -5283,7 +5302,7 @@ void ReplicatedPG::do_osd_op_effects(OpContext *ctx)
       if (p->watch_cookie &&
 	  p->watch_cookie.get() != i->first.first) continue;
       dout(10) << "acking notify on watch " << i->first << dendl;
-      i->second->notify_ack(p->notify_id);
+      i->second->notify_ack(p->notify_id, p->reply_bl);
     }
   }
 }

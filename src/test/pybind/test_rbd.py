@@ -1,15 +1,18 @@
+# vim: expandtab smarttab shiftwidth=4 softtabstop=4
 import functools
 import random
 import struct
 import os
 
+from contextlib import nested
 from nose import with_setup, SkipTest
 from nose.tools import eq_ as eq, assert_raises
 from rados import Rados
 from rbd import (RBD, Image, ImageNotFound, InvalidArgument, ImageExists,
                  ImageBusy, ImageHasSnapshots, ReadOnlyImage,
                  FunctionNotSupported, ArgumentOutOfRange,
-                 RBD_FEATURE_LAYERING, RBD_FEATURE_STRIPINGV2)
+                 RBD_FEATURE_LAYERING, RBD_FEATURE_STRIPINGV2,
+                 RBD_FEATURE_EXCLUSIVE_LOCK)
 
 
 rados = None
@@ -99,7 +102,7 @@ def check_default_params(format, order=None, features=None, stripe_count=None,
 
                     expected_features = features
                     if expected_features is None or format == 1:
-                        expected_features = 0 if format == 1 else 3
+                        expected_features = 0 if format == 1 else 7
                     eq(expected_features, image.features())
 
                     expected_stripe_count = stripe_count
@@ -843,3 +846,126 @@ class TestClone(object):
         self.rbd.remove(ioctx, 'clone3')
         self.clone.unprotect_snap('snap2')
         self.clone.remove_snap('snap2')
+
+class TestExclusiveLock(object):
+
+    @require_features([RBD_FEATURE_EXCLUSIVE_LOCK])
+    def setUp(self):
+        global rados2
+        rados2 = Rados(conffile='')
+        rados2.connect()
+        global ioctx2
+        ioctx2 = rados2.open_ioctx('rbd')
+        create_image()
+
+    def tearDown(self):
+        remove_image()
+        global ioctx2
+        ioctx2.__del__()
+        global rados2
+        rados2.shutdown()
+
+    def test_ownership(self):
+        with nested(Image(ioctx, IMG_NAME), Image(ioctx2, IMG_NAME)) as (
+                image1, image2):
+            image1.write('0'*256, 0)
+            eq(image1.is_exclusive_lock_owner(), True)
+            eq(image2.is_exclusive_lock_owner(), False)
+
+    def test_snapshot_leadership(self):
+        with Image(ioctx, IMG_NAME) as image:
+            image.create_snap('snap')
+            eq(image.is_exclusive_lock_owner(), True)
+        try:
+            with Image(ioctx, IMG_NAME) as image:
+                image.write('0'*256, 0)
+                eq(image.is_exclusive_lock_owner(), True)
+                image.set_snap('snap')
+                eq(image.is_exclusive_lock_owner(), False)
+            with Image(ioctx, IMG_NAME, snapshot='snap') as image:
+                eq(image.is_exclusive_lock_owner(), False)
+        finally:
+            with Image(ioctx, IMG_NAME) as image:
+                image.remove_snap('snap')
+
+    def test_read_only_leadership(self):
+        with Image(ioctx, IMG_NAME, read_only=True) as image:
+            eq(image.is_exclusive_lock_owner(), False)
+
+    def test_follower_flatten(self):
+        with Image(ioctx, IMG_NAME) as image:
+            image.create_snap('snap')
+            image.protect_snap('snap')
+        try:
+            RBD().clone(ioctx, IMG_NAME, 'snap', ioctx, 'clone', features)
+            with nested(Image(ioctx, 'clone'), Image(ioctx2, 'clone')) as (
+                    image1, image2):
+                data = rand_data(256)
+                image1.write(data, 0)
+                image2.flatten()
+                assert_raises(ImageNotFound, image1.parent_info)
+                parent = True
+                for x in xrange(30):
+                    try:
+                        image2.parent_info()
+                    except ImageNotFound:
+                        parent = False
+                        break
+                eq(False, parent)
+        finally:
+            RBD().remove(ioctx, 'clone')
+            with Image(ioctx, IMG_NAME) as image:
+                image.unprotect_snap('snap')
+                image.remove_snap('snap')
+
+    def test_follower_resize(self):
+        with nested(Image(ioctx, IMG_NAME), Image(ioctx2, IMG_NAME)) as (
+                image1, image2):
+            image1.write('0'*256, 0)
+            for new_size in [IMG_SIZE * 2, IMG_SIZE / 2]:
+                image2.resize(new_size);
+                eq(new_size, image1.size())
+                for x in xrange(30):
+                    if new_size == image2.size():
+                        break
+                    time.sleep(1)
+                eq(new_size, image2.size())
+
+    def test_follower_snap_create(self):
+        with nested(Image(ioctx, IMG_NAME), Image(ioctx2, IMG_NAME)) as (
+                image1, image2):
+            image2.create_snap('snap1')
+            image1.remove_snap('snap1')
+
+    def test_follower_snap_rollback(self):
+        with nested(Image(ioctx, IMG_NAME), Image(ioctx2, IMG_NAME)) as (
+                image1, image2):
+            image1.create_snap('snap')
+            try:
+                assert_raises(ReadOnlyImage, image2.rollback_to_snap, 'snap')
+                image1.rollback_to_snap('snap')
+            finally:
+                image1.remove_snap('snap')
+
+    def test_follower_discard(self):
+        with nested(Image(ioctx, IMG_NAME), Image(ioctx2, IMG_NAME)) as (
+                image1, image2):
+            data = rand_data(256)
+            image1.write(data, 0)
+            image2.discard(0, 256)
+            eq(image1.is_exclusive_lock_owner(), False)
+            eq(image2.is_exclusive_lock_owner(), True)
+            read = image2.read(0, 256)
+            eq(256*'\0', read)
+
+    def test_follower_write(self):
+        with nested(Image(ioctx, IMG_NAME), Image(ioctx2, IMG_NAME)) as (
+                image1, image2):
+            data = rand_data(256)
+            image1.write(data, 0)
+            image2.write(data, IMG_SIZE / 2)
+            eq(image1.is_exclusive_lock_owner(), False)
+            eq(image2.is_exclusive_lock_owner(), True)
+            for offset in [0, IMG_SIZE / 2]:
+                read = image2.read(0, 256)
+                eq(data, read)

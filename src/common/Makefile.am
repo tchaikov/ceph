@@ -73,7 +73,8 @@ libcommon_la_SOURCES = \
 	common/bloom_filter.cc \
 	common/linux_version.c \
 	common/module.c \
-	common/Readahead.cc
+	common/Readahead.cc \
+	common/ContextCompletion.cc
 
 # these should go out of libcommon
 libcommon_la_SOURCES += \
@@ -206,7 +207,8 @@ noinst_HEADERS += \
 	common/hobject.h \
 	common/linux_version.h \
 	common/module.h \
-	common/Readahead.h
+	common/Readahead.h \
+	common/ContextCompletion.h
 
 noinst_LTLIBRARIES += libcommon.la
 
