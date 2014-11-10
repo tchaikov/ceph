@@ -2114,6 +2114,22 @@ reprotect_and_return_err:
 	      return -ENOSYS;
 	    }
 
+            r = cls_client::get_flags(&ictx->md_ctx, ictx->header_oid,
+                                      ictx->snap_id, &ictx->flags);
+            if (r == -EOPNOTSUPP || r == -EIO) {
+              // Older OSD doesn't support RBD flags, need to assume the worst
+              ldout(ictx->cct, 10) << "OSD does not support RBD flags" << dendl;
+              ictx->flags = 0;
+              if ((ictx->features & RBD_FEATURE_OBJECT_MAP) != 0) {
+                ldout(ictx->cct, 10) << "disabling object map optimizations"
+                                     << dendl;
+                ictx->flags |= RBD_FLAG_OBJECT_MAP_INVALID;
+              }
+            } else if (r < 0) {
+              lderr(cct) << "Error reading flags: " << cpp_strerror(r) << dendl;
+              return r;
+            }
+
 	    r = cls_client::snapshot_list(&(ictx->md_ctx), ictx->header_oid,
 					  new_snapc.snaps, &snap_names,
 					  &snap_sizes, &snap_features,
