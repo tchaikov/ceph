@@ -683,6 +683,47 @@ struct C_DoWatchNotify : public Context {
   }
 };
 
+struct C_DoWatchError : public Context {
+  librados::RadosClient *rados;
+  uint64_t cookie;
+  int err;
+  C_DoWatchError(librados::RadosClient *r, uint64_t cookie, int err)
+    : rados(r), cookie(cookie), err(err) {}
+  void finish(int r) {
+    rados->do_watch_error(cookie, err);
+  }
+};
+
+void librados::WatchNotifyInfo::OnError::complete(int r)
+{
+  RadosClient *client = info->io_ctx_impl->client;
+  client->finisher.queue(new C_DoWatchError(client, info->cookie, r));
+}
+
+void librados::RadosClient::do_watch_error(uint64_t cookie, int err)
+{
+  Mutex::Locker l(lock);
+  map<uint64_t, WatchNotifyInfo *>::iterator iter =
+    watch_notify_info.find(cookie);
+  if (iter != watch_notify_info.end()) {
+    WatchNotifyInfo *wc = iter->second;
+    assert(wc);
+    if (wc->watch_ctx2) {
+      wc->get();
+      ldout(cct,10) << __func__ << " cookie " << cookie
+		    << " handle_error " << err << dendl;
+      lock.Unlock();
+      wc->watch_ctx2->handle_error(cookie, err);
+      lock.Lock();
+      ldout(cct,10) << __func__ << " cookie " << cookie
+		    << " handle_error " << err << " done" << dendl;
+      wc->put();
+    }
+  } else {
+    ldout(cct,10) << __func__ << " cookie " << cookie << " not found" << dendl;
+  }
+}
+
 void librados::RadosClient::handle_watch_notify(MWatchNotify *m)
 {
   Mutex::Locker l(lock);
@@ -708,27 +749,65 @@ void librados::RadosClient::do_watch_notify(MWatchNotify *m)
     assert(wc);
     if (wc->notify_lock) {
       // we sent a notify and it completed (or failed)
+      // NOTE: opcode may be either NOTIFY (older OSDs) or NOTIFY_COMPLETE
+      // (newer OSDs).  In practice it doesn't matter because completion is the
+      // only kind of event we get on notify cookies.
       ldout(cct,10) << __func__ << " completed notify " << *m << dendl;
       wc->notify_lock->Lock();
       *wc->notify_done = true;
       *wc->notify_rval = m->return_code;
+      if (wc->notify_reply_bl) {
+	wc->notify_reply_bl->claim(m->get_data());
+      }
+      if (wc->notify_reply_buf) {
+	*wc->notify_reply_buf = (char*)malloc(m->get_data().length());
+	memcpy(*wc->notify_reply_buf, m->get_data().c_str(),
+	       m->get_data().length());
+      }
+      if (wc->notify_reply_buf_len) {
+	*wc->notify_reply_buf_len = m->get_data().length();
+      }
       wc->notify_cond->Signal();
       wc->notify_lock->Unlock();
-    } else {
+    } else if (m->opcode == CEPH_WATCH_EVENT_NOTIFY) {
       // we are watcher and got a notify
       ldout(cct,10) << __func__ << " got notify " << *m << dendl;
       wc->get();
 
       // trigger the callback
+      assert(!!wc->watch_ctx ^ !!wc->watch_ctx2);  // only one is defined
       lock.Unlock();
-      wc->watch_ctx->notify(m->opcode, m->ver, m->bl);
+      if (wc->watch_ctx) {
+	wc->watch_ctx->notify(CEPH_WATCH_EVENT_NOTIFY, m->ver, m->bl);
+	// send ACK back to the OSD
+	bufferlist empty;
+	wc->io_ctx_impl->notify_ack(wc->oid, m->notify_id, m->cookie, empty);
+      } else if (wc->watch_ctx2) {
+	wc->watch_ctx2->handle_notify(m->notify_id, m->cookie,
+				      m->notifier_gid, m->bl);
+	// user needs to explicitly ack (and may have already!)
+      }
       lock.Lock();
-
-      // send ACK back to the OSD
-      wc->io_ctx_impl->_notify_ack(wc->oid, m->notify_id, m->ver, m->cookie);
-
       ldout(cct,10) << __func__ << " notify done" << dendl;
       wc->put();
+    } else if (m->opcode == CEPH_WATCH_EVENT_FAILED_NOTIFY) {
+      // we are watcher and failed to ack a notify in time, causing it to time
+      // out.
+      ldout(cct,10) << __func__ << " failed notify " << *m << dendl;
+      wc->get();
+      // trigger the callback
+      assert(!!wc->watch_ctx ^ !!wc->watch_ctx2);  // only one is defined
+      lock.Unlock();
+      if (wc->watch_ctx2) {
+	wc->watch_ctx2->handle_failed_notify(m->notify_id, m->cookie,
+					     m->notifier_gid);
+      }
+      lock.Lock();
+      ldout(cct,10) << __func__ << " failed notify done" << dendl;
+      wc->put();
+    } else {
+      lderr(cct) << __func__ << " got unknown event " << m->opcode
+		 << " " << ceph_watch_event_name(m->opcode) << dendl;
     }
   } else {
     ldout(cct, 4) << __func__ << " unknown cookie " << m->cookie << dendl;

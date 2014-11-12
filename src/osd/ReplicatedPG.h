@@ -441,15 +441,18 @@ public:
     bool cache_evict;     ///< true if this is a cache eviction
 
     // side effects
-    list<watch_info_t> watch_connects;
+    list<pair<watch_info_t,bool> > watch_connects; ///< new watch + will_ping flag
     list<watch_info_t> watch_disconnects;
     list<notify_info_t> notifies;
     struct NotifyAck {
       boost::optional<uint64_t> watch_cookie;
       uint64_t notify_id;
+      bufferlist reply_bl;
       NotifyAck(uint64_t notify_id) : notify_id(notify_id) {}
-      NotifyAck(uint64_t notify_id, uint64_t cookie)
-	: watch_cookie(cookie), notify_id(notify_id) {}
+      NotifyAck(uint64_t notify_id, uint64_t cookie, bufferlist& rbl)
+	: watch_cookie(cookie), notify_id(notify_id) {
+	reply_bl.claim(rbl);
+      }
     };
     list<NotifyAck> notify_acks;
     

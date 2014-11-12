@@ -28,15 +28,14 @@ static ostream& _prefix(
 
 Notify::Notify(
   ConnectionRef client,
-  unsigned num_watchers,
+  uint64_t client_gid,
   bufferlist &payload,
   uint32_t timeout,
   uint64_t cookie,
   uint64_t notify_id,
   uint64_t version,
   OSDService *osd)
-  : client(client),
-    in_progress_watchers(num_watchers),
+  : client(client), client_gid(client_gid),
     complete(false),
     discarded(false),
     timed_out(false),
@@ -51,7 +50,7 @@ Notify::Notify(
 
 NotifyRef Notify::makeNotifyRef(
   ConnectionRef client,
-  unsigned num_watchers,
+  uint64_t client_gid,
   bufferlist &payload,
   uint32_t timeout,
   uint64_t cookie,
@@ -60,7 +59,7 @@ NotifyRef Notify::makeNotifyRef(
   OSDService *osd) {
   NotifyRef ret(
     new Notify(
-      client, num_watchers,
+      client, client_gid,
       payload, timeout,
       cookie, notify_id,
       version, osd));
@@ -98,8 +97,7 @@ void Notify::do_timeout()
     return;
   }
 
-  in_progress_watchers = 0; // we give up
-  timed_out = true;         // we will send the client and error code
+  timed_out = true;         // we will send the client an error code
   maybe_complete_notify();
   assert(complete);
   set<WatchRef> _watchers;
@@ -152,30 +150,50 @@ void Notify::start_watcher(WatchRef watch)
   watchers.insert(watch);
 }
 
-void Notify::complete_watcher(WatchRef watch)
+void Notify::complete_watcher(WatchRef watch, bufferlist& reply_bl)
 {
   Mutex::Locker l(lock);
   dout(10) << "complete_watcher" << dendl;
   if (is_discarded())
     return;
-  assert(in_progress_watchers > 0);
+  assert(watchers.count(watch));
   watchers.erase(watch);
-  --in_progress_watchers;
+  notify_replies.insert(make_pair(watch->get_watcher_gid(), reply_bl));
+  maybe_complete_notify();
+}
+
+void Notify::complete_watcher_remove(WatchRef watch)
+{
+  Mutex::Locker l(lock);
+  dout(10) << __func__ << dendl;
+  if (is_discarded())
+    return;
+  assert(watchers.count(watch));
+  watchers.erase(watch);
   maybe_complete_notify();
 }
 
 void Notify::maybe_complete_notify()
 {
   dout(10) << "maybe_complete_notify -- "
-	   << in_progress_watchers
+	   << watchers.size()
 	   << " in progress watchers " << dendl;
-  if (!in_progress_watchers) {
+  if (watchers.empty() || timed_out) {
+    bufferlist bl;
+    ::encode(notify_replies, bl);
+    bufferlist empty;
     MWatchNotify *reply(new MWatchNotify(cookie, version, notify_id,
-					 WATCH_NOTIFY, payload));
+					 CEPH_WATCH_EVENT_NOTIFY_COMPLETE, empty));
+    reply->notifier_gid = client_gid;
+    reply->set_data(bl);
     if (timed_out)
       reply->return_code = -ETIMEDOUT;
-    osd->send_message_osd_client(reply, client.get());
+    client->send_message(reply);
     unregister_cb();
+
+    for (set<WatchRef>::iterator p = watchers.begin(); p != watchers.end(); ++p) {
+      (*p)->send_failed_notify(this);
+    }
     complete = true;
   }
 }
@@ -193,7 +211,6 @@ void Notify::init()
   Mutex::Locker l(lock);
   register_cb();
   maybe_complete_notify();
-  assert(in_progress_watchers == watchers.size());
 }
 
 #define dout_subsys ceph_subsys_osd
@@ -273,6 +290,7 @@ Watch::Watch(
     timeout(timeout),
     cookie(cookie),
     addr(addr),
+    will_ping(false),
     entity(entity),
     discarded(false) {
   dout(10) << "Watch()" << dendl;
@@ -298,6 +316,7 @@ void Watch::register_cb()
 {
   Mutex::Locker l(osd->watch_lock);
   dout(15) << "registering callback, timeout: " << timeout << dendl;
+  assert(cb == NULL);
   cb = new HandleWatchTimeout(self.lock());
   osd->watch_timer.add_event_after(
     timeout,
@@ -318,10 +337,19 @@ void Watch::unregister_cb()
   cb = NULL;
 }
 
-void Watch::connect(ConnectionRef con)
+void Watch::got_ping(utime_t t)
+{
+  last_ping = t;
+  assert(conn);
+  unregister_cb();
+  register_cb();
+}
+
+void Watch::connect(ConnectionRef con, bool _will_ping)
 {
   dout(10) << "connecting" << dendl;
   conn = con;
+  will_ping = _will_ping;
   OSD::Session* sessionref(static_cast<OSD::Session*>(con->get_priv()));
   if (sessionref) {
     sessionref->wstate.addWatch(self.lock());
@@ -332,14 +360,20 @@ void Watch::connect(ConnectionRef con)
       send_notify(i->second);
     }
   }
-  unregister_cb();
+  if (will_ping) {
+    last_ping = ceph_clock_now(NULL);
+    register_cb();
+  } else {
+    unregister_cb();
+  }
 }
 
 void Watch::disconnect()
 {
   dout(10) << "disconnect" << dendl;
   conn = ConnectionRef();
-  register_cb();
+  if (!will_ping)
+    register_cb();
 }
 
 void Watch::discard()
@@ -383,16 +417,27 @@ void Watch::remove()
   for (map<uint64_t, NotifyRef>::iterator i = in_progress_notifies.begin();
        i != in_progress_notifies.end();
        ++i) {
-    i->second->complete_watcher(self.lock());
+    i->second->complete_watcher_remove(self.lock());
   }
   discard_state();
 }
 
 void Watch::start_notify(NotifyRef notif)
 {
-  dout(10) << "start_notify " << notif->notify_id << dendl;
   assert(in_progress_notifies.find(notif->notify_id) ==
 	 in_progress_notifies.end());
+  if (will_ping) {
+    utime_t cutoff = ceph_clock_now(NULL);
+    cutoff.sec_ref() -= timeout;
+    if (last_ping < cutoff) {
+      dout(10) << __func__ << " " << notif->notify_id
+	       << " last_ping " << last_ping << " < cutoff " << cutoff
+	       << ", disconnecting" << dendl;
+      disconnect();
+      return;
+    }
+  }
+  dout(10) << "start_notify " << notif->notify_id << dendl;
   in_progress_notifies[notif->notify_id] = notif;
   notif->start_watcher(self.lock());
   if (connected())
@@ -410,16 +455,28 @@ void Watch::send_notify(NotifyRef notif)
   dout(10) << "send_notify" << dendl;
   MWatchNotify *notify_msg = new MWatchNotify(
     cookie, notif->version, notif->notify_id,
-    WATCH_NOTIFY, notif->payload);
-  osd->send_message_osd_client(notify_msg, conn.get());
+    CEPH_WATCH_EVENT_NOTIFY, notif->payload);
+  notify_msg->notifier_gid = notif->client_gid;
+  conn->send_message(notify_msg);
 }
 
-void Watch::notify_ack(uint64_t notify_id)
+void Watch::send_failed_notify(Notify *notif)
+{
+  if (!conn)
+    return;
+  bufferlist empty;
+  MWatchNotify *reply(new MWatchNotify(cookie, notif->version, notif->notify_id,
+				       CEPH_WATCH_EVENT_FAILED_NOTIFY, empty));
+  reply->notifier_gid = notif->client_gid;
+  conn->send_message(reply);
+}
+
+void Watch::notify_ack(uint64_t notify_id, bufferlist& reply_bl)
 {
   dout(10) << "notify_ack" << dendl;
   map<uint64_t, NotifyRef>::iterator i = in_progress_notifies.find(notify_id);
   if (i != in_progress_notifies.end()) {
-    i->second->complete_watcher(self.lock());
+    i->second->complete_watcher(self.lock(), reply_bl);
     in_progress_notifies.erase(i);
   }
 }
