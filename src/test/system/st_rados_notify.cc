@@ -60,12 +60,17 @@ int StRadosNotify::run()
     m_notify_sem->post();
   }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
   printf("%s: notifying object %s\n", get_id_str(), m_obj_name.c_str());
   RETURN1_IF_NOT_VAL(m_notify_retcode,
 		     rados_notify(io_ctx, m_obj_name.c_str(), 0, NULL, 0));
   if (m_notified_sem) {
     m_notified_sem->post();
   }
+
+#pragma GCC diagnostic pop
 
   rados_ioctx_destroy(io_ctx);
   rados_shutdown(cl);

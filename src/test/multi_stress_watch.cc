@@ -46,6 +46,9 @@ test_loop(Rados &cluster, std::string pool_name, std::string obj_name)
     exit(1);
   }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
   for (int i = 0; i < 10000; ++i) {
     std::cerr << "Iteration " << i << std::endl;
     uint64_t handle;
@@ -59,6 +62,8 @@ test_loop(Rados &cluster, std::string pool_name, std::string obj_name)
     sem_wait(&sem);
     ioctx.unwatch(obj_name, handle);
   }
+
+#pragma GCC diagnostic pop
 
   ioctx.close();
 }

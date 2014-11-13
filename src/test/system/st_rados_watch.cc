@@ -68,6 +68,9 @@ run()
   RETURN1_IF_NONZERO(rados_ioctx_create(cl, m_pool_name.c_str(), &io_ctx));
   printf("%s: watching object %s\n", get_id_str(), m_obj_name.c_str());
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
   RETURN1_IF_NOT_VAL(
     rados_watch(io_ctx, m_obj_name.c_str(), 0, &handle,
 		reinterpret_cast<rados_watchcb_t>(notify_cb),
@@ -77,6 +80,8 @@ run()
   if (m_watch_sem) {
     m_watch_sem->post();
   }
+
+#pragma GCC diagnostic pop
 
   m_notify_sem->wait();
   m_notify_sem->post();
