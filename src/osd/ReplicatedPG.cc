@@ -1204,6 +1204,9 @@ void ReplicatedPG::calc_trim_to()
       min_last_complete_ondisk != pg_trim_to &&
       pg_log.get_log().approx_size() > target) {
     size_t num_to_trim = pg_log.get_log().approx_size() - target;
+    if (num_to_trim < cct->_conf->osd_pg_log_trim_min) {
+      return;
+    }
     list<pg_log_entry_t>::const_iterator it = pg_log.get_log().log.begin();
     eversion_t new_trim_to;
     for (size_t i = 0; i < num_to_trim; ++i) {
@@ -8612,6 +8615,7 @@ void ReplicatedBackend::submit_push_data(
     get_parent()->on_local_recover_start(recovery_info.soid, t);
     t->remove(get_temp_coll(t), recovery_info.soid);
     t->touch(target_coll, recovery_info.soid);
+    t->truncate(target_coll, recovery_info.soid, recovery_info.size);
     t->omap_setheader(target_coll, recovery_info.soid, omap_header);
   }
   uint64_t off = 0;
@@ -8961,6 +8965,23 @@ int ReplicatedBackend::build_push_op(const ObjectRecoveryInfo &recovery_info,
     out_op->data_included.span_of(recovery_info.copy_subset,
 				 progress.data_recovered_to,
 				 available);
+    if (!out_op->data_included.empty()) {
+      bufferlist bl;
+      int r = store->fiemap(coll, recovery_info.soid, 0,
+                                 out_op->data_included.range_end(), bl);
+      if (r >= 0)  {
+        interval_set<uint64_t> fiemap_included;
+        map<uint64_t, uint64_t> m;
+        bufferlist::iterator iter = bl.begin();
+        ::decode(m, iter);
+        map<uint64_t, uint64_t>::iterator miter;
+        for (miter = m.begin(); miter != m.end(); ++miter) {
+          fiemap_included.insert(miter->first, miter->second);
+        }
+
+        out_op->data_included.intersection_of(fiemap_included);
+      }
+    }
   } else {
     out_op->data_included.clear();
   }
@@ -9183,8 +9204,22 @@ void ReplicatedBackend::handle_pull(pg_shard_t peer, PullOp &op, PushOp *reply)
       // Adjust size and copy_subset
       recovery_info.size = st.st_size;
       recovery_info.copy_subset.clear();
-      if (st.st_size)
-	recovery_info.copy_subset.insert(0, st.st_size);
+      if (st.st_size) {
+        bufferlist bl;
+        r = store->fiemap(coll, soid, 0, st.st_size, bl);
+        if (r < 0)  {
+          recovery_info.copy_subset.insert(0, st.st_size);
+          r = 0;
+        } else {
+          map<uint64_t, uint64_t> m;
+          bufferlist::iterator iter = bl.begin();
+          ::decode(m, iter);
+          map<uint64_t, uint64_t>::iterator miter;
+          for (miter = m.begin(); miter != m.end(); ++miter) {
+            recovery_info.copy_subset.insert(miter->first, miter->second);
+          }
+        }
+      }
       assert(recovery_info.clone_subset.empty());
     }
 
@@ -11701,8 +11736,11 @@ bool ReplicatedPG::agent_maybe_flush(ObjectContextRef& obc)
   } else {
     ob_local_mtime = obc->obs.oi.mtime;
   }
-  bool evict_mode_full = (agent_state->evict_mode == TierAgentState::EVICT_MODE_FULL);
-  if (!evict_mode_full && (ob_local_mtime + utime_t(pool.info.cache_min_flush_age, 0) > now)) {
+  bool evict_mode_full =
+    (agent_state->evict_mode == TierAgentState::EVICT_MODE_FULL);
+  if (!evict_mode_full &&
+      obc->obs.oi.soid.snap == CEPH_NOSNAP &&  // snaps immutable; don't delay
+      (ob_local_mtime + utime_t(pool.info.cache_min_flush_age, 0) > now)) {
     dout(20) << __func__ << " skip (too young) " << obc->obs.oi << dendl;
     osd->logger->inc(l_osd_agent_skip);
     return false;
