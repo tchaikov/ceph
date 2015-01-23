@@ -821,7 +821,7 @@ Subcommand ``set`` sets <key>.
 Usage::
 
 	ceph osd set pause|noup|nodown|noout|noin|nobackfill|norecover|noscrub|
-	nodeep-scrub|notieragent
+	nodeep-scrub|notieragent|norebalance
 
 Subcommand ``setcrushmap`` sets crush map from input file.
 
@@ -907,7 +907,7 @@ Subcommand ``unset`` unsets <key>.
 Usage::
 
 	osd unset pause|noup|nodown|noout|noin|nobackfill|norecover|noscrub|
-	nodeep-scrub|notieragent
+	nodeep-scrub|notieragent|norebalance
 
 
 pg

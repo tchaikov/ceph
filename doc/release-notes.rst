@@ -91,6 +91,7 @@ Notable Changes
 * msgr: fix RESETSESSION bug (#10080 Greg Farnum)
 * objectstore: deprecate collection attrs (Sage Weil)
 * osd, mon: add checksums to all OSDMaps (Sage Weil)
+* osd, mon: honor new 'norebalance' osdmap flag
 * osd: allow deletion of objects with watcher (#2339 Sage Weil)
 * osd: allow sparse read for Push/Pull (Haomai Wang)
 * osd: cache reverse_nibbles hash value (Dong Yuan)

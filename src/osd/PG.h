@@ -2102,6 +2102,13 @@ public:
 		    spg_t pgid, const pg_pool_t *pool);
 
 private:
+
+  bool _allows_rebalance() const {
+    return (!test_flag(CEPH_OSDMAP_NOREBALANCE) ||
+	    is_degraded());
+  }
+
+
   void write_info(ObjectStore::Transaction& t);
 
 public:

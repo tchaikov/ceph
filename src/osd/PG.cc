@@ -6365,8 +6365,10 @@ boost::statechart::result PG::RecoveryState::Active::react(const ActMap&)
     pg->queue_snap_trim();
   }
 
+
   if (!pg->is_clean() &&
-      !pg->get_osdmap()->test_flag(CEPH_OSDMAP_NOBACKFILL)) {
+      !pg->get_osdmap()->test_flag(CEPH_OSDMAP_NOBACKFILL) &&
+      _allows_rebalance()) {
     pg->osd->queue_for_recovery(pg);
   }
   return forward_event();
