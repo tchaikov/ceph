@@ -15,15 +15,15 @@
 #ifndef CEPH_MMONMETADATA_H
 #define CEPH_MMONMETADATA_H
 
-#include "include/types.h"
+#include "mon/mon_types.h"
 #include "msg/Message.h"
 
 class MMonMetadata : public Message {
 public:
-  typedef std::map<string, string> Metadata;
   Metadata data;
 
 private:
+  static const int HEAD_VERSION = 1;
   ~MMonMetadata() {}
 
 public:
@@ -31,7 +31,8 @@ public:
     Message(CEPH_MSG_MON_METADATA, HEAD_VERSION)
   {}
   MMonMetadata(const Metadata& metadata) :
-    Message(CEPH_MSG_MON_METADATA), data(metadata)
+    Message(CEPH_MSG_MON_METADATA, HEAD_VERSION),
+    data(metadata)
   {}
 
   virtual const char *get_type_name() const {

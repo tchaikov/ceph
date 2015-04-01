@@ -654,7 +654,6 @@ public:
   void handle_command(class MMonCommand *m);
   void handle_route(MRoute *m);
 
-  typedef map<string, string> Metadata;
   void handle_mon_metadata(MMonMetadata *m);
   void update_mon_metadata();
   int get_mon_metadata(int mon, Formatter *f, ostream& err);
