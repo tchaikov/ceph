@@ -74,9 +74,13 @@ from ceph_argparse import \
     send_command, json_command
 
 from ceph_daemon import DaemonWatcher, admin_socket
+from collection import defaultdict
 
 # just a couple of globals
 
+# in case some errno is not recognized.
+errorcode = defaultdict(lambda: 'N/A')
+errorcode.update(errno.errorcode)
 verbose = False
 cluster_handle = None
 
@@ -391,7 +395,7 @@ def new_style_command(parsed_args, cmdargs, target, sigdict, inbuf, verbose):
                     if ret:
                         ret = abs(ret)
                         print >> sys.stderr, \
-                            'Error: {0} {1}'.format(ret, errno.errorcode[ret])
+                            'Error: {0} {1}'.format(ret, errorcode[ret])
                     if outbuf:
                         print outbuf
                     if outs:
@@ -822,11 +826,11 @@ def main():
                                                           sigdict, inbuf, verbose)
                     if ret < 0:
                         ret = -ret
-                        print >> sys.stderr, prefix + 'Second attempt of previously successful command failed with {0}: {1}'.format(errno.errorcode[ret], outs)
+                        print >> sys.stderr, prefix + 'Second attempt of previously successful command failed with {0}: {1}'.format(errorcode[ret], outs)
 
         if ret < 0:
             ret = -ret
-            print >> sys.stderr, prefix + 'Error {0}: {1}'.format(errno.errorcode[ret], outs)
+            print >> sys.stderr, prefix + 'Error {0}: {1}'.format(errorcode[ret], outs)
             if len(targets) > 1:
                 final_ret = ret
             else:
