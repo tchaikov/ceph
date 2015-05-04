@@ -35,6 +35,7 @@ struct CompatSet {
 
   public:
     friend struct CompatSet;
+    friend class CephCompatSet;
     friend ostream& operator<<(ostream& out, const CompatSet::FeatureSet& fs);
     friend ostream& operator<<(ostream& out, const CompatSet& compat);
     FeatureSet() : mask(1), names() {}
