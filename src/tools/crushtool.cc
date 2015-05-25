@@ -127,6 +127,7 @@ void usage()
   cout << "   --decompile|-d map    decompile a crush map to source\n";
   cout << "   [--outfn|-o outfile]\n";
   cout << "                         specify output for for (de)compilation\n";
+  cout << "   --check-names         check if any item is referencing an unknown name/type\n";
   cout << "   --compile|-c map.txt  compile a map from source\n";
   cout << "   --enable-unsafe-tunables compile with unsafe tunables\n";
   cout << "   --build --num_osds N layer1 ...\n";
@@ -226,6 +227,7 @@ int main(int argc, const char **argv)
   std::string infn, srcfn, outfn, add_name, remove_name, reweight_name;
   bool compile = false;
   bool decompile = false;
+  bool check_names = false;
   bool test = false;
   bool display = false;
   bool tree = false;
@@ -311,6 +313,8 @@ int main(int argc, const char **argv)
     } else if (ceph_argparse_witharg(args, i, &val, "-c", "--compile", (char*)NULL)) {
       srcfn = val;
       compile = true;
+    } else if (ceph_argparse_flag(args, i, "--check-names", (char*)NULL)) {
+      check_names = true;
     } else if (ceph_argparse_flag(args, i, "-t", "--test", (char*)NULL)) {
       test = true;
     } else if (ceph_argparse_witharg(args, i, &full_location, err, "--show-location", (char*)NULL)) {
@@ -505,7 +509,7 @@ int main(int argc, const char **argv)
     cerr << "cannot specify more than one of compile, decompile, and build" << std::endl;
     exit(EXIT_FAILURE);
   }
-  if (!compile && !decompile && !build && !test && !reweight && !adjust && !tree &&
+  if (!check_names && !compile && !decompile && !build && !test && !reweight && !adjust && !tree &&
       add_item < 0 && full_location < 0 &&
       remove_name.empty() && reweight_name.empty()) {
     cerr << "no action specified; -h for help" << std::endl;
@@ -821,6 +825,10 @@ int main(int argc, const char **argv)
     } else {
       cc.decompile(cout);
     }
+  }
+
+  if (check_names) {
+    tester.check_name_maps();
   }
 
   if (test) {

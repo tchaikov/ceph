@@ -21,6 +21,7 @@
      --decompile|-d map    decompile a crush map to source
      [--outfn|-o outfile]
                            specify output for for (de)compilation
+     --check-names         check if any item is referencing an unknown name/type
      --compile|-c map.txt  compile a map from source
      --enable-unsafe-tunables compile with unsafe tunables
      --build --num_osds N layer1 ...

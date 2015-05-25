@@ -3,6 +3,7 @@
 
 #include "include/stringify.h"
 #include "CrushTester.h"
+#include "CrushTreeDumper.h"
 
 #include <algorithm>
 #include <stdlib.h>
@@ -380,6 +381,52 @@ int CrushTester::test_with_crushtool(const char *crushtool_cmd, int timeout)
     return -EINVAL;
   }
 
+  return 0;
+}
+
+namespace {
+  class BadCrushMap : public std::runtime_error {
+  public:
+    int item;
+    BadCrushMap(const char* msg, int id)
+      : std::runtime_error(msg), item(id) {}
+  };
+  // throws if any node in the crush fail to print
+  class CrushWalker : public CrushTreeDumper::Dumper<void> {
+    typedef void DumbFormatter;
+    typedef CrushTreeDumper::Dumper<DumbFormatter> Parent;
+  public:
+    CrushWalker(const CrushWrapper *crush)
+      : Parent(crush) {}
+    void dump_item(const CrushTreeDumper::Item &qi, DumbFormatter *) {
+      int type = -1;
+      if (qi.is_bucket()) {
+	if (!crush->get_item_name(qi.id)) {
+	  throw BadCrushMap("unknown item name", qi.id);
+	}
+	type = crush->get_bucket_type(qi.id);
+      } else {
+	type = 0;
+      }
+      if (!crush->get_type_name(type)) {
+	throw BadCrushMap("unknown type name", qi.id);
+      }
+    }
+  };
+}
+
+bool CrushTester::check_name_maps() const
+{
+  CrushWalker crush_walker(&crush);
+  try {
+    // walk through the crush
+    crush_walker.dump(NULL);
+    // and see if the maps understand OSDs, whose id >= 0
+    crush_walker.dump_item(CrushTreeDumper::Item(0, 0, 0), NULL);
+  } catch (const BadCrushMap& e) {
+    err << e.what() << " of item#" << e.item << std::endl;
+    return -EINVAL;
+  }
   return 0;
 }
 
