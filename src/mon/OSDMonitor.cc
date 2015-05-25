@@ -4840,6 +4840,11 @@ bool OSDMonitor::prepare_command_impl(MMonCommand *m,
     dout(10) << " testing map" << dendl;
     stringstream ess;
     CrushTester tester(crush, ess);
+    if (!tester.validate_name_maps()) {
+      err = -EINVAL;
+      ss << ess.str();
+      goto reply;
+    }
     // XXX: Use mon_lease as a timeout value for crushtool.
     // If the crushtool consistently takes longer than 'mon_lease' seconds,
     // then we would consistently trigger an election before the command
