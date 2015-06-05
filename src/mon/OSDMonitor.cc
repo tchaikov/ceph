@@ -16,6 +16,7 @@
  *
  */
 
+#include <algorithm>
 #include <sstream>
 #include <boost/assign.hpp>
 
@@ -1832,6 +1833,20 @@ bool OSDMonitor::preprocess_boot(MonOpRequestRef op)
             << m->get_orig_source_inst()
             << " doesn't announce support -- ignore" << dendl;
     goto ignore;
+  }
+
+  if (any_of(osdmap.get_pools().begin(),
+	     osdmap.get_pools().end(),
+	     [](const std::pair<int64_t,pg_pool_t>& pool)
+	     { return pool.second.use_gmt_hitset; })) {
+    assert(osdmap.get_num_up_osds() == 0 ||
+	   osdmap.get_up_osd_features() & CEPH_FEATURE_OSD_HITSET_GMT);
+    if (!(m->osd_features & CEPH_FEATURE_OSD_HITSET_GMT)) {
+      dout(0) << __func__ << " conf requires 'osd hitset gmt' but osd at "
+	      << m->get_orig_source_inst()
+	      << " doesn't announce support -- ignore" << dendl;
+      goto ignore;
+    }
   }
 
   // already booted?
@@ -4452,7 +4467,9 @@ int OSDMonitor::prepare_new_pool(string& name, uint64_t auid,
     pi->set_flag(pg_pool_t::FLAG_NOPGCHANGE);
   if (g_conf->osd_pool_default_flag_nosizechange)
     pi->set_flag(pg_pool_t::FLAG_NOSIZECHANGE);
-
+  if (g_conf->osd_pool_use_gmt_hitset &&
+      (osdmap.get_up_osd_features() & CEPH_FEATURE_OSD_HITSET_GMT))
+    pi->use_gmt_hitset = true;
   pi->size = size;
   pi->min_size = min_size;
   pi->crush_ruleset = crush_ruleset;
