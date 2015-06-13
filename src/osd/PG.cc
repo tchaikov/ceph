@@ -4455,6 +4455,8 @@ void PG::share_pg_info()
     if (peer_info.count(peer)) {
       peer_info[peer].last_epoch_started = info.last_epoch_started;
       peer_info[peer].history.merge(info.history);
+      if (!is_backfill_targets(peer))
+	peer_info[peer].stats = info.stats;
     }
     MOSDPGInfo *m = new MOSDPGInfo(get_osdmap()->get_epoch());
     m->pg_list.push_back(
@@ -4500,6 +4502,8 @@ void PG::share_pg_log()
       pmissing.add_next_event(*i);
     }
     pinfo.last_update = m->log.head;
+    if (!is_backfill_targets(peer))
+      pinfo.stats = info.stats;
 
     osd->send_message_osd_cluster(peer.osd, m, get_osdmap()->get_epoch());
   }
