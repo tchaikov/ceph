@@ -218,6 +218,33 @@ function TEST_crush_reject_empty() {
         ./ceph osd setcrushmap -i $empty_map.map || return 1
 }
 
+function TEST_crush_repair_faulty_crushmap() {
+    local dir=$1
+    local mon=a
+    run_mon $dir $mon || return 1
+    # should have at least one OSD
+    run_osd $dir 0 || return 1
+
+    local empty_map=$dir/empty_map
+    :> $empty_map.txt
+    ./crushtool -c $empty_map.txt -o $empty_map.map || return 1
+
+    local crushtool_path_old=`ceph-conf --show-config-value crushtool`
+    ceph tell mon.* injectargs --crushtool "true"
+
+    ceph osd setcrushmap -i $empty_map.map || return 1
+    # monitor is alive with a faulty crushmap, but it can hardly survive
+    # a "ceph osd tree --format=json"
+    ! kill_daemons $dir 0 mon.$mon 1 || return 1
+    # bring it down, the "ceph" commands will try to hunt for other monitor in
+    # vain, after mon.a is down
+    kill_daemons $dir KILL mon.$mon || return 1
+    ceph-monstore-update-crush.sh --mon-store $dir/$mon
+    # run_mon tries to create a pool. so if we restored the crush map,
+    # run_mon should be happy
+    run_mon $dir $mon || return 1
+}
+
 main osd-crush "$@"
 
 # Local Variables:
