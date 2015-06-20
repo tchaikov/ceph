@@ -143,11 +143,18 @@ void Paxos::collect(version_t oldpn)
   peer_last_committed.clear();
 
   // look for uncommitted value
+  dout(10) << "====  " << last_committed << dendl;  
+  dout(10) << "====  " << get_name() << dendl;
+  dout(10) << "====  " << get_store()->get(get_name(), "pending_v") << dendl;
+  dout(10) << "====  " << get_store()->get(get_name(), "pending_pn") << dendl;
+  
   if (get_store()->exists(get_name(), last_committed+1)) {
     version_t v = get_store()->get(get_name(), "pending_v");
     version_t pn = get_store()->get(get_name(), "pending_pn");
     if (v && pn && v == last_committed + 1) {
       uncommitted_pn = pn;
+      dout(10) << "NOWARNING: no pending_pn on disk, using previous accepted_pn "
+	       << " and crossing our fingers" << dendl;
     } else {
       dout(10) << "WARNING: no pending_pn on disk, using previous accepted_pn " << accepted_pn
 	       << " and crossing our fingers" << dendl;
