@@ -344,8 +344,8 @@ int rewrite_crush(const char* progname,
     return r;
   }
 
-  // store the transaction into store as a proposal, the lead monitor will load
-  // and apply it
+  // store the transaction into store as a proposal, the lead will share it
+  // with peons, then they will accept and apply it.
   const string prefix("paxos");
   version_t pending_ver = store.get(prefix, "last_committed") + 1;
   std::cout << "pending_ver = " << pending_ver << std::endl;
@@ -356,6 +356,8 @@ int rewrite_crush(const char* progname,
   t->put(prefix, "pending_v", pending_ver);
   // a large enough yet unique proposal number will do the trick
   version_t pending_pn = (store.get(prefix, "accepted_pn") / 100 + 1) * 100 + 99;
+  std::cout << "accepted_pn = " << store.get(prefix, "accepted_pn") << std::endl;
+  std::cout << "pending_pn = " << pending_pn << std::endl;
   t->put(prefix, "pending_pn", pending_pn);
   store.apply_transaction(t);
   return 0;
