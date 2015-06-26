@@ -979,41 +979,26 @@ TEST(LibCephFS, PreadvPwritev) {
   int fd = ceph_open(cmount, testf, O_CREAT|O_RDWR, 0666);
   ASSERT_GT(fd, 0);
 
-  std::string str0("hello ");
-  std::string str1("world\n");
-  struct iovec iovin[2];
-  struct iovec iovout[2];
-  ssize_t nwritten, nread;
-  char *out0, *out1, *in0, *in1; 
+  const char out0[] = "hello ";
+  const char out1[] = "world\n";
+  struct iovec iov_out[2] = {
+    {out0, sizeof(out0)};
+    {out1, sizeof(out1)};
+  };
+  char in0[sizeof(str0)];
+  char in1[sizeof(str1)];
+  struct iovec iov_in[2] = {
+    {in0, sizeof(in0)};
+    {in1, sizeof(in1)};
+  };
+  ssize_t nwritten = iovout[0].iov_len + iovout[1].iov_len;
+  ssize_t nread = iovin[0].iov_len + iovin[1].iov_len;
 
-  out0 = new char[str0.size()];
-  out1 = new char[str1.size()];
-  in0 = new char[str0.size()];
-  in1 = new char[str1.size()];
-
-  iovout[0].iov_base = out0;
-  strcpy((char*)iovout[0].iov_base, str0.c_str());
-  iovout[0].iov_len = str0.size();
-  iovout[1].iov_base = out1;
-  strcpy((char*)iovout[1].iov_base, str1.c_str());
-  iovout[1].iov_len = str1.size();
-
-  iovin[0].iov_base = in0;
-  iovin[0].iov_len = str0.size();
-  iovin[1].iov_base = in1;
-  iovin[1].iov_len = str1.size();
-  nwritten = iovout[0].iov_len + iovout[1].iov_len; 
-  nread = iovin[0].iov_len + iovin[1].iov_len; 
-
-  ASSERT_EQ(ceph_pwritev(cmount, fd, iovout, 2, 0), nwritten);
-  ASSERT_EQ(ceph_preadv(cmount, fd, iovin, 2, 0), nread);
+  ASSERT_EQ(nwritten, ceph_pwritev(cmount, fd, iovout, 2, 0));
+  ASSERT_EQ(nread, ceph_preadv(cmount, fd, iovin, 2, 0));
   ASSERT_EQ(0, strncmp((const char*)iovin[0].iov_base, (const char*)iovout[0].iov_base, iovout[0].iov_len));
   ASSERT_EQ(0, strncmp((const char*)iovin[1].iov_base, (const char*)iovout[1].iov_base, iovout[1].iov_len));
 
-  delete []out0;
-  delete []out1;
-  delete []in0;
-  delete []in1;
   ceph_close(cmount, fd);
   ceph_shutdown(cmount);
 }
