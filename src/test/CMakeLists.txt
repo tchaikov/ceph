@@ -96,7 +96,7 @@ target_link_libraries(test_keys mon global ${CMAKE_DL_LIBS} ${TCMALLOC_LIBS})
 set(dencoder_srcs
   encoding/ceph_dencoder.cc
   ${CMAKE_SOURCE_DIR}/src/krbd.cc
-  ${CMAKE_SOURCE_DIR}/src/common/secret.c
+  ${CMAKE_SOURCE_DIR}/src/common/secret.cc
   ${CMAKE_SOURCE_DIR}/src/common/TextTable.cc
   )
 if(${WITH_RADOSGW})
@@ -213,7 +213,7 @@ if (${WITH_RBD})
     bench/detailed_stat_collector.cc
     bench/bencher.cc
     ${CMAKE_SOURCE_DIR}/src/common/TextTable.cc
-    ${CMAKE_SOURCE_DIR}/src/common/secret.c
+    ${CMAKE_SOURCE_DIR}/src/common/secret.cc
   )
   add_executable(smalliobenchrbd
     ${smalliobenchrbd_srcs}
@@ -1132,7 +1132,7 @@ add_executable(test_librbd
   librbd/test_main.cc
   $<TARGET_OBJECTS:heap_profiler_objs>
   ${CMAKE_SOURCE_DIR}/src/common/TextTable.cc
-  ${CMAKE_SOURCE_DIR}/src/common/secret.c
+  ${CMAKE_SOURCE_DIR}/src/common/secret.cc
   )
 set_target_properties(test_librbd PROPERTIES COMPILE_FLAGS
   ${UNITTEST_CXX_FLAGS})
@@ -1155,7 +1155,7 @@ add_executable(test_librbd_fsx
   librbd/fsx.cc
   $<TARGET_OBJECTS:heap_profiler_objs>
   ${CMAKE_SOURCE_DIR}/src/common/TextTable.cc
-  ${CMAKE_SOURCE_DIR}/src/common/secret.c
+  ${CMAKE_SOURCE_DIR}/src/common/secret.cc
   )
 target_link_libraries(test_librbd_fsx
   librbd
@@ -1175,7 +1175,7 @@ add_executable(test_cls_rbd
   cls_rbd/test_cls_rbd.cc
   $<TARGET_OBJECTS:heap_profiler_objs>
   ${CMAKE_SOURCE_DIR}/src/common/TextTable.cc
-  ${CMAKE_SOURCE_DIR}/src/common/secret.c
+  ${CMAKE_SOURCE_DIR}/src/common/secret.cc
   )
 set_target_properties(test_cls_rbd PROPERTIES COMPILE_FLAGS
   ${UNITTEST_CXX_FLAGS})

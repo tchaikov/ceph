@@ -34,7 +34,7 @@ libcommon_internal_la_SOURCES = \
 	common/errno.cc \
 	common/RefCountedObj.cc \
 	common/common_init.cc \
-	common/pipe.c \
+	common/pipe.cc \
 	common/ceph_argparse.cc \
 	common/ceph_context.cc \
 	common/types.cc \

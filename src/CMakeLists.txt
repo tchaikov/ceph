@@ -266,7 +266,7 @@ set(libcommon_files
   osd/osd_types.cc
   common/blkdev.cc
   common/common_init.cc
-  common/pipe.c
+  common/pipe.cc
   common/ceph_argparse.cc
   common/ceph_context.cc
   common/buffer.cc
@@ -309,7 +309,7 @@ set(mon_common_files
 add_library(mon_common_objs OBJECT ${mon_common_files})
 set(common_mountcephfs_files
   common/armor.c
-  common/safe_io.c
+  common/safe_io.cc
   common/module.c
   common/addr_parsing.c)
 add_library(common_mountcephfs_objs OBJECT
@@ -710,7 +710,7 @@ install(PROGRAMS
   DESTINATION sbin)
 
 set(parse_secret_files
-  common/secret.c)
+  common/secret.cc)
 add_library(parse_secret_objs OBJECT ${parse_secret_files})
 
 if(WITH_LIBCEPHFS)
@@ -738,7 +738,7 @@ if(WITH_LIBCEPHFS)
   target_link_libraries(ceph-syn client global)
 
   set(mount_ceph_srcs
-    mount/mount.ceph.c)
+    mount/mount.ceph.cc)
   add_executable(mount.ceph ${mount_ceph_srcs}
     $<TARGET_OBJECTS:parse_secret_objs>
     $<TARGET_OBJECTS:common_mountcephfs_objs>)
