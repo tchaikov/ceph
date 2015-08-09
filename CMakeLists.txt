@@ -239,6 +239,7 @@ endif(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 # find out which platform we are building on
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 set(OperatingSystem "Mac OS X")  
+add_definitions(-DDARWIN)
 endif(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 
 add_subdirectory(src)
