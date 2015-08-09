@@ -216,8 +216,6 @@ configure_file(
 )
 include_directories(${PROJECT_BINARY_DIR}/include)
 
-add_definitions(-D__linux__)
-
 if(${ENABLE_SHARED})
   set(Boost_USE_STATIC_LIBS   OFF)
 else(${ENABLE_SHARED})
@@ -234,6 +232,7 @@ find_package(Threads REQUIRED)
 if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
   set(LINUX ON)
   set(UNIX ON)
+  add_definitions(-D__linux__)
   FIND_PACKAGE(Threads)
 endif(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 
