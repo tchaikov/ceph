@@ -57,7 +57,7 @@ if(NOT rc)
 endif(NOT rc)
 MESSAGE("HAVE_BETTER_YASM_ELF64=" ${HAVE_BETTER_YASM_ELF64})
 
-set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -ftemplate-depth-1024 -Wno-invalid-offsetof -Wnon-virtual-dtor -Wno-invalid-offsetof -Wstrict-null-sentinel -Woverloaded-virtual")
+set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -ftemplate-depth-1024 -Wno-invalid-offsetof -Wnon-virtual-dtor -Wno-invalid-offsetof -Woverloaded-virtual")
 
 # require c++11
 include(CheckCXXCompilerFlag)
