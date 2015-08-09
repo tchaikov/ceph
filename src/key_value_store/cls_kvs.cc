@@ -9,6 +9,7 @@
 #include <errno.h>
 #include "key_value_store/kvs_arg_types.h"
 #include "include/types.h"
+#include "include/compat.h"
 #include <iostream>
 #include <climits>
 

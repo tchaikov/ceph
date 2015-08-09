@@ -51,6 +51,7 @@
 
 #if defined(__FreeBSD__) || defined(__APPLE__)
 #define lseek64(fd, offset, whence) lseek(fd, offset, whence)
+#define EKEYREJECTED 129
 #endif
 
 #endif /* !CEPH_COMPAT_H */
