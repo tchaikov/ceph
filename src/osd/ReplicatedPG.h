@@ -921,6 +921,7 @@ protected:
   boost::scoped_ptr<TierAgentState> agent_state;
 
   friend struct C_AgentFlushStartStop;
+  friend struct C_AgentEvictStartStop;
   friend struct C_HitSetFlushing;
 
   void agent_setup();       ///< initialize agent state
@@ -1581,6 +1582,11 @@ public:
     PGBackend::PGTransaction *t,
     const string &key,
     bufferlist &val);
+  void setattrs_maybe_cache(
+    ObjectContextRef obc,
+    OpContext *op,
+    PGBackend::PGTransaction *t,
+    map<string, bufferlist> &attrs);
   void rmattr_maybe_cache(
     ObjectContextRef obc,
     OpContext *op,

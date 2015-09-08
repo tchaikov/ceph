@@ -3243,13 +3243,15 @@ ReplicatedPG::RepGather *ReplicatedPG::trim_object(const hobject_t &coid)
       ctx->snapset_obc->obs.oi.version;
     ctx->snapset_obc->obs.oi.version = ctx->at_version;
 
+    map <string, bufferlist> attrs;
     bl.clear();
     ::encode(snapset, bl);
-    setattr_maybe_cache(ctx->snapset_obc, ctx, t, SS_ATTR, bl);
+    attrs[SS_ATTR].claim(bl);
 
     bl.clear();
     ::encode(ctx->snapset_obc->obs.oi, bl);
-    setattr_maybe_cache(ctx->snapset_obc, ctx, t, OI_ATTR, bl);
+    attrs[OI_ATTR].claim(bl);
+    setattrs_maybe_cache(ctx->snapset_obc, ctx, t, attrs);
 
     if (pool.info.require_rollback()) {
       set<string> changing;
@@ -4023,7 +4025,7 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 
         op.extent.length = total_read;
 
-        osd_op.outdata.claim_append(bl);
+        ::encode(m, osd_op.outdata); // re-encode since it might be modified
         ::encode_destructively(data_bl, osd_op.outdata);
 
 	dout(10) << " sparse_read got " << total_read << " bytes from object " << soid << dendl;
@@ -6202,11 +6204,13 @@ void ReplicatedPG::finish_ctx(OpContext *ctx, int log_op_type, bool maintain_ssc
       ctx->snapset_obc->obs.oi.mtime = ctx->mtime;
       ctx->snapset_obc->obs.oi.local_mtime = now;
 
+      map<string, bufferlist> attrs;
       bufferlist bv(sizeof(ctx->new_obs.oi));
       ::encode(ctx->snapset_obc->obs.oi, bv);
       ctx->op_t->touch(snapoid);
-      setattr_maybe_cache(ctx->snapset_obc, ctx, ctx->op_t, OI_ATTR, bv);
-      setattr_maybe_cache(ctx->snapset_obc, ctx, ctx->op_t, SS_ATTR, bss);
+      attrs[OI_ATTR].claim(bv);
+      attrs[SS_ATTR].claim(bss);
+      setattrs_maybe_cache(ctx->snapset_obc, ctx, ctx->op_t, attrs);
       if (pool.info.require_rollback()) {
 	map<string, boost::optional<bufferlist> > to_set;
 	to_set[SS_ATTR];
@@ -6246,17 +6250,19 @@ void ReplicatedPG::finish_ctx(OpContext *ctx, int log_op_type, bool maintain_ssc
       dout(10) << " mtime unchanged at " << ctx->new_obs.oi.mtime << dendl;
     }
 
+    map <string, bufferlist> attrs;
     bufferlist bv(sizeof(ctx->new_obs.oi));
     ::encode(ctx->new_obs.oi, bv);
-    setattr_maybe_cache(ctx->obc, ctx, ctx->op_t, OI_ATTR, bv);
+    attrs[OI_ATTR].claim(bv);
 
     if (soid.snap == CEPH_NOSNAP) {
       dout(10) << " final snapset " << ctx->new_snapset
 	       << " in " << soid << dendl;
-      setattr_maybe_cache(ctx->obc, ctx, ctx->op_t, SS_ATTR, bss);
+      attrs[SS_ATTR].claim(bss);
     } else {
       dout(10) << " no snapset (this is a clone)" << dendl;
     }
+    setattrs_maybe_cache(ctx->obc, ctx, ctx->op_t, attrs);
 
     if (pool.info.require_rollback()) {
       set<string> changing;
@@ -10965,8 +10971,10 @@ void ReplicatedPG::hit_set_persist()
   ::encode(ctx->new_obs.oi, boi);
 
   ctx->op_t->append(oid, 0, bl.length(), bl, 0);
-  setattr_maybe_cache(ctx->obc, ctx, ctx->op_t, OI_ATTR, boi);
-  setattr_maybe_cache(ctx->obc, ctx, ctx->op_t, SS_ATTR, bss);
+  map <string, bufferlist> attrs;
+  attrs[OI_ATTR].claim(boi);
+  attrs[SS_ATTR].claim(bss);
+  setattrs_maybe_cache(ctx->obc, ctx, ctx->op_t, attrs);
   ctx->log.push_back(
     pg_log_entry_t(
       pg_log_entry_t::MODIFY,
@@ -11382,6 +11390,16 @@ bool ReplicatedPG::agent_maybe_flush(ObjectContextRef& obc)
   return true;
 }
 
+struct C_AgentEvictStartStop : public Context {
+  ReplicatedPGRef pg;
+  C_AgentEvictStartStop(ReplicatedPG *p) : pg(p) {
+    pg->osd->agent_start_evict_op();
+  }
+  void finish(int r) {
+    pg->osd->agent_finish_evict_op();
+  }
+};
+
 bool ReplicatedPG::agent_maybe_evict(ObjectContextRef& obc)
 {
   const hobject_t& soid = obc->obs.oi.soid;
@@ -11470,6 +11488,8 @@ bool ReplicatedPG::agent_maybe_evict(ObjectContextRef& obc)
   dout(10) << __func__ << " evicting " << obc->obs.oi << dendl;
   RepGather *repop = simple_repop_create(obc);
   OpContext *ctx = repop->ctx;
+  Context *on_evict = new C_AgentEvictStartStop(this);
+  ctx->on_finish = on_evict;
   ctx->lock_to_release = OpContext::W_LOCK;
   ctx->at_version = get_next_version();
   assert(ctx->new_obs.exists);
@@ -12322,6 +12342,21 @@ void ReplicatedPG::setattr_maybe_cache(
     op->pending_attrs[obc][key] = val;
   }
   t->setattr(obc->obs.oi.soid, key, val);
+}
+
+void ReplicatedPG::setattrs_maybe_cache(
+  ObjectContextRef obc,
+  OpContext *op,
+  PGBackend::PGTransaction *t,
+  map<string, bufferlist> &attrs)
+{
+  if (pool.info.require_rollback()) {
+    for (map<string, bufferlist>::iterator it = attrs.begin();
+      it != attrs.end(); it++ ) {
+      op->pending_attrs[obc][it->first] = it->second;
+    }
+  }
+  t->setattrs(obc->obs.oi.soid, attrs);
 }
 
 void ReplicatedPG::rmattr_maybe_cache(
