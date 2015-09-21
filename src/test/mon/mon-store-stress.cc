@@ -27,11 +27,14 @@ typedef boost::mt11213b rngen_t;
 
 #define dout_subsys ceph_subsys_
 
+static void noop(MonitorDBStore::Transaction *) {}
+
 void apply_tx(MonitorDBStore *db, MonitorDBStore::Transaction *tx,
               long long *num_ops, double timeout = 0.0)
 {
+  MonitorDBStore::TransactionRef txn(tx, noop);
   utime_t s = ceph_clock_now(NULL);
-  db->apply_transaction(*tx);
+  db->apply_transaction(txn);
   utime_t e = ceph_clock_now(NULL);
   (*num_ops)++;
   std::cout << "[" << *num_ops << "] "
@@ -354,7 +357,7 @@ int main(int argc, const char *argv[])
       }
       std::cout << "write: prefix = " << prefix << ", key = " << v
                 << ", size = " << s << std::endl;
-      paxos_tx.append(t);
+      paxos_tx.append(MonitorDBStore::TransactionRef(&t, noop));
 //      apply_tx(&db, &t, &num_ops, write_timeout);
       apply_tx(&db, &paxos_tx, &num_ops, write_timeout);
       writes_since_compact ++;
