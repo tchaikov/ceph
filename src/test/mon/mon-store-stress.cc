@@ -359,7 +359,6 @@ int main(int argc, const char *argv[])
       dout(15) << "write: prefix = " << prefix << ", key = " << v
                 << ", size = " << s << dendl;
       paxos_tx.append(MonitorDBStore::TransactionRef(&t, noop));
-//      apply_tx(&db, &t, &num_ops, write_timeout);
       apply_tx(&db, &paxos_tx, &num_ops, write_timeout);
       writes_since_compact ++;
 
