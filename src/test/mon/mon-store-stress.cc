@@ -315,6 +315,7 @@ int main(int argc, const char *argv[])
                 << ", key = " << rk.second << std::endl;
       iter->next();
     }
+    db.close();
     return 0;
   }
 
@@ -423,11 +424,12 @@ int main(int argc, const char *argv[])
       writes_since_compact = 0;
     }
 
-    if (stop_at > 0 && stop_at >= num_ops) {
+    if (stop_at > 0 && num_ops >= stop_at) {
       std::cout << "ran for " << num_ops << " ops; stop." << std::endl;
       break;
     }
   }
 
+  db.close();
   return 0;
 }
