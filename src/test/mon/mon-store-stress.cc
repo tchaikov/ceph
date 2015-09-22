@@ -356,8 +356,8 @@ int main(int argc, const char *argv[])
         prefix_fc[paxos_str] = paxos_v;
         paxos_tx.put(paxos_str, fc_str, paxos_v);
       }
-      std::cout << "write: prefix = " << prefix << ", key = " << v
-                << ", size = " << s << std::endl;
+      dout(15) << "write: prefix = " << prefix << ", key = " << v
+                << ", size = " << s << dendl;
       paxos_tx.append(MonitorDBStore::TransactionRef(&t, noop));
 //      apply_tx(&db, &t, &num_ops, write_timeout);
       apply_tx(&db, &paxos_tx, &num_ops, write_timeout);
@@ -370,9 +370,9 @@ int main(int argc, const char *argv[])
       utime_t s = ceph_clock_now(NULL);
 
       if (percent_read_range > 0 && read_p > (100-percent_read_range)) {
-        std::cout << "rread: prefix = " << prefix
+        dout(15) << "rread: prefix = " << prefix
           << ", fc = " << prefix_fc[prefix]
-          << ", lc = " << prefix_lc[prefix] << std::endl;
+          << ", lc = " << prefix_lc[prefix] << dendl;
         for (version_t i = prefix_fc[prefix]; i < prefix_lc[prefix]; ++i) {
           bufferlist bl;
           db.get(prefix, i, bl);
@@ -380,7 +380,7 @@ int main(int argc, const char *argv[])
       } else if (percent_read_single > 0 && read_p > (100-percent_read_single)) {
         boost::uniform_int<> sread_rng(prefix_fc[prefix],prefix_lc[prefix]);
         version_t v = sread_rng(gen);
-        std::cout << "sread: prefix = " << prefix << ", v = " << v << std::endl;
+        dout(15) << "sread: prefix = " << prefix << ", v = " << v << dendl;
         bufferlist bl;
         db.get(prefix, v, bl);
       } else if (percent_read_iter > 0 && read_p > (100-percent_read_iter)) {
@@ -390,7 +390,7 @@ int main(int argc, const char *argv[])
           total_keys += prefix_lc[*p] - prefix_fc[*p];
         }
         total_keys += prefix_lc[paxos_str] - prefix_fc[paxos_str];
-        std::cout << "fiter: total_keys: " << total_keys << std::endl;
+        dout(15) << "fiter: total_keys: " << total_keys << dendl;
 
         pair<string,string> start;
         set<string> sync_prefixes(prefixes.begin(), prefixes.end());
@@ -403,10 +403,10 @@ int main(int argc, const char *argv[])
           db.get(k.first, k.second, bl);
         }
       }
-
+      num_ops++;
       utime_t e = ceph_clock_now(NULL);
-      std::cout << "[" << (++num_ops) << "] "
-                << "rtime: " << (e - s) << " sec" << std::endl;
+      dout(10) << "[" << num_ops << "] "
+                << "rtime: " << (e - s) << " sec" << dendl;
     }
 
     if (ceph_clock_now(NULL) - last_trim > trim_period) {
