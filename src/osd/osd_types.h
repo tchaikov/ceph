@@ -2159,8 +2159,8 @@ struct pg_interval_t {
     int new_up_primary,                         ///< [in] up primary of osdmap
     const vector<int> &old_up,                  ///< [in] up as of lastmap
     const vector<int> &new_up,                  ///< [in] up as of osdmap
-    ceph::shared_ptr<const OSDMap> osdmap,  ///< [in] current map
-    ceph::shared_ptr<const OSDMap> lastmap, ///< [in] last map
+    const OSDMap* osdmap,  ///< [in] current map
+    const OSDMap* lastmap, ///< [in] last map
     pg_t pgid                                   ///< [in] pgid for pg
     );
 
@@ -2179,8 +2179,8 @@ struct pg_interval_t {
     const vector<int> &new_up,                  ///< [in] up as of osdmap
     epoch_t same_interval_since,                ///< [in] as of osdmap
     epoch_t last_epoch_clean,                   ///< [in] current
-    ceph::shared_ptr<const OSDMap> osdmap,  ///< [in] current map
-    ceph::shared_ptr<const OSDMap> lastmap, ///< [in] last map
+    const OSDMap* osdmap,  ///< [in] current map
+    const OSDMap* lastmap, ///< [in] last map
     pg_t pgid,                                  ///< [in] pgid for pg
     IsPGRecoverablePredicate *could_have_gone_active, /// [in] predicate whether the pg can be active
     map<epoch_t, pg_interval_t> *past_intervals,///< [out] intervals

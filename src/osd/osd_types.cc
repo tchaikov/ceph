@@ -2990,8 +2990,8 @@ bool pg_interval_t::is_new_interval(
   int new_up_primary,
   const vector<int> &old_up,
   const vector<int> &new_up,
-  OSDMapRef osdmap,
-  OSDMapRef lastmap,
+  const OSDMap* osdmap,
+  const OSDMap* lastmap,
   pg_t pgid) {
   return !(lastmap->get_pools().count(pgid.pool())) ||
     is_new_interval(old_acting_primary,
@@ -3024,8 +3024,8 @@ bool pg_interval_t::check_new_interval(
   const vector<int> &new_up,
   epoch_t same_interval_since,
   epoch_t last_epoch_clean,
-  OSDMapRef osdmap,
-  OSDMapRef lastmap,
+  const OSDMap* osdmap,
+  const OSDMap* lastmap,
   pg_t pgid,
   IsPGRecoverablePredicate *could_have_gone_active,
   map<epoch_t, pg_interval_t> *past_intervals,
