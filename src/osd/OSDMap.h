@@ -867,7 +867,18 @@ public:
 WRITE_CLASS_ENCODER_FEATURES(OSDMap)
 WRITE_CLASS_ENCODER_FEATURES(OSDMap::Incremental)
 
-typedef ceph::shared_ptr<const OSDMap> OSDMapRef;
+struct OSDMapRef: public ceph::shared_ptr<const OSDMap> {
+  typedef ceph::shared_ptr<const OSDMap> Parent;
+  OSDMapRef() = default;
+  OSDMapRef(const OSDMapRef& r);
+  OSDMapRef(const Parent& r);
+  OSDMapRef& operator=(const OSDMapRef& r);
+  ~OSDMapRef();
+  ostream& print(ostream& os);
+private:
+  OSDMapRef(const OSDMap *o);
+  void print(const Parent& p);
+};
 
 inline ostream& operator<<(ostream& out, const OSDMap& m) {
   m.print_oneline_summary(out);

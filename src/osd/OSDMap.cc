@@ -19,6 +19,7 @@
 
 #include "common/config.h"
 #include "common/Formatter.h"
+#include "common/BackTrace.h"
 #include "common/TextTable.h"
 #include "include/ceph_features.h"
 #include "include/str_map.h"
@@ -2858,4 +2859,67 @@ int OSDMap::build_simple_crush_rulesets(CephContext *cct,
   // do not add an erasure rule by default or else we will implicitly
   // require the crush_v2 feature of clients
   return 0;
+}
+
+OSDMapRef::OSDMapRef(const OSDMap* o)
+  : OSDMapRef::Parent(o)
+{
+  BackTrace bt{1};
+  bt.print(cout);
+  cout << "osdmap: ^";
+  print(cout);
+}
+
+OSDMapRef::OSDMapRef(const OSDMapRef& r)
+  : OSDMapRef::Parent(r)
+{
+  BackTrace bt{1};
+  bt.print(cout);
+  cout << "osdmap: +";
+  print(cout) << std::endl;
+}
+
+OSDMapRef& OSDMapRef::operator=(const OSDMapRef& r);
+{
+  BackTrace bt{1};
+  bt.print(cout);
+  cout << "osdmap: =";
+  print(cout) << " => ";
+  r.print() << std::endl;
+}
+
+OSDMapRef& OSDMapRef::operator=(const OSDMapRef::Parent& r);
+{
+  BackTrace bt{1};
+  bt.print(cout);
+  cout << "osdmap: =";
+  print();
+  cout << " => ";
+  r.print() << std::endl;
+}
+
+OSDMapRef::~OSDMapRef()
+{
+  BackTrace bt{1};
+  bt.print(cout);
+  cout << "osdmap: -";
+  print(cout) << std::endl;
+}
+
+void OSDMapRef::print(const OSDMapRef::Parent& o)
+{
+  if (o) {
+    cout << o->get_epoch() << " " << o.use_count();
+  } else {
+    cout << "(NULL)";
+  }
+}
+
+ostream& OSDMapRef::print(ostream& os)
+{
+  if (*this) {
+    os << this->get_epoch() << " " << this.use_count();
+  } else {
+    os << "(NULL)";
+  }
 }
