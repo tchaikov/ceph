@@ -6264,9 +6264,20 @@ struct C_OnMapApply : public Context {
 	       ObjectStore::Transaction *t,
 	       const list<OSDMapRef> &pinned_maps,
 	       epoch_t e)
-    : service(service), t(t), pinned_maps(pinned_maps), e(e) {}
+    : service(service), t(t), pinned_maps(pinned_maps), e(e) {
+    for (list<OSDMapRef>::iterator o = this->pinned_maps.begin();
+	 o != this->pinned_maps.end(); ++o) {
+      std::cout << "C_OnMapApply: e"
+		<< (*o)->get_epoch() << ": " << o->use_count() << std::endl;
+    }
+  }
   void finish(int r) {
     service->clear_map_bl_cache_pins(e);
+    for (list<OSDMapRef>::iterator o = pinned_maps.begin();
+	 o != pinned_maps.end(); ++o) {
+      std::cout << "C_OnMapApply: e"
+		<< (*o)->get_epoch() << ": " << o->use_count() << std::endl;
+    }
   }
 };
 
@@ -6356,6 +6367,8 @@ void OSD::handle_osd_map(MOSDMap *m)
   ObjectStore::Transaction *_t = new ObjectStore::Transaction;
   ObjectStore::Transaction &t = *_t;
 
+
+  service.map_cache.dump_weak_refs();
   // store new maps: queue for disk and put in the osdmap cache
   epoch_t start = MAX(osdmap->get_epoch() + 1, first);
   for (epoch_t e = start; e <= last; e++) {
@@ -6371,7 +6384,12 @@ void OSD::handle_osd_map(MOSDMap *m)
       ghobject_t fulloid = get_osdmap_pobject_name(e);
       t.write(coll_t::meta(), fulloid, 0, bl.length(), bl);
       pin_map_bl(e, bl);
-      pinned_maps.push_back(add_map(o));
+      OSDMapRef oref = add_map(o);
+      dout(10) << __func__ << ": e" << oref->get_epoch()
+	   << ": " << oref.use_count() << dendl;
+      pinned_maps.push_back(oref);
+      dout(10) << __func__ << ": e" << oref->get_epoch()
+	   << ": " << oref.use_count() << dendl;
 
       got_full_map(e);
       continue;
@@ -6428,12 +6446,20 @@ void OSD::handle_osd_map(MOSDMap *m)
       ghobject_t fulloid = get_osdmap_pobject_name(e);
       t.write(coll_t::meta(), fulloid, 0, fbl.length(), fbl);
       pin_map_bl(e, fbl);
-      pinned_maps.push_back(add_map(o));
+
+      OSDMapRef oref = add_map(o);
+      dout(10) << __func__ << ": ie" << oref->get_epoch()
+	   << ": " << oref.use_count() << dendl;
+      pinned_maps.push_back(oref);
+      dout(10) << __func__ << ": ie" << oref->get_epoch()
+	   << ": " << oref.use_count() << dendl;
       continue;
     }
 
     assert(0 == "MOSDMap lied about what maps it had?");
   }
+  dout(10) << "maps added" << dendl;
+  service.map_cache.dump_weak_refs();
 
   // even if this map isn't from a mon, we may have satisfied our subscription
   monc->sub_got("osdmap", last);
@@ -6604,11 +6630,22 @@ void OSD::handle_osd_map(MOSDMap *m)
 
   // superblock and commit
   write_superblock(t);
+  for (list<OSDMapRef>::iterator o = pinned_maps.begin();
+       o != pinned_maps.end(); ++o) {
+    dout(10) << "before q_txn: e"
+	      << (*o)->get_epoch() << ": " << o->use_count() << dendl;
+  }
   store->queue_transaction(
     service.meta_osr.get(),
     _t,
     new C_OnMapApply(&service, _t, pinned_maps, osdmap->get_epoch()),
     0, 0);
+  for (list<OSDMapRef>::iterator o = pinned_maps.begin();
+       o != pinned_maps.end(); ++o) {
+    dout(10) << "after q_txn: e"
+	      << (*o)->get_epoch() << ": " << o->use_count() << dendl;
+  }
+
   service.publish_superblock(superblock);
 
   map_lock.put_write();
