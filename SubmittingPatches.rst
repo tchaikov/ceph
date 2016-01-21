@@ -214,7 +214,7 @@ the convenience of the 'pull request' feature.
 
    For example, prepare your changes
 
-.. code-block:: bash
+   .. code-block:: bash
 
       ...code furiously...
       $ git commit     # git gui is also quite convenient
@@ -231,9 +231,9 @@ the convenience of the 'pull request' feature.
 
    allows you to submit pull requests directly from the command line
 
-.. code-block:: bash
+   .. code-block:: bash
 
-    $ hub pull-request -b ceph:master -h you:mything
+      $ hub pull-request -b ceph:master -h you:mything
 
    Pull requests appear in the review queue at
 
@@ -249,9 +249,9 @@ the convenience of the 'pull request' feature.
    updated your local branch, you can simply force-push to the existing branch
    in your public repository that is referenced by the pull request with
 
-.. code-block:: bash
+   .. code-block:: bash
 
-     $ git push -f origin mything
+      $ git push -f origin mything
 
    and your changes will be visible from the existing pull-request.  You may want
    to ping the reviewer again or comment on the pull request to ensure the updates
@@ -295,9 +295,9 @@ the convenience of the 'pull request' feature.
    a Git checkout of the Ceph source code.  You can then generate patches
    with the 'git format-patch' command.  For example,
 
-.. code-block:: bash
+   .. code-block:: bash
 
-     $ git format-patch HEAD^^ -o mything
+      $ git format-patch HEAD^^ -o mything
 
    will take the last two commits and generate patches in the mything/
    directory.  The commit you specify on the command line is the
@@ -305,13 +305,13 @@ the convenience of the 'pull request' feature.
    not necesarily have to be an ancestor of your current commit.  You
    can do something like
 
-.. code-block:: bash
+   .. code-block:: bash
 
-     $ git checkout -b mything
-     $ ... do lots of stuff ...
-     $ git fetch
-     ...find out that origin/unstable has also moved forward...
-     $ git format-patch origin/unstable -o mything
+      $ git checkout -b mything
+      $ ... do lots of stuff ...
+      $ git fetch
+      ...find out that origin/unstable has also moved forward...
+      $ git format-patch origin/unstable -o mything
 
    and the patches will be against origin/unstable.
 
@@ -339,15 +339,15 @@ the convenience of the 'pull request' feature.
    email client mangling whitespace or otherwise screwing things up.  It
    works like so:
 
-.. code-block:: bash
+   .. code-block:: bash
 
-     $ git send-email --to ceph-devel@vger.kernel.org my.patch
+      $ git send-email --to ceph-devel@vger.kernel.org my.patch
 
    for a single patch, or
 
-.. code-block:: bash
+   .. code-block:: bash
 
-     $ git send-email --to ceph-devel@vger.kernel.org mything
+      $ git send-email --to ceph-devel@vger.kernel.org mything
 
    to send a whole patch series (prepared with, say, git format-patch).
 
@@ -427,8 +427,6 @@ the convenience of the 'pull request' feature.
 
    If you cannot condense your patch set into a smaller set of patches,
    then only post say 15 or so at a time and wait for review and integration.
-
-
 
 5. Style check your changes.
 
