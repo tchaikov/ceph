@@ -220,6 +220,7 @@ the convenience of the 'pull request' feature.
       $ git commit     # git gui is also quite convenient
       $ git push origin mything
 
+
    Then submit a pull request at
 
      https://github.com/ceph/ceph/pulls
