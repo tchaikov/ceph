@@ -212,7 +212,9 @@ the convenience of the 'pull request' feature.
    in your github fork of the ceph repository and then submitting a github
    pull request.
 
-   For example, prepare your changes::
+   For example, prepare your changes
+
+.. code-block:: bash
 
       ...code furiously...
       $ git commit     # git gui is also quite convenient
@@ -226,7 +228,9 @@ the convenience of the 'pull request' feature.
 
      https://github.com/github/hub
 
-   allows you to submit pull requests directly from the command line::
+   allows you to submit pull requests directly from the command line
+
+.. code-block:: bash
 
     $ hub pull-request -b ceph:master -h you:mything
 
@@ -242,7 +246,9 @@ the convenience of the 'pull request' feature.
    that the sequence of changes is "clean" and gets things right the first time.
    The 'git rebase -i' command is very helpful in this process.  Once you have
    updated your local branch, you can simply force-push to the existing branch
-   in your public repository that is referenced by the pull request with::
+   in your public repository that is referenced by the pull request with
+
+.. code-block:: bash
 
      $ git push -f origin mything
 
@@ -286,7 +292,9 @@ the convenience of the 'pull request' feature.
 
    The best way to generate a patch for manual submission is to work from
    a Git checkout of the Ceph source code.  You can then generate patches
-   with the 'git format-patch' command.  For example,::
+   with the 'git format-patch' command.  For example,
+
+.. code-block:: bash
 
      $ git format-patch HEAD^^ -o mything
 
@@ -294,7 +302,9 @@ the convenience of the 'pull request' feature.
    directory.  The commit you specify on the command line is the
    'upstream' commit that you are diffing against.  Note that it does
    not necesarily have to be an ancestor of your current commit.  You
-   can do something like::
+   can do something like
+
+.. code-block:: bash
 
      $ git checkout -b mything
      $ ... do lots of stuff ...
@@ -326,11 +336,15 @@ the convenience of the 'pull request' feature.
    (particularly those prepared with git format patch).  It is careful to
    format the emails correctly so that you don't have to worry about your
    email client mangling whitespace or otherwise screwing things up.  It
-   works like so: ::
+   works like so:
+
+.. code-block:: bash
 
      $ git send-email --to ceph-devel@vger.kernel.org my.patch
 
-   for a single patch, or::
+   for a single patch, or
+
+.. code-block:: bash
 
      $ git send-email --to ceph-devel@vger.kernel.org mything
 
