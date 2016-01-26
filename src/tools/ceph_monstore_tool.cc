@@ -642,7 +642,7 @@ int main(int argc, char **argv) {
       st.apply_transaction(t);
     }
     for (int read = 0; read < 100; read++) {
-      for (auto iter = st.get_iterator(map); iter->valid(); iter->next()) {
+      for (auto iter = st.get_iterator(prefix); iter->valid(); iter->next()) {
 	// drop data
       }
       // Wait a little bit to allow any triggered compactions to complete.
