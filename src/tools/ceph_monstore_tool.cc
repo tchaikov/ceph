@@ -621,6 +621,34 @@ int main(int argc, char **argv) {
       cout << key.first << " / " << key.second << std::endl;
       iter->next();
     }
+  } else if (cmd == "autocompact") {
+    map<string, uint64_t> extra;
+    st.get_estimated_size(extra);
+    uint64_t initial_size = extra["sst"];
+
+    vector<string> maps = {"auth", "logm", "monmap",
+			   "osdmap", "paxos", "pgmap",
+			   "pgmap_meta", "pgmap_osd", "pgmap_pg"};
+    for (int read = 0; read < 100; read++) {
+      for (auto map : maps) {
+	auto iter = st.get_iterator(map);
+	int n = 100;
+	for (iter->seek_to_last(); iter->valid(); iter->prev()) {
+	  // drop data
+	  if (n == 0) break;
+	}
+      }
+      // Wait a little bit to allow any triggered compactions to complete.
+      sleep(1);
+      st.get_estimated_size(extra);
+      uint64_t size = extra["sst"];
+      std::cout << "iter " << read
+		<< " => " << size / (1024*1024)
+		<< "/" << initial_size / (1024*1024) << std::endl;
+      if (size <= initial_size / 10) {
+	break;
+      }
+    }
   } else if (cmd == "compact") {
     st.compact();
   } else if (cmd == "get") {
