@@ -626,17 +626,24 @@ int main(int argc, char **argv) {
     st.get_estimated_size(extra);
     uint64_t initial_size = extra["sst"];
 
-    vector<string> maps = {"auth", "logm", "monmap",
-			   "osdmap", "paxos", "pgmap",
-			   "pgmap_meta", "pgmap_osd", "pgmap_pg"};
+    bufferlist bl;
+    for (unsigned i = 0; i < 200*1024; i++) {
+      bl.append('x');
+    }
+    const string prefix = "autocompact";
+    for (unsigned int i = 0; i < 100 * 1024 * 1024; i++) {
+      MonitorDBStore::TransactionRef t(new MonitorDBStore::Transaction);
+      t->put(prefix, std::to_string(i), bl);
+      st.apply_transaction(t);
+    }
+    for (unsigned int i = 0; i < 100 * 1024 * 1024; i++) {
+      MonitorDBStore::TransactionRef t(new MonitorDBStore::Transaction);
+      t->erase(prefix, std::to_string(i));
+      st.apply_transaction(t);
+    }
     for (int read = 0; read < 100; read++) {
-      for (auto map : maps) {
-	auto iter = st.get_iterator(map);
-	int n = 100;
-	for (iter->seek_to_last(); iter->valid(); iter->prev()) {
-	  // drop data
-	  if (n == 0) break;
-	}
+      for (auto iter = st.get_iterator(map); iter->valid(); iter->next()) {
+	// drop data
       }
       // Wait a little bit to allow any triggered compactions to complete.
       sleep(1);
