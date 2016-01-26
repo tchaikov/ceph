@@ -631,12 +631,12 @@ int main(int argc, char **argv) {
       bl.append('x');
     }
     const string prefix = "autocompact";
-    for (unsigned int i = 0; i < 100 * 1024 * 1024; i++) {
+    for (unsigned int i = 0; i < 1024 * 1024; i++) {
       MonitorDBStore::TransactionRef t(new MonitorDBStore::Transaction);
       t->put(prefix, std::to_string(i), bl);
       st.apply_transaction(t);
     }
-    for (unsigned int i = 0; i < 100 * 1024 * 1024; i++) {
+    for (unsigned int i = 0; i < 1024 * 1024; i++) {
       MonitorDBStore::TransactionRef t(new MonitorDBStore::Transaction);
       t->erase(prefix, std::to_string(i));
       st.apply_transaction(t);
