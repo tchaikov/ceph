@@ -31,6 +31,21 @@ string last_object_key(int64_t pool)
 {
   return "SCRUB_OBJ_" + std::to_string(pool) + "/";
 }
+
+string first_snap_key(int64_t pool)
+{
+  return "SCRUB_SS_" + std::to_string(pool) + "-";
+}
+
+string to_snap_key(int64_t pool, const librados::object_id_t& oid)
+{
+  return "SCRUB_SS_" + std::to_string(pool) + "." + oid.name + oid.nspace;
+}
+
+string last_snap_key(int64_t pool)
+{
+  return "SCRUB_SS_" + std::to_string(pool) + "/";
+}
 }
 
 namespace Scrub {
@@ -68,6 +83,13 @@ void Store::add_object_error(int64_t pool, const inconsistent_obj_wrapper& e)
   results[to_object_key(pool, e.object)] = bl;
 }
 
+void Store::add_snap_error(int64_t pool, const inconsistent_snapset_wrapper& e)
+{
+  bufferlist bl;
+  e.encode(bl);
+  results[to_snap_key(pool, e.object)] = bl;
+}
+
 bool Store::empty() const
 {
   return results.empty();
@@ -84,6 +106,18 @@ void Store::cleanup(ObjectStore::Transaction* t)
 {
   assert(t);
   t->remove(coll, hoid);
+}
+
+std::vector<bufferlist>
+Store::get_snap_errors(ObjectStore* store,
+		       int64_t pool,
+		       const librados::object_id_t& start,
+		       uint64_t max_return)
+{
+  const string begin = (start.name.empty() ?
+			first_snap_key(pool) : to_snap_key(pool, start));
+  const string end = last_snap_key(pool);
+  return get_errors(store, begin, end, max_return);     
 }
 
 std::vector<bufferlist>
@@ -114,4 +148,10 @@ Store::get_errors(ObjectStore* store,
   }
   return errors;
 }
+string to_snap_key(int64_t pool, const librados::object_id_t& oid)
+{
+  return "SCRUB_SS_" + std::to_string(pool) + "." + oid.name + oid.nspace;
+}
+
+
 } // namespace Scrub
