@@ -5044,7 +5044,8 @@ namespace {
   template <typename T>
   void do_decode(std::vector<T>& items, bufferlist::iterator& bp)
   {
-    static_assert(std::is_same<T, inconsistent_obj_t>::value,
+    static_assert(std::is_same<T, inconsistent_obj_t>::value ||
+		  std::is_same<T, inconsistent_snapset_t>::value,
 		  "not supported inconsistent type");
     vector<bufferlist> bls;
     ::decode(bls, bp);
@@ -5060,12 +5061,17 @@ namespace {
     bufferlist bl;
     uint32_t *interval;
     std::vector<inconsistent_obj_t> *objects = nullptr;
+    std::vector<inconsistent_snapset_t> *snapsets = nullptr;
     int *rval;
 
     C_ObjectOperation_scrub_ls(uint32_t *interval,
 			       std::vector<inconsistent_obj_t> *objects,
 			       int *rval)
       : interval(interval), objects(objects), rval(rval) {}
+    C_ObjectOperation_scrub_ls(uint32_t *interval,
+			       std::vector<inconsistent_snapset_t> *snapsets,
+			       int *rval)
+      : interval(interval), snapsets(snapsets), rval(rval) {}
     void finish(int r) override {
       if (r < 0 && r != -EAGAIN)
 	return;
@@ -5087,6 +5093,8 @@ namespace {
       }
       if (objects)
 	return do_decode(*objects, p);
+      else
+	return do_decode(*snapsets, p);
     }
   };
 
@@ -5117,4 +5125,14 @@ void ::ObjectOperation::scrub_ls(const librados::object_id_t& start_after,
 {
   scrub_ls_arg_t arg = {*interval, 0, start_after, max_to_get};
   do_scrub_ls(this, arg, objects, interval, rval);
+}
+
+void ::ObjectOperation::scrub_ls(const librados::object_id_t& start_after,
+				 uint64_t max_to_get,
+				 std::vector<librados::inconsistent_snapset_t> *snapsets,
+				 uint32_t *interval,
+				 int *rval)
+{
+  scrub_ls_arg_t arg = {*interval, 1, start_after, max_to_get};
+  do_scrub_ls(this, arg, snapsets, interval, rval);
 }
