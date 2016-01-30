@@ -46,6 +46,7 @@
 
 #include "common/config.h"
 #include "common/perf_counters.h"
+#include "common/scrub_types.h"
 #include "common/Finisher.h"
 #include "include/str_list.h"
 #include "common/errno.h"
@@ -5035,4 +5036,85 @@ void ::ObjectOperation::scrub_ls_arg_t::decode(bufferlist::iterator& bp)
   ::decode(start_after.snap, bp);
   ::decode(max_return, bp);
   DECODE_FINISH(bp);
+}
+
+namespace {
+  using namespace librados;
+
+  template <typename T>
+  void do_decode(std::vector<T>& items, bufferlist::iterator& bp)
+  {
+    static_assert(std::is_same<T, inconsistent_obj_t>::value,
+		  "not supported inconsistent type");
+    vector<bufferlist> bls;
+    ::decode(bls, bp);
+    for (auto bl : bls) {
+      auto p = bl.begin();
+      T t;
+      decode(t, p);
+      items.push_back(t);
+    }
+  }
+
+  struct C_ObjectOperation_scrub_ls : public Context {
+    bufferlist bl;
+    uint32_t *interval;
+    std::vector<inconsistent_obj_t> *objects = nullptr;
+    int *rval;
+
+    C_ObjectOperation_scrub_ls(uint32_t *interval,
+			       std::vector<inconsistent_obj_t> *objects,
+			       int *rval)
+      : interval(interval), objects(objects), rval(rval) {}
+    void finish(int r) override {
+      if (r < 0 && r != -EAGAIN)
+	return;
+      try {
+	decode(r);
+      } catch (buffer::error&) {
+	if (rval)
+	  *rval = -EIO;
+      }
+    }
+  private:
+    void decode(int r) {
+      auto p = bl.begin();
+      epoch_t epoch;
+      ::decode(epoch, p);
+      *interval = epoch;
+      if (r == -EAGAIN) {
+	return;
+      }
+      if (objects)
+	return do_decode(*objects, p);
+    }
+  };
+
+  template <typename T>
+  void do_scrub_ls(::ObjectOperation *op,
+		   const ::ObjectOperation::scrub_ls_arg_t& arg,
+		   std::vector<T> *items,
+		   uint32_t *interval,
+		   int *rval)
+  {
+    OSDOp& osd_op = op->add_op(CEPH_OSD_OP_SCRUBLS);
+    op->flags |= CEPH_OSD_FLAG_PGOP;
+    assert(interval);
+    arg.encode(osd_op.indata);
+    unsigned p = op->ops.size() - 1;
+    auto *h = new C_ObjectOperation_scrub_ls{interval, items, rval};
+    op->out_handler[p] = h;
+    op->out_bl[p] = &h->bl;
+    op->out_rval[p] = rval;
+  }
+}
+
+void ::ObjectOperation::scrub_ls(const librados::object_id_t& start_after,
+				 uint64_t max_to_get,
+				 std::vector<librados::inconsistent_obj_t> *objects,
+				 uint32_t *interval,
+				 int *rval)
+{
+  scrub_ls_arg_t arg = {*interval, 0, start_after, max_to_get};
+  do_scrub_ls(this, arg, objects, interval, rval);
 }
