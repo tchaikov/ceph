@@ -159,6 +159,9 @@ struct librados::IoCtxImpl {
 		  int flags);
   int aio_operate_read(const object_t& oid, ::ObjectOperation *o,
 		       AioCompletionImpl *c, int flags, bufferlist *pbl);
+  int aio_operate_repair(const object_t& oid, ::ObjectOperation *o,
+			 AioCompletionImpl *c, const SnapContext& snap_context,
+			 int32_t osd, epoch_t e);
 
   struct C_aio_Ack : public Context {
     librados::AioCompletionImpl *c;

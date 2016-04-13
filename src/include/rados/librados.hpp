@@ -960,6 +960,9 @@ namespace librados
     int operate(const std::string& oid, ObjectReadOperation *op, bufferlist *pbl);
     int aio_operate(const std::string& oid, AioCompletion *c, ObjectWriteOperation *op);
     int aio_operate(const std::string& oid, AioCompletion *c, ObjectWriteOperation *op, int flags);
+    int aio_operate_repair(const std::string& oid, AioCompletion *c, ObjectWriteOperation *op,
+                           shard_id_t shard, uint32_t e);
+
     /**
      * Schedule an async write operation with explicit snapshot parameters
      *

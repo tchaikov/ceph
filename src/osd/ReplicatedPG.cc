@@ -1773,7 +1773,8 @@ void ReplicatedPG::do_op(OpRequestRef& op)
   // missing snapdir?
   hobject_t snapdir = head.get_snapdir();
 
-  if (is_unreadable_object(snapdir)) {
+  if (is_unreadable_object(snapdir) &&
+      !m->has_flag(CEPH_OSD_REPAIR)) {
     wait_for_unreadable_object(snapdir, op);
     return;
   }
@@ -1784,8 +1785,9 @@ void ReplicatedPG::do_op(OpRequestRef& op)
     return;
   }
  
-  // asking for SNAPDIR is only ok for reads
-  if (m->get_snapid() == CEPH_SNAPDIR && op->may_write()) {
+  // asking for SNAPDIR is only ok for reads or repair
+  if (m->get_snapid() == CEPH_SNAPDIR && op->may_write() &&
+      !m->has_flag(CEPH_OSD_REPAIR))
     osd->reply_op_error(op, -EINVAL);
     return;
   }

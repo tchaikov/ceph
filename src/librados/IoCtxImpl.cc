@@ -750,6 +750,22 @@ int librados::IoCtxImpl::aio_operate_read(const object_t &oid,
   return 0;
 }
 
+int librados::IoCtxImpl::aio_operate_repair(const object_t& oid,
+					    ::ObjectOperation *o,
+					    AioCompletionImpl *c,
+					    const SnapContext& snap_context,
+					    int32_t osd,
+					    epoch_t e)
+{
+  Context *onack = new C_aio_Ack(c);
+  Context *oncommit = new C_aio_Safe(c);
+  c->io = this;
+  Objecter::Op *op = objecter->repair(oid, oloc, *o, snap_context,
+				      onack, oncommit);
+  objecter->op_submit(op, &c->tid);
+  return 0;
+}
+
 int librados::IoCtxImpl::aio_operate(const object_t& oid,
 				     ::ObjectOperation *o, AioCompletionImpl *c,
 				     const SnapContext& snap_context, int flags)

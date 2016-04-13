@@ -2268,6 +2268,12 @@ public:
     return tid;
   }
 
+  Op *repair(const object_t& oid, const object_locator_t& oloc,
+	      ObjectOperation& op,
+	      const SnapContext& snapc,
+	      int32_t osd, epoch_t e) {
+    
+  }
   // caller owns a ref
   LingerOp *linger_register(const object_t& oid, const object_locator_t& oloc,
 			    int flags);

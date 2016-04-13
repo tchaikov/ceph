@@ -1491,6 +1491,14 @@ int librados::IoCtx::aio_operate(const std::string& oid, AioCompletion *c,
 				       translate_flags(flags), pbl);
 }
 
+int librados::IoCtx::aio_operate_repair(const std::string& oid, AioCompletion *c,
+					ObjectWriteOperation *op, shard_id_t shard,
+					uint32_t e)
+{
+  object_t obj(oid);
+  return io_ctx_impl->aio_operate_repair(obj, (::ObjectOperation*)o->impl, c->pc,
+					 io_ctx_impl->snapc, shard, e);
+}
 
 void librados::IoCtx::snap_set_read(snap_t seq)
 {

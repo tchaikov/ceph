@@ -13,6 +13,9 @@
 namespace librados {
 
 typedef uint64_t snap_t;
+// XXX, what inconsistent_obj_t exposes is a map<int32_t, shard_info_t>
+// shall we expose a map<pg_shard_t, shard_info_t> instead?
+typedef int32_t shard_id_t;
 
 enum {
   SNAP_HEAD = (uint64_t)(-2),
