@@ -759,7 +759,10 @@ int librados::IoCtxImpl::aio_operate_repair(const object_t& oid,
 {
   Context *onack = new C_aio_Ack(c);
   Context *oncommit = new C_aio_Safe(c);
+
   c->io = this;
+  queue_aio_write(c);
+
   Objecter::Op *op = objecter->repair(oid, oloc, *o, snap_context,
 				      onack, oncommit);
   objecter->op_submit(op, &c->tid);

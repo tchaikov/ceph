@@ -1036,6 +1036,11 @@ struct ObjectOperation {
     ::encode(src_oloc, osd_op.indata);
   }
 
+  void repair_copy(int32_t from, const vector<int32_t>& to) {
+    OSDOp& osd_op = add_op(CEPH_OSD_OP_REPAIR_COPY);
+    ::encode(from, osd_op.indata);
+    ::encode(to, osd_op.indata);
+  }
   /**
    * writeback content to backing tier
    *

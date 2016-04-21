@@ -256,7 +256,10 @@ extern const char *ceph_osd_state_name(int s);
 	f(CACHE_PIN,	__CEPH_OSD_OP(WR, DATA, 36),	"cache-pin")        \
 	f(CACHE_UNPIN,	__CEPH_OSD_OP(WR, DATA, 37),	"cache-unpin")      \
 									    \
-	/** multi **/							    \
+ 	/* repair */                                                        \
+ 	f(REPAIR_COPY, __CEPH_OSD_OP(WR, DATA, 38), "repair-copy")          \
+                                                                        \
+	/** multi **/                                                           \
 	f(CLONERANGE,	__CEPH_OSD_OP(WR, MULTI, 1),	"clonerange")	    \
 	f(ASSERT_SRC_VERSION, __CEPH_OSD_OP(RD, MULTI, 2), "assert-src-version") \
 	f(SRC_CMPXATTR,	__CEPH_OSD_OP(RD, MULTI, 3),	"src-cmpxattr")	    \
@@ -406,6 +409,7 @@ enum {
 	CEPH_OSD_FLAG_KNOWN_REDIR = 0x400000,  /* redirect bit is authoritative */
 	CEPH_OSD_FLAG_FULL_TRY =    0x800000,  /* try op despite full flag */
 	CEPH_OSD_FLAG_FULL_FORCE = 0x1000000,  /* force op despite full flag */
+	CEPH_OSD_FLAG_REPAIR_WRITES = 0x4000000,  /* write despite degraded/missing */
 };
 
 enum {
