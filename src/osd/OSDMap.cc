@@ -19,6 +19,7 @@
 
 #include "common/config.h"
 #include "common/Formatter.h"
+#include "common/BackTrace.h"
 #include "common/TextTable.h"
 #include "include/ceph_features.h"
 #include "include/str_map.h"
@@ -3037,4 +3038,44 @@ int OSDMap::summarize_mapping_stats(
   if (out)
     *out = ss.str();
   return 0;
+}
+
+#undef dout_subsys
+
+OSDMapRef::OSDMapRef(const OSDMapRef& r)
+  : OSDMapRef::Parent(r),
+    cct(r.cct)
+{
+  lsubdout(cct, refs, 1) << "osdmap: +" << *this << "\n" << BackTrace(1) << dendl;
+}
+
+OSDMapRef::OSDMapRef(const OSDMapRef::Parent& r, CephContext* c)
+  : OSDMapRef::Parent(r), cct(c)
+{
+  lsubdout(cct, refs, 1) << "osdmap: <" << *this << "\n" << BackTrace(1) << dendl;
+}
+
+OSDMapRef& OSDMapRef::operator=(const OSDMapRef& r)
+{
+  cct = r.cct;
+  lsubdout(cct, refs, 1) << "osdmap: =" << *this << " => " << r << "\n" << BackTrace(1) << dendl;
+  
+  OSDMapRef::Parent::operator=(r);
+  return *this;
+}
+
+OSDMapRef::~OSDMapRef()
+{
+  if (cct)
+    lsubdout(cct, refs, 1) << "osdmap: -" << *this << "\n" << BackTrace(1) << dendl;
+}
+
+ostream& operator<<(ostream& out, const OSDMapRef& o)
+{
+  if (o) {
+    out << "#" << o.get()->get_epoch() << " " << o.use_count();
+  } else {
+    out << "(NULL)";
+  }
+  return out;
 }

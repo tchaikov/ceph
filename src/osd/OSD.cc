@@ -1175,13 +1175,13 @@ OSDMapRef OSDService::_add_map(OSDMap *o)
 
   if (cct->_conf->osd_map_dedup) {
     // Dedup against an existing map at a nearby epoch
-    OSDMapRef for_dedup = map_cache.lower_bound(e);
+    OSDMapRef for_dedup(map_cache.lower_bound(e), cct);
     if (for_dedup) {
       OSDMap::dedup(for_dedup.get(), o);
     }
   }
   bool existed;
-  OSDMapRef l = map_cache.add(e, o, &existed);
+  OSDMapRef l(map_cache.add(e, o, &existed), cct);
   if (existed) {
     delete o;
   }
@@ -1191,7 +1191,7 @@ OSDMapRef OSDService::_add_map(OSDMap *o)
 OSDMapRef OSDService::try_get_map(epoch_t epoch)
 {
   Mutex::Locker l(map_cache_lock);
-  OSDMapRef retval = map_cache.lookup(epoch);
+  OSDMapRef retval(map_cache.lookup(epoch), cct);
   if (retval) {
     dout(30) << "get_map " << epoch << " -cached" << dendl;
     return retval;
@@ -3080,7 +3080,7 @@ void OSD::build_past_intervals_parallel()
 	p.old_up, up,
 	p.same_interval_since,
 	pg->info.history.last_epoch_clean,
-	cur_map, last_map,
+	cur_map.get(), last_map.get(),
 	pgid,
         recoverable.get(),
 	&pg->past_intervals,
