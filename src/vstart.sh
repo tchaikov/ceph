@@ -366,6 +366,13 @@ if [ "$start_mon" -eq 1 ]; then
         rgw frontends = fastcgi, civetweb port=$CEPH_RGW_PORT
         filestore fd cache size = 32
         run dir = $CEPH_OUT_DIR
+osd_pg_epoch_persisted_max_stale=10
+osd_map_cache_size=20
+osd_map_max_advance=10
+osd_mon_report_interval_min=10
+osd_pg_stat_report_interval_max=10
+paxos_service_trim_min=10
+mon_min_osdmap_epochs=20
 EOF
 if [ "$cephx" -eq 1 ] ; then
 cat <<EOF >> $conf_fn
