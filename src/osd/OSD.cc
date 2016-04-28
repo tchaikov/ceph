@@ -30,8 +30,6 @@
 #include <sys/mount.h>
 #endif
 
-#include "common/BackTrace.h"
-
 #include "osd/PG.h"
 
 #include "include/types.h"
@@ -152,9 +150,6 @@ static coll_t META_COLL("meta");
 
 RefCountedObject *OSD::Session::get()
 {
-  BackTrace bt(1);
-  stringstream ss;
-  bt.print(ss);
   int e = osdmap ? osdmap->get_epoch() : 0;
   uint64_t v = nref.inc();
   lsubdout(cct, refs, 1) << "get " << this << " "
@@ -165,9 +160,6 @@ RefCountedObject *OSD::Session::get()
 
 void OSD::Session::put()
 {
-  BackTrace bt(1);
-  stringstream ss;
-  bt.print(ss);
   uint64_t v = nref.dec();
   CephContext *lc = cct;
   int e = osdmap ? osdmap->get_epoch() : 0;
@@ -5480,7 +5472,7 @@ void OSD::update_waiting_for_pg(Session *session, OSDMapRef newmap)
 {
   assert(session->session_dispatch_lock.is_locked());
   if (!session->osdmap) {
-    dout(1) << __func__ << "NULL => " << newmap->get_epoch() << dendl;
+    dout(1) << __func__ << " " << session << " NULL => " << newmap->get_epoch() << dendl;
     session->osdmap = newmap;
     return;
   }
@@ -5527,7 +5519,7 @@ void OSD::update_waiting_for_pg(Session *session, OSDMapRef newmap)
     }
   }
 
-  dout(1) << __func__ << session->osdmap->get_epoch() << " => " << newmap->get_epoch() << dendl;
+  dout(1) << __func__ << " " << session << " " << session->osdmap->get_epoch() << " => " << newmap->get_epoch() << dendl;
   session->osdmap = newmap;
 }
 

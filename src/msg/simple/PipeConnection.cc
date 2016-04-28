@@ -16,6 +16,7 @@
 #include "Pipe.h"
 #include "SimpleMessenger.h"
 #include "PipeConnection.h"
+#include "common/BackTrace.h"
 
 PipeConnection::~PipeConnection()
 {
@@ -93,4 +94,27 @@ void PipeConnection::mark_disposable()
 {
   if (msgr)
     static_cast<SimpleMessenger*>(msgr)->mark_disposable(this);
+}
+
+RefCountedObject* PipeConnection::get()
+{
+  uint64_t v = nref.inc();
+  lsubdout(cct, refs, 1) << "get " << this << " "
+			 << (v - 1) << " -> " << v
+			 << ": " << priv << dendl;
+  lsubdout(cct, refs, 1) << BackTrace(1) << dendl;
+  return this;
+}
+
+void PipeConnection::put()
+{
+  RefCountedObject *p = priv;
+  CephContext *lc = cct;
+  int v = nref.dec();
+  if (v == 0)
+    delete this;
+  lsubdout(lc, refs, 1) << "put " << this << " "
+			<< (v + 1) << " -> " << v
+			<< ": " << p << dendl;
+  lsubdout(lc, refs, 1) << BackTrace(1) << dendl;
 }

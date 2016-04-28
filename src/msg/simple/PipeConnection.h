@@ -48,6 +48,8 @@ public:
   void mark_down();
   void mark_disposable();
 
+  virtual RefCountedObject *get();
+  virtual void put();
 }; /* PipeConnection */
 
 typedef boost::intrusive_ptr<PipeConnection> PipeConnectionRef;
