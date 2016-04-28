@@ -21,7 +21,7 @@
 #include "common/ceph_context.h"
 
 struct RefCountedObject {
-private:
+protected:
   atomic_t nref;
   CephContext *cct;
 public:
@@ -30,21 +30,21 @@ public:
     assert(nref.read() == 0);
   }
   
-  RefCountedObject *get() {
+  virtual RefCountedObject *get() {
     int v = nref.inc();
     if (cct)
-      lsubdout(cct, refs, 1) << "RefCountedObject::get " << this << " "
+      lsubdout(cct, refs, 2) << "RefCountedObject::get " << this << " "
 			     << (v - 1) << " -> " << v
 			     << dendl;
     return this;
   }
-  void put() {
+  virtual void put() {
     CephContext *local_cct = cct;
     int v = nref.dec();
     if (v == 0)
       delete this;
     if (local_cct)
-      lsubdout(local_cct, refs, 1) << "RefCountedObject::put " << this << " "
+      lsubdout(local_cct, refs, 2) << "RefCountedObject::put " << this << " "
 				   << (v + 1) << " -> " << v
 				   << dendl;
   }

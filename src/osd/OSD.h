@@ -1162,7 +1162,8 @@ public:
       received_map_lock("Session::received_map_lock"), received_map_epoch(0)
     {}
 
-
+    virtual RefCountedObject *get();
+    virtual void put();
   };
   void update_waiting_for_pg(Session *session, OSDMapRef osdmap);
   void session_notify_pg_create(Session *session, OSDMapRef osdmap, spg_t pgid);
