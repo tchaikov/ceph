@@ -72,7 +72,11 @@ namespace ceph {
   using std::chrono::seconds;
   using std::chrono::microseconds;
 
-  std::ostream& operator<<(std::ostream& m, const mono_time& t) {
+  template<typename Clock,
+	   typename std::enable_if<
+	     std::chrono::time_point<Clock>::is_steady>::type* = nullptr>
+  std::ostream& operator<<(std::ostream& m,
+			   const std::chrono::time_point<Clock>& t) {
     return m << std::chrono::duration<double>(t.time_since_epoch()).count()
 	     << "s";
   }
@@ -81,6 +85,9 @@ namespace ceph {
     return m << std::chrono::duration<double>(t).count() << "s";
   }
 
+  template<typename Clock,
+	   typename std::enable_if<
+	     !std::chrono::time_point<Clock>::is_steady>::type* = nullptr>
   std::ostream& operator<<(std::ostream& m, const real_time& t) {
     m.setf(std::ios::right);
     char oldfill = m.fill();
@@ -103,4 +110,14 @@ namespace ceph {
     m.unsetf(std::ios::right);
     return m;
   }
-};
+
+  template std::ostream&
+  operator<< <real_clock>(std::ostream& m,
+			  const real_time& t);
+  template std::ostream&
+  operator<< <coarse_mono_clock>(std::ostream& m,
+				 const coarse_mono_time& t);
+  template std::ostream&
+  operator<< <coarse_real_clock>(std::ostream& m,
+				 const coarse_real_time& t);
+}
