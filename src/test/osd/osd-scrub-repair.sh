@@ -397,6 +397,12 @@ function TEST_corrupt_scrub_replicated() {
     # Check object count
     test $(jq '.inconsistents | length' $dir/json) = "$total_objs" || return 1
 
+    rados -p $poolname --force repair-get OBJ0 0 $epoch $dir/check
+    diff $dir/CORRUPT $dir/check || return 1
+    rados -p $poolname repair-get OBJ0 1 $epoch $dir/check
+    # This assume add_something() left ORIGINAL behind with what was written
+    diff $dir/ORIGINAL $dir/check || return 1
+
     rados rmpool $poolname $poolname --yes-i-really-really-mean-it
     teardown $dir || return 1
 }
