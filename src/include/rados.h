@@ -259,6 +259,8 @@ extern const char *ceph_osd_state_name(int s);
 	/* ESX/SCSI */							    \
 	f(WRITESAME,	__CEPH_OSD_OP(WR, DATA, 38),	"write-same")	    \
 									    \
+	f(ASSERT_INTERVAL, __CEPH_OSD_OP(RD, DATA, 39),     "assert-interval")    \
+									    \
 	/** multi **/							    \
 	f(CLONERANGE,	__CEPH_OSD_OP(WR, MULTI, 1),	"clonerange")	    \
 	f(ASSERT_SRC_VERSION, __CEPH_OSD_OP(RD, MULTI, 2), "assert-src-version") \
@@ -409,6 +411,7 @@ enum {
 	CEPH_OSD_FLAG_KNOWN_REDIR = 0x400000,  /* redirect bit is authoritative */
 	CEPH_OSD_FLAG_FULL_TRY =    0x800000,  /* try op despite full flag */
 	CEPH_OSD_FLAG_FULL_FORCE = 0x1000000,  /* force op despite full flag */
+	CEPH_OSD_FLAG_REPAIR_READS = 0x2000000,  /* read from a specific shard/replica */
 };
 
 enum {
@@ -541,6 +544,9 @@ struct ceph_osd_op {
 			__le64 length;
 			__le64 data_length;
 		} __attribute__ ((packed)) writesame;
+		struct {
+			__le32 epoch;
+		} __attribute__ ((packed)) assert_interval;
 	};
 	__le32 payload_len;
 } __attribute__ ((packed));

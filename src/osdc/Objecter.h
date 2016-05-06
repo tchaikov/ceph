@@ -1222,8 +1222,10 @@ public:
 
     bool used_replica;
     bool paused;
+    bool use_osd_epoch;
 
     int osd;      ///< the final target osd, or -1
+    epoch_t epoch; ///< Required epoch
 
     op_target_t(object_t oid, object_locator_t oloc, int flags)
       : flags(flags),
@@ -1239,6 +1241,7 @@ public:
 	sort_bitwise(false),
 	used_replica(false),
 	paused(false),
+	use_osd_epoch(false),
 	osd(-1)
     {}
 
