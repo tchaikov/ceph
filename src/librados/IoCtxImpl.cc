@@ -780,6 +780,44 @@ int librados::IoCtxImpl::operate_read(const object_t& oid,
   return r;
 }
 
+int librados::IoCtxImpl::aio_operate_repair_read(const object_t& oid,
+				      ::ObjectOperation *o,
+				      AioCompletionImpl *c,
+				      bufferlist *pbl,
+				      int flags, int32_t osdid, epoch_t e, int op_flags)
+{
+  if (!o->size())
+    return 0;
+
+  auto onack = new C_aio_Complete(c);
+
+  c->is_read = true;
+  c->io = this;
+
+  int op = o->ops[0].op.op;
+  ldout(client->cct, 10) << ceph_osd_op_name(op) << " oid=" << oid << " nspace=" << oloc.nspace << dendl;
+  // Prepend assert_interval op
+  OSDOp tmp;
+  tmp.op.op = CEPH_OSD_OP_ASSERT_INTERVAL;
+  tmp.op.assert_interval.epoch = e;
+  o->ops.insert(o->ops.begin(), tmp);
+  int size = o->ops.size();
+  o->out_bl.resize(size);
+  o->out_handler.resize(size);
+  o->out_rval.resize(size);
+  o->out_bl[1] = pbl;
+  o->ops[1].op.flags = op_flags;
+  Objecter::Op *objecter_op = objecter->prepare_read_op(oid, oloc,
+	                                      *o, snap_seq, NULL,
+	                                      flags | CEPH_OSD_FLAG_REPAIR_READS | CEPH_OSD_FLAG_IGNORE_OVERLAY,
+	                                      onack, &c->objver);
+  objecter_op->target.osd = osdid;
+  objecter_op->target.use_osd_epoch = true;
+  objecter_op->target.epoch = e;
+  objecter->op_submit(objecter_op, &c->tid);
+  return 0;
+}
+
 int librados::IoCtxImpl::aio_operate_read(const object_t &oid,
 					  ::ObjectOperation *o,
 					  AioCompletionImpl *c,

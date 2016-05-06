@@ -1206,10 +1206,12 @@ public:
 
     bool used_replica = false;
     bool paused = false;
+    bool use_osd_epoch = false;
 
     int osd = -1;      ///< the final target osd, or -1
 
     epoch_t last_force_resend = 0;
+    epoch_t epoch; ///< Required epoch
 
     op_target_t(object_t oid, object_locator_t oloc, int flags)
       : flags(flags),
