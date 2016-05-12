@@ -99,10 +99,10 @@ void PipeConnection::mark_disposable()
 RefCountedObject* PipeConnection::get()
 {
   uint64_t v = nref.inc();
-  lsubdout(cct, refs, 1) << "get " << this << " "
+  lsubdout(cct, refs, 2) << "get " << this << " "
 			 << (v - 1) << " -> " << v
 			 << ": " << priv << dendl;
-  lsubdout(cct, refs, 1) << BackTrace(1) << dendl;
+  lsubdout(cct, refs, 2) << BackTrace(1) << dendl;
   return this;
 }
 
@@ -113,8 +113,8 @@ void PipeConnection::put()
   int v = nref.dec();
   if (v == 0)
     delete this;
-  lsubdout(lc, refs, 1) << "put " << this << " "
+  lsubdout(lc, refs, 2) << "put " << this << " "
 			<< (v + 1) << " -> " << v
 			<< ": " << p << dendl;
-  lsubdout(lc, refs, 1) << BackTrace(1) << dendl;
+  lsubdout(lc, refs, 2) << BackTrace(1) << dendl;
 }
