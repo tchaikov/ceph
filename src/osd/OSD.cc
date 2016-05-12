@@ -43,6 +43,7 @@
 #include "common/ceph_argparse.h"
 #include "common/version.h"
 #include "common/io_priority.h"
+#include "common/BackTrace.h"
 
 #include "os/ObjectStore.h"
 
@@ -148,13 +149,24 @@
 
 static coll_t META_COLL("meta");
 
+OSD::Session::Session(CephContext *cct) :
+  RefCountedObject(cct, 0),
+  auid(-1), con(0),
+  session_dispatch_lock("Session::session_dispatch_lock"),
+  sent_epoch_lock("Session::sent_epoch_lock"), last_sent_epoch(0),
+  received_map_lock("Session::received_map_lock"), received_map_epoch(0)
+{
+  get();
+}
+
 RefCountedObject *OSD::Session::get()
 {
   int e = osdmap ? osdmap->get_epoch() : 0;
   uint64_t v = nref.inc();
   lsubdout(cct, refs, 1) << "get " << this << " "
 			 << (v - 1) << " -> " << v
-			 << ": " << e << dendl;
+			 << ": " << e << "\n"
+			 << BackTrace(1) << dendl;
   return this;
 }
 
@@ -167,7 +179,8 @@ void OSD::Session::put()
     delete this;
   lsubdout(lc, refs, 1) << "put " << this << " "
 			<< (v + 1) << " -> " << v
-			<< ": " << e << dendl;
+			<< ": " << e << "\n"
+			<< BackTrace(1) << dendl;
 }
 
 #define dout_subsys ceph_subsys_osd
