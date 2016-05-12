@@ -5478,6 +5478,7 @@ void OSD::dispatch_session_waiting(Session *session, OSDMapRef osdmap)
   } else {
     register_session_waiting_on_map(session);
   }
+  session->maybe_reset_osdmap();
 }
 
 
@@ -5548,6 +5549,7 @@ void OSD::session_notify_pg_create(
       session->waiting_on_map.begin(),
       i->second);
     session->waiting_for_pg.erase(i);
+    session->maybe_reset_osdmap();
   }
   clear_session_waiting_on_pg(session, pgid);
 }
@@ -5558,6 +5560,7 @@ void OSD::session_notify_pg_cleared(
   assert(session->session_dispatch_lock.is_locked());
   update_waiting_for_pg(session, osdmap);
   session->waiting_for_pg.erase(pgid);
+  session->maybe_reset_osdmap();
   clear_session_waiting_on_pg(session, pgid);
 }
 
