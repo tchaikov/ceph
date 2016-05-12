@@ -3046,19 +3046,19 @@ OSDMapRef::OSDMapRef(const OSDMapRef& r)
   : OSDMapRef::Parent(r),
     cct(r.cct)
 {
-  lsubdout(cct, refs, 1) << "osdmap: +" << *this << "\n" << BackTrace(1) << dendl;
+  lsubdout(cct, refs, 3) << "osdmap: +" << *this << "\n" << BackTrace(1) << dendl;
 }
 
 OSDMapRef::OSDMapRef(const OSDMapRef::Parent& r, CephContext* c)
   : OSDMapRef::Parent(r), cct(c)
 {
-  lsubdout(cct, refs, 1) << "osdmap: <" << *this << "\n" << BackTrace(1) << dendl;
+  lsubdout(cct, refs, 3) << "osdmap: <" << *this << "\n" << BackTrace(1) << dendl;
 }
 
 OSDMapRef& OSDMapRef::operator=(const OSDMapRef& r)
 {
   cct = r.cct;
-  lsubdout(cct, refs, 1) << "osdmap: =" << *this << " => " << r << "\n" << BackTrace(1) << dendl;
+  lsubdout(cct, refs, 3) << "osdmap: =" << *this << " => " << r << "\n" << BackTrace(1) << dendl;
   
   OSDMapRef::Parent::operator=(r);
   return *this;
@@ -3067,7 +3067,7 @@ OSDMapRef& OSDMapRef::operator=(const OSDMapRef& r)
 OSDMapRef::~OSDMapRef()
 {
   if (cct)
-    lsubdout(cct, refs, 1) << "osdmap: -" << *this << "\n" << BackTrace(1) << dendl;
+    lsubdout(cct, refs, 3) << "osdmap: -" << *this << "\n" << BackTrace(1) << dendl;
 }
 
 ostream& operator<<(ostream& out, const OSDMapRef& o)
