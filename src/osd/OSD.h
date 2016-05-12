@@ -1161,7 +1161,11 @@ public:
       received_map_lock("Session::received_map_lock"), received_map_epoch(0)
     {}
 
-
+    void maybe_reset_osdmap() {
+      if (waiting_for_pg.empty()) {
+	osdmap.reset();
+      }
+    }
   };
   void update_waiting_for_pg(Session *session, OSDMapRef osdmap);
   void session_notify_pg_create(Session *session, OSDMapRef osdmap, spg_t pgid);
@@ -1265,6 +1269,7 @@ public:
      */
     session->waiting_on_map.clear();
     session->waiting_for_pg.clear();
+    session->osdmap.reset();
   }
   void register_session_waiting_on_pg(Session *session, spg_t pgid) {
     Mutex::Locker l(session_waiting_lock);
