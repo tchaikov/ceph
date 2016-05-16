@@ -1357,6 +1357,51 @@ int ReplicatedPG::do_scrub_ls(MOSDOp *m, OSDOp *osd_op)
   return r;
 }
 
+// it is pretty much the same as CEPH_OSD_OP_COPY_FROM, but it requires user to
+// specify the src osd, and uses repair_read() to read the object payload, also
+// the src oid is always identical to the dest oid (the one in OpContext)
+int ReplicatedPG::do_repair_copy(OpContext *ctx, const OSDOp& osd_op, bufferlist::iterator& bp)
+{
+  int32_t src_osd;
+  uint32_t what;
+  try {
+    ::decode(src_osd, bp);
+    ::decode(what, bp);
+  } catch (buffer::error&) {
+    dout(10) << "corrupted " << __func__ << " arg" << dendl;
+    return -EINVAL;
+  }
+  if (!ctx->copy_cb) {
+    // start
+    auto cb = new CopyFromCallback(ctx);
+    ctx->copy_cb = cb;
+    uint32_t to_copy = 0;
+    if (what & librados::repair_copy_t::DATA)
+      to_copy |= CopyOp::COPY_DATA;
+    if (what & librados::repair_copy_t::ATTR)
+      to_copy |= CopyOp::COPY_ATTR;
+    if (what & librados::repair_copy_t::OMAP)
+      to_copy |= CopyOp::COPY_OMAP;
+    unsigned flags = (CEPH_OSD_COPY_FROM_FLAG_IGNORE_OVERLAY |
+		      CEPH_OSD_COPY_FROM_FLAG_IGNORE_CACHE |
+		      CEPH_OSD_COPY_FROM_FLAG_REPAIR);
+    auto m = static_cast<MOSDOp*>(ctx->op->get_req());
+    // we expect the client side to prepend an assert_version() call before
+    // this op, so just pass 0 as the version.
+    start_copy(cb, ctx->obc, src_osd, ctx->obs->oi.soid,
+	       m->get_object_locator(), 0,
+	       to_copy, flags, false,
+	       CEPH_OSD_FLAG_REPAIR_READS | CEPH_OSD_FLAG_IGNORE_OVERLAY,
+	       CEPH_OSD_FLAG_REPAIR_WRITES);
+    return -EINPROGRESS;
+  } else {
+    // finish
+    assert(ctx->copy_cb->get_result() >= 0);
+    finish_copyfrom(ctx);
+    return 0;
+  }
+}
+
 void ReplicatedPG::calc_trim_to()
 {
   size_t target = cct->_conf->osd_min_pg_log_entries;
@@ -2845,7 +2890,8 @@ void ReplicatedPG::promote_object(ObjectContextRef obc,
                    CEPH_OSD_COPY_FROM_FLAG_IGNORE_CACHE |
                    CEPH_OSD_COPY_FROM_FLAG_MAP_SNAP_CLONE |
                    CEPH_OSD_COPY_FROM_FLAG_RWORDERED;
-  start_copy(cb, obc, obc->obs.oi.soid, my_oloc, 0, flags,
+  start_copy(cb, obc, 0, obc->obs.oi.soid, my_oloc, 0, flags,
+	     CopyOp::COPY_ALL,
 	     obc->obs.oi.soid.snap == CEPH_NOSNAP,
 	     src_fadvise_flags, 0);
 
@@ -5954,7 +6000,8 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  }
 	  CopyFromCallback *cb = new CopyFromCallback(ctx);
 	  ctx->copy_cb = cb;
-	  start_copy(cb, ctx->obc, src, src_oloc, src_version,
+	  start_copy(cb, ctx->obc, 0, src, src_oloc, src_version,
+		     CopyOp::COPY_ALL,
 		     op.copy_from.flags,
 		     false,
 		     op.copy_from.src_fadvise_flags,
@@ -5969,6 +6016,10 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       }
       break;
 
+    case CEPH_OSD_OP_REPAIR_COPY:
+      ++ctx->num_write;
+      result = do_repair_copy(ctx, osd_op, bp);
+      break;
     case CEPH_OSD_OP_ASSERT_INTERVAL:
       ++ctx->num_read;
       {
@@ -7168,8 +7219,10 @@ void ReplicatedPG::fill_in_copy_get_noent(OpRequestRef& op, hobject_t oid,
 }
 
 void ReplicatedPG::start_copy(CopyCallback *cb, ObjectContextRef obc,
+			      int32_t src_osd,
 			      hobject_t src, object_locator_t oloc,
-			      version_t version, unsigned flags,
+			      version_t version, unsigned what,
+			      unsigned flags,
 			      bool mirror_snapset,
 			      unsigned src_obj_fadvise_flags,
 			      unsigned dest_obj_fadvise_flags)
@@ -7193,7 +7246,7 @@ void ReplicatedPG::start_copy(CopyCallback *cb, ObjectContextRef obc,
   }
 
   CopyOpRef cop(std::make_shared<CopyOp>(cb, obc, src, oloc, version, flags,
-			   mirror_snapset, src_obj_fadvise_flags,
+			   mirror_snapset, src_osd, what, src_obj_fadvise_flags,
 			   dest_obj_fadvise_flags));
   copy_ops[dest] = cop;
   obc->start_block();
@@ -7216,6 +7269,8 @@ void ReplicatedPG::_copy_some(ObjectContextRef obc, CopyOpRef cop)
     flags |= CEPH_OSD_FLAG_MAP_SNAP_CLONE;
   if (cop->flags & CEPH_OSD_COPY_FROM_FLAG_RWORDERED)
     flags |= CEPH_OSD_FLAG_RWORDERED;
+  if (cop->flags & CEPH_OSD_COPY_FROM_FLAG_REPAIR)
+    flags |= CEPH_OSD_FLAG_REPAIR_WRITES;
 
   C_GatherBuilder gather(g_ceph_context);
 
@@ -7231,6 +7286,7 @@ void ReplicatedPG::_copy_some(ObjectContextRef obc, CopyOpRef cop)
   }
 
   ObjectOperation op;
+
   if (cop->results.user_version) {
     op.assert_version(cop->results.user_version);
   } else {
@@ -7240,7 +7296,10 @@ void ReplicatedPG::_copy_some(ObjectContextRef obc, CopyOpRef cop)
   }
   op.copy_get(&cop->cursor, get_copy_chunk_size(),
 	      &cop->results.object_size, &cop->results.mtime,
-	      &cop->attrs, &cop->data, &cop->omap_header, &cop->omap_data,
+	      cop->to_copy & CopyOp::COPY_ATTR ? &cop->attrs : nullptr,
+	      cop->to_copy & CopyOp::COPY_DATA ? &cop->data : nullptr,
+	      cop->to_copy & CopyOp::COPY_OMAP ? &cop->omap_header : nullptr,
+	      cop->to_copy & CopyOp::COPY_OMAP ? &cop->omap_data : nullptr,
 	      &cop->results.snaps, &cop->results.snap_seq,
 	      &cop->results.flags,
 	      &cop->results.source_data_digest,
@@ -7256,12 +7315,24 @@ void ReplicatedPG::_copy_some(ObjectContextRef obc, CopyOpRef cop)
   gather.set_finisher(new C_OnFinisher(fin,
 				       &osd->objecter_finisher));
 
-  ceph_tid_t tid = osd->objecter->read(cop->src.oid, cop->oloc, op,
+  ceph_tid_t tid;
+  if (flags & CEPH_OSD_FLAG_REPAIR_WRITES) {
+    auto objecter_op = osd->objecter->prepare_read_op(cop->src.oid, cop->oloc, op,
+						      cop->src.snap, nullptr,
+						      CEPH_OSD_FLAG_REPAIR_READS | CEPH_OSD_FLAG_IGNORE_OVERLAY,
+						      gather.new_sub(),
+						      nullptr);
+    objecter_op->target.osd = cop->src_osd;
+    objecter_op->target.use_osd_epoch = true;
+    osd->objecter->op_submit(objecter_op, &tid);
+  } else {
+    tid = osd->objecter->read(cop->src.oid, cop->oloc, op,
 				  cop->src.snap, NULL,
 				  flags,
 				  gather.new_sub(),
 				  // discover the object version if we don't know it yet
 				  cop->results.user_version ? NULL : &cop->results.user_version);
+  }
   fin->tid = tid;
   cop->objecter_tid = tid;
   gather.activate();
