@@ -126,6 +126,15 @@ public:
     unsigned flags;
     bool mirror_snapset;
 
+    uint32_t src_osd;		// used only in the repair case
+    enum {
+      COPY_DATA = 1 << 0,
+      COPY_ATTR = 1 << 1,
+      COPY_OMAP = 1 << 2,
+      COPY_ALL = COPY_DATA | COPY_ATTR | COPY_OMAP,
+    };
+    unsigned to_copy;
+
     CopyResults results;
 
     ceph_tid_t objecter_tid;
@@ -155,10 +164,14 @@ public:
            version_t v,
 	   unsigned f,
 	   bool ms,
+	   int32_t src_osd,
+	   unsigned to_copy,
 	   unsigned src_obj_fadvise_flags,
 	   unsigned dest_obj_fadvise_flags)
       : cb(cb_), obc(_obc), src(s), oloc(l), flags(f),
 	mirror_snapset(ms),
+	src_osd(src_osd),
+	to_copy(to_copy),
 	objecter_tid(0),
 	objecter_tid2(0),
 	rval(-1),
@@ -1347,12 +1360,16 @@ protected:
    *
    * @param cb: The CopyCallback to be activated when the copy is complete
    * @param obc: The ObjectContext we are copying into
+   * @param src_osd: The source OSD from which the object is copied
    * @param src: The source object
    * @param oloc: the source object locator
    * @param version: the version of the source object to copy (0 for any)
+   * @param what: the flags composed of CopyOp::COPY_* indicating what to copy
    */
-  void start_copy(CopyCallback *cb, ObjectContextRef obc, hobject_t src,
-		  object_locator_t oloc, version_t version, unsigned flags,
+  void start_copy(CopyCallback *cb, ObjectContextRef obc, int32_t src_osd,
+		  hobject_t src,
+		  object_locator_t oloc, version_t version, unsigned what,
+		  unsigned flags,
 		  bool mirror_snapset, unsigned src_obj_fadvise_flags,
 		  unsigned dest_obj_fadvise_flags);
   void process_copy_chunk(hobject_t oid, ceph_tid_t tid, int r);
@@ -1477,6 +1494,7 @@ public:
   void do_osd_op_effects(OpContext *ctx, const ConnectionRef& conn);
 private:
   int do_scrub_ls(MOSDOp *op, OSDOp *osd_op);
+  int do_repair_copy(OpContext *ctx, const OSDOp& osd_op, bufferlist::iterator& bp);
   hobject_t earliest_backfill() const;
   bool check_src_targ(const hobject_t& soid, const hobject_t& toid) const;
 
