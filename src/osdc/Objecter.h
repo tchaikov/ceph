@@ -1002,6 +1002,11 @@ struct ObjectOperation {
     }
   }
 
+  void assert_interval(epoch_t e) {
+    OSDOp& osd_op = add_op(CEPH_OSD_OP_ASSERT_INTERVAL);
+    osd_op.op.assert_interval.epoch = e;
+  }
+
   void assert_version(uint64_t ver) {
     OSDOp& osd_op = add_op(CEPH_OSD_OP_ASSERT_VER);
     osd_op.op.assert_ver.ver = ver;
@@ -1045,6 +1050,15 @@ struct ObjectOperation {
     osd_op.op.copy_from.src_fadvise_flags = src_fadvise_flags;
     ::encode(src, osd_op.indata);
     ::encode(src_oloc, osd_op.indata);
+  }
+
+  /**
+   * overwrite the object content OSDs with the one from the src_osd
+   */
+  void repair_copy(int32_t src_osd, uint32_t what) {
+    OSDOp& osd_op = add_op(CEPH_OSD_OP_REPAIR_COPY);
+    ::encode(src_osd, osd_op.indata);
+    ::encode(what, osd_op.indata);
   }
 
   /**
