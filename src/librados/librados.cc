@@ -1529,7 +1529,6 @@ int librados::IoCtx::aio_operate(const std::string& oid, AioCompletion *c,
 				       translate_flags(flags), pbl);
 }
 
-
 void librados::IoCtx::snap_set_read(snap_t seq)
 {
   io_ctx_impl->set_snap_read(seq);
@@ -2025,6 +2024,20 @@ int librados::IoCtx::cache_unpin(const string& oid)
 {
   object_t obj(oid);
   return io_ctx_impl->cache_unpin(obj);
+}
+
+int librados::IoCtx::repair_copy(const string& oid, uint64_t version, uint32_t what,
+				 int32_t osd, uint32_t epoch)
+{
+  object_t obj(oid);
+  return io_ctx_impl->repair_copy(obj, osd, epoch, version, what);
+}
+
+int librados::IoCtx::aio_repair_copy(const std::string& oid, AioCompletion *c,
+				     uint64_t version, uint32_t what,
+				     int32_t osdid, uint32_t epoch)
+{
+  return io_ctx_impl->aio_repair_copy(oid, c->pc, version, what, osdid, epoch);
 }
 
 void librados::IoCtx::locator_set_key(const string& key)

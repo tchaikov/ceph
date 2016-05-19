@@ -712,14 +712,6 @@ namespace librados
                    size_t len);
     int read(const std::string& oid, bufferlist& bl, size_t len, uint64_t off);
     int repair_read(const std::string& oid, bufferlist& bl, size_t len, uint64_t off, int flags, int32_t osdid, uint32_t e);
-    /**
-     * Rewrite the object with the replica hosted by specified osd
-     *
-     * @param osd from which OSD we will copy the data
-     * @param version the version of rewritten object
-     * @param what the flags indicating what we will copy
-     */
-    int repair_copy(const std::string& oid, uint64_t version, uint32_t what, int32_t osd, uint32_t epoch);
     int remove(const std::string& oid);
     int remove(const std::string& oid, int flags);
     int trunc(const std::string& oid, uint64_t size);
@@ -913,8 +905,6 @@ namespace librados
 			size_t len, uint64_t off);
     int aio_repair_read(const std::string& oid, AioCompletion *c,
 		 bufferlist *pbl, size_t len, uint64_t off, uint64_t snapid, int flags, int32_t osdid, uint32_t e);
-    int aio_repair_copy(const std::string& oid, AioCompletion *c,
-		 uint64_t version, uint32_t what, int32_t osdid, uint32_t e);
     /**
      * Asynchronously read existing extents from an object at a
      * particular snapshot

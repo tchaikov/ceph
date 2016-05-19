@@ -1311,6 +1311,27 @@ int librados::IoCtxImpl::repair_read(const object_t& oid, bufferlist& bl,
   return bl.length();
 }
 
+int librados::IoCtxImpl::repair_copy(const object_t& oid, int32_t osdid,
+				     epoch_t epoch, uint64_t ver, uint32_t what)
+{
+  ::ObjectOperation op;
+  op.assert_interval(epoch);
+  op.assert_version(ver);
+  op.repair_copy(osdid, what);
+  return operate(oid, &op, nullptr, CEPH_OSD_FLAG_REPAIR_WRITES);
+}
+
+int librados::IoCtxImpl::aio_repair_copy(const object_t& oid, AioCompletionImpl *comp,
+					 int32_t osdid, epoch_t epoch, uint64_t ver,
+					 uint32_t what)
+{
+  ::ObjectOperation op;
+  op.assert_interval(epoch);
+  op.assert_version(ver);
+  op.repair_copy(osdid, what);
+  return aio_operate(oid, &op, comp, snapc, CEPH_OSD_FLAG_REPAIR_WRITES);
+}
+
 int librados::IoCtxImpl::mapext(const object_t& oid,
 				uint64_t off, size_t len,
 				std::map<uint64_t,uint64_t>& m)
