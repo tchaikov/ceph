@@ -117,10 +117,12 @@ struct shard_info_t : err_t {
 
 struct inconsistent_obj_t : err_t {
   inconsistent_obj_t() = default;
-  inconsistent_obj_t(const object_id_t& object)
-    : object{object}
+  inconsistent_obj_t(const object_id_t& object,
+                     uint64_t version)
+    : object{object}, version{version}
   {}
   object_id_t object;
+  uint64_t version;
   // osd => shard_info
   std::map<int32_t, shard_info_t> shards;
 };

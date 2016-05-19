@@ -621,7 +621,7 @@ void PGBackend::be_compare_scrubmaps(
     object_info_t auth_oi;
     map<pg_shard_t, ScrubMap *>::const_iterator auth =
       be_select_auth_object(*k, maps, &auth_oi);
-    inconsistent_obj_wrapper object_error{*k};
+    inconsistent_obj_wrapper object_error{*k, auth_oi.user_version};
 
     list<pg_shard_t> auth_list;
     if (auth == maps.end()) {
