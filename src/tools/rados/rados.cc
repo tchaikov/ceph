@@ -150,6 +150,8 @@ void usage(ostream& out)
 "   repair-get [--force] <obj-name> <osdid> <epoch> [outfile]\n"
 "                                    fetch a particular shard/replica of an object\n"
 "                                    --force ignores EIO and returns whatever data it can\n"
+"   repair-copy <obj-name> <osdid> <epoch> <version> [data|omap|xattr]\n"
+"                                    overwrite an object with a particular shard/replica\n"
 "\n"
 "CACHE POOLS: (for testing/development only)\n"
 "   cache-flush <obj-name>           flush cache pool object (blocking)\n"
@@ -360,6 +362,16 @@ static int do_repair_get(IoCtx& io_ctx, const char *objname,
 
   if (fd != STDOUT_FILENO)
     VOID_TEMP_FAILURE_RETRY(::close(fd));
+  return ret;
+}
+
+static int do_repair_copy(IoCtx& io_ctx, const string& oid, int32_t osdid,
+			  epoch_t epoch, uint64_t version, uint32_t what)
+{
+  int ret = io_ctx.repair_copy(oid, version, what, osdid, epoch);
+  if (ret == -EINVAL || ret == -ERANGE) {
+    cerr << "Specified epoch or version does not match" << std::endl;
+  }
   return ret;
 }
 
@@ -2134,6 +2146,32 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     ret = do_repair_get(io_ctx, nargs[1], nargs[4], op_size, osdid, e, force);
     if (ret < 0) {
       cerr << "error getting shard from osd " << osdid << " of " << pool_name << "/" << nargs[1] << ": " << cpp_strerror(ret) << std::endl;
+      goto out;
+    }
+  }
+  else if (strcmp(nargs[0], "repair-copy") == 0)  {
+    if (!pool_name || nargs.size() < 5 || nargs.size() > 7)
+      usage_exit();
+    string oid{nargs[1]};
+    int32_t osdid = atoi(nargs[2]);
+    epoch_t epoch = atoi(nargs[3]);
+    uint64_t ver = atoi(nargs[4]);
+    uint32_t what = (librados::repair_copy_t::DATA |
+		     librados::repair_copy_t::ATTR);
+    if (nargs.size() == 6) {
+      if (strcmp(nargs[5], "data") == 0) {
+	what = librados::repair_copy_t::DATA;
+      } else if (strcmp(nargs[5], "omap") == 0) {
+	what = librados::repair_copy_t::OMAP;
+      } else if (strcmp(nargs[5], "xattr")) {
+	what = librados::repair_copy_t::ATTR;
+      }
+    }
+    ret = do_repair_copy(io_ctx, oid, osdid, epoch, ver, what);
+    if (ret < 0) {
+      cerr << "error copying shard from osd " << osdid << " of "
+	   << pool_name << "/" << nargs[1] << "@" << ver
+	   << ": " << cpp_strerror(ret) << std::endl;
       goto out;
     }
   }
