@@ -1005,6 +1005,11 @@ struct ObjectOperation {
     }
   }
 
+  void assert_interval(epoch_t e) {
+    OSDOp& osd_op = add_op(CEPH_OSD_OP_ASSERT_INTERVAL);
+    osd_op.op.assert_interval.epoch = e;
+  }
+
   void assert_version(uint64_t ver) {
     OSDOp& osd_op = add_op(CEPH_OSD_OP_ASSERT_VER);
     osd_op.op.assert_ver.ver = ver;
@@ -1048,6 +1053,11 @@ struct ObjectOperation {
   void cache_flush() {
     add_op(CEPH_OSD_OP_CACHE_FLUSH);
   }
+
+  /**
+   * overwrite the object content OSDs with the one from the src_osd
+   */
+  void repair_copy(uint32_t what, const std::vector<pg_shard_t>& bad_shards);
 
   /**
    * writeback content to backing tier
@@ -2330,6 +2340,13 @@ public:
     return i;
   }
 
+  /**
+   * get a random osd not listed in blacklist
+   * @note the primary osd will be returned even it is listed in the blacklist
+   *       if the target pool is a erasure pool.
+   */
+  int32_t pick_random_osd(const op_target_t& t,
+			  const vector<pg_shard_t>& blacklist) const;
 
   // high-level helpers
   Op *prepare_stat_op(

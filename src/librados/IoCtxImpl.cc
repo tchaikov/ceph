@@ -1427,6 +1427,44 @@ int librados::IoCtxImpl::read(const object_t& oid,
   return bl.length();
 }
 
+int librados::IoCtxImpl::repair_copy(const object_t& oid,
+				     uint64_t ver, uint32_t what,
+				     const std::vector<pg_shard_t>& bad_shards,
+				     epoch_t epoch)
+{
+  ::ObjectOperation op;
+  op.assert_interval(epoch);
+  op.assert_version(ver);
+  op.repair_copy(what, bad_shards);
+  return operate(oid, &op, nullptr, CEPH_OSD_FLAG_REPAIR_WRITES);
+}
+
+int librados::IoCtxImpl::aio_repair_copy(const object_t& oid, AioCompletionImpl *comp,
+					 uint64_t ver, uint32_t what,
+					 const std::vector<pg_shard_t>& bad_shards,
+					 epoch_t epoch)
+{
+  ::ObjectOperation op;
+  op.assert_interval(epoch);
+  op.assert_version(ver);
+  op.repair_copy(what, bad_shards);
+
+  auto ut = ceph::real_clock::now();
+  auto onack = new C_aio_Complete(comp);
+
+  comp->io = this;
+  queue_aio_write(comp);
+
+  auto objecter_op = objecter->prepare_mutate_op(oid, oloc, op, snapc, ut, 0,
+						 onack, &comp->objver);
+
+  objecter_op->target.osd = objecter->pick_random_osd(objecter_op->target, bad_shards);
+  objecter_op->target.use_osd_epoch = true;
+  objecter_op->target.epoch = epoch;
+  objecter->op_submit(objecter_op, &comp->tid);
+  return 0;
+}
+
 int librados::IoCtxImpl::mapext(const object_t& oid,
 				uint64_t off, size_t len,
 				std::map<uint64_t,uint64_t>& m)
