@@ -1372,6 +1372,7 @@ static void dump_inconsistent(const inconsistent_obj_t& inc,
 {
   f.open_object_section("object");
   dump_object_id(inc.object, f);
+  f.dump_unsigned("version", inc.version);
   f.close_section();
 
   f.open_array_section("errors");
