@@ -1364,6 +1364,7 @@ static void dump_inconsistent(const inconsistent_obj_t& inc,
 {
   f.open_object_section("object");
   dump_object_id(inc.object, f);
+  f.dump_unsigned("version", inc.version);
   f.close_section();
   if (inc.has_shard_missing())
     f.dump_bool("missing", inc.has_shard_missing());
