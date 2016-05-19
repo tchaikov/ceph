@@ -83,11 +83,13 @@ void shard_info_wrapper::decode(bufferlist::iterator& bp)
   DECODE_FINISH(bp);
 }
 
-inconsistent_obj_wrapper::inconsistent_obj_wrapper(const hobject_t& hoid)
+inconsistent_obj_wrapper::inconsistent_obj_wrapper(const hobject_t& hoid,
+                                                   version_t ver)
   : inconsistent_obj_t{librados::object_id_t{hoid.oid.name,
                                  hoid.nspace,
-                                 hoid.get_key(), hoid.snap}}
-{}
+                                 hoid.get_key(), hoid.snap},
+                       ver}
+    {}
 
 void inconsistent_obj_wrapper::add_shard(const pg_shard_t& pgs,
                                          const shard_info_wrapper& shard)
@@ -126,19 +128,25 @@ namespace librados {
 
 void inconsistent_obj_wrapper::encode(bufferlist& bl) const
 {
-  ENCODE_START(1, 1, bl);
+  ENCODE_START(2, 1, bl);
   ::encode(errors, bl);
   ::encode(object, bl);
   ::encode(shards, bl);
+  ::encode(version, bl);
   ENCODE_FINISH(bl);
 }
 
 void inconsistent_obj_wrapper::decode(bufferlist::iterator& bp)
 {
-  DECODE_START(1, bp);
+  DECODE_START(2, bp);
   ::decode(errors, bp);
   ::decode(object, bp);
   ::decode(shards, bp);
+  if (struct_v < 2) {
+    version = 0;
+  } else {
+    ::decode(version, bp);
+  }
   DECODE_FINISH(bp);
 }
 

@@ -73,7 +73,8 @@ namespace librados {
 }
 
 struct inconsistent_obj_wrapper : librados::inconsistent_obj_t {
-  inconsistent_obj_wrapper(const hobject_t& hoid);
+  inconsistent_obj_wrapper(const hobject_t& hoid,
+			   version_t ver);
 
   void add_shard(const pg_shard_t& pgs, const shard_info_wrapper& shard);
   void set_auth_missing(const hobject_t& hoid,
