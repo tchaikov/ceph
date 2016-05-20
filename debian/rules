@@ -5,12 +5,9 @@ export DESTDIR=$(CURDIR)/debian/tmp
 
 export DEB_HOST_ARCH      ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
 
-extraopts += --with-ocf --with-nss
+extraopts += -DUSE_CRYPTOPP=OFF -DWITH_OCF=ON
 extraopts += --with-debug
 extraopts += --enable-cephfs-java
-
-# rocksdb is not packaged by anyone.  build it if we can.
-extraopts += --with-librocksdb-static=check
 
 ifeq ($(DEB_HOST_ARCH), armel)
   # armel supports ARMv4t or above instructions sets.
@@ -19,7 +16,7 @@ ifeq ($(DEB_HOST_ARCH), armel)
 endif
 
 %:
-	dh $@ --with javahelper,python2,autoreconf,systemd --parallel
+	dh $@ --with javahelper,python2,systemd --buildsystem=cmake --parallel
 
 override_dh_autoreconf:
 	dh_autoreconf ./autogen.sh
