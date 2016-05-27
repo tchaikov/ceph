@@ -361,6 +361,7 @@ set(libcommon_files
   log/SubsystemMap.cc
   mon/MonCap.cc
   mon/MonClient.cc
+  mon/MonHunter.cc
   mon/MonMap.cc
   msg/simple/Accepter.cc
   msg/simple/DispatchQueue.cc

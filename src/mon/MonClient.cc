@@ -43,10 +43,8 @@
 
 MonClient::MonClient(CephContext *cct_) :
   Dispatcher(cct_),
-  state(MC_STATE_NONE),
   messenger(NULL),
   cur_con(NULL),
-  rng(getpid()),
   monc_lock("MonClient::monc_lock"),
   timer(cct_, monc_lock), finisher(cct_),
   authorize_handler_registry(NULL),
@@ -439,7 +437,7 @@ int MonClient::authenticate(double timeout)
 {
   Mutex::Locker lock(monc_lock);
 
-  if (state == MC_STATE_HAVE_SESSION) {
+  if (have_session) {
     ldout(cct, 5) << "already authenticated" << dendl;
     return 0;
   }
@@ -452,7 +450,7 @@ int MonClient::authenticate(double timeout)
   until += timeout;
   if (timeout > 0.0)
     ldout(cct, 10) << "authenticate will time out at " << until << dendl;
-  while (state != MC_STATE_HAVE_SESSION && !authenticate_err) {
+  while (!have_session && !authenticate_err) {
     if (timeout > 0.0) {
       int r = auth_cond.WaitUntil(monc_lock, until);
       if (r == ETIMEDOUT) {
@@ -464,7 +462,7 @@ int MonClient::authenticate(double timeout)
     }
   }
 
-  if (state == MC_STATE_HAVE_SESSION) {
+  if (have_session) {
     ldout(cct, 5) << "authenticate success, global_id " << global_id << dendl;
   }
 
@@ -477,76 +475,30 @@ int MonClient::authenticate(double timeout)
 
 void MonClient::handle_auth(MAuthReply *m)
 {
-  Context *cb = NULL;
-  bufferlist::iterator p = m->result_bl.begin();
-  if (state == MC_STATE_NEGOTIATING) {
-    if (!auth || (int)m->protocol != auth->get_protocol()) {
-      delete auth;
-      auth = get_auth_client_handler(cct, m->protocol, rotating_secrets);
-      if (!auth) {
-	ldout(cct, 10) << "no handler for protocol " << m->protocol << dendl;
-	if (m->result == -ENOTSUP) {
-	  ldout(cct, 10) << "none of our auth protocols are supported by the server"
-			 << dendl;
-	  authenticate_err = m->result;
-	  auth_cond.SignalAll();
-	}
-	m->put();
-	return;
-      }
-      auth->set_want_keys(want_keys);
-      auth->init(entity_name);
-      auth->set_global_id(global_id);
-    } else {
-      auth->reset();
-    }
-    state = MC_STATE_AUTHENTICATING;
-  }
-  assert(auth);
-  if (m->global_id && m->global_id != global_id) {
-    global_id = m->global_id;
-    auth->set_global_id(global_id);
-    ldout(cct, 10) << "my global_id is " << m->global_id << dendl;
-  }
-
-  int ret = auth->handle_response(m->result, p);
+  bool session_established = mon_hunters.handle_auth(m);
   m->put();
-
-  if (ret == -EAGAIN) {
-    MAuth *ma = new MAuth;
-    ma->protocol = auth->get_protocol();
-    auth->prepare_build_request();
-    ret = auth->build_request(ma->auth_payload);
-    _send_mon_message(ma, true);
+  if (!session_established)
     return;
+
+  hunting = false;
+  last_rotating_renew_sent = utime_t();
+  while (!waiting_for_session.empty()) {
+    _send_mon_message(waiting_for_session.front());
+    waiting_for_session.pop_front();
   }
 
-  _finish_hunting();
+  _resend_mon_commands();
 
-  authenticate_err = ret;
-  if (ret == 0) {
-    if (state != MC_STATE_HAVE_SESSION) {
-      state = MC_STATE_HAVE_SESSION;
-      last_rotating_renew_sent = utime_t();
-      while (!waiting_for_session.empty()) {
-	_send_mon_message(waiting_for_session.front());
-	waiting_for_session.pop_front();
-      }
-
-      _resend_mon_commands();
-
-      if (log_client) {
-	log_client->reset_session();
-	send_log();
-      }
-      if (session_established_context) {
-        cb = session_established_context;
-        session_established_context = NULL;
-      }
-    }
-  
-    _check_auth_tickets();
+  if (log_client) {
+    log_client->reset_session();
+    send_log();
   }
+  Context *cb = nullptr;
+  if (session_established_context) {
+    std::swap(cb, session_established_context);
+  }
+  _check_auth_tickets();
+
   auth_cond.SignalAll();
   if (cb) {
     monc_lock.Unlock();
@@ -558,11 +510,11 @@ void MonClient::handle_auth(MAuthReply *m)
 
 // ---------
 
-void MonClient::_send_mon_message(Message *m, bool force)
+void MonClient::_send_mon_message(Message *m)
 {
   assert(monc_lock.is_locked());
   assert(!cur_mon.empty());
-  if (force || state == MC_STATE_HAVE_SESSION) {
+  if (have_session) {
     assert(cur_con);
     ldout(cct, 10) << "_send_mon_message to mon." << cur_mon
 		   << " at " << cur_con->get_peer_addr() << dendl;
@@ -572,48 +524,22 @@ void MonClient::_send_mon_message(Message *m, bool force)
   }
 }
 
-string MonClient::_pick_random_mon()
-{
-  assert(monmap.size() > 0);
-  if (monmap.size() == 1) {
-    return monmap.get_name(0);
-  } else {
-    int max = monmap.size();
-    int o = -1;
-    if (!cur_mon.empty()) {
-      o = monmap.get_rank(cur_mon);
-      if (o >= 0)
-	max--;
-    }
-
-    int32_t n = rng() % max;
-    if (o >= 0 && n >= o)
-      n++;
-    return monmap.get_name(n);
-  }
-}
-
 void MonClient::_reopen_session(int rank, string name)
 {
   assert(monc_lock.is_locked());
   ldout(cct, 10) << "_reopen_session rank " << rank << " name " << name << dendl;
 
-  if (rank < 0 && name.length() == 0) {
-    cur_mon = _pick_random_mon();
-  } else if (name.length()) {
-    cur_mon = name;
-  } else {
-    cur_mon = monmap.get_name(rank);
-  }
-
   if (cur_con) {
     cur_con->mark_down();
   }
-  cur_con = messenger->get_connection(monmap.get_inst(cur_mon));
-	
-  ldout(cct, 10) << "picked mon." << cur_mon << " con " << cur_con
-		 << " addr " << cur_con->get_peer_addr()
-		 << dendl;
+
+  if (name.length()) {
+    mon_hunters.add_hunter(messenger, monmap, monmap.get_rank(name));
+  } else if (rank >= 0) {
+    mon_hunters.add_hunter(messenger, monmap, rank);
+  } else {
+    mon_hunters.add_hunters(messenger, monmap);
+  }
 
   // throw out old queued messages
   while (!waiting_for_session.empty()) {
@@ -628,33 +554,8 @@ void MonClient::_reopen_session(int rank, string name)
     version_requests.erase(version_requests.begin());
   }
 
-  // adjust timeouts if necessary
-  if (had_a_connection) {
-    reopen_interval_multiplier *= cct->_conf->mon_client_hunt_interval_backoff;
-    if (reopen_interval_multiplier >
-          cct->_conf->mon_client_hunt_interval_max_multiple)
-      reopen_interval_multiplier =
-          cct->_conf->mon_client_hunt_interval_max_multiple;
-  }
-
-  // restart authentication handshake
-  state = MC_STATE_NEGOTIATING;
+  mon_hunters.start();
   hunting = true;
-
-  // send an initial keepalive to ensure our timestamp is valid by the
-  // time we are in an OPENED state (by sequencing this before
-  // authentication).
-  cur_con->send_keepalive();
-
-  MAuth *m = new MAuth;
-  m->protocol = 0;
-  m->monmap_epoch = monmap.get_epoch();
-  __u8 struct_v = 1;
-  ::encode(struct_v, m->auth_payload);
-  ::encode(auth_supported->get_supported_set(), m->auth_payload);
-  ::encode(entity_name, m->auth_payload);
-  ::encode(global_id, m->auth_payload);
-  _send_mon_message(m, true);
 
   for (map<string,ceph_mon_subscribe_item>::iterator p = sub_sent.begin();
        p != sub_sent.end();
@@ -687,19 +588,6 @@ bool MonClient::ms_handle_reset(Connection *con)
   return false;
 }
 
-void MonClient::_finish_hunting()
-{
-  assert(monc_lock.is_locked());
-  if (hunting) {
-    ldout(cct, 1) << "found mon." << cur_mon << dendl; 
-    hunting = false;
-    had_a_connection = true;
-    reopen_interval_multiplier /= 2.0;
-    if (reopen_interval_multiplier < 1.0)
-      reopen_interval_multiplier = 1.0;
-  }
-}
-
 void MonClient::tick()
 {
   ldout(cct, 10) << "tick" << dendl;
@@ -723,7 +611,7 @@ void MonClient::tick()
 
     cur_con->send_keepalive();
 
-    if (state == MC_STATE_HAVE_SESSION) {
+    if (have_session) {
       if (cct->_conf->mon_client_ping_timeout > 0 &&
 	  cur_con->has_feature(CEPH_FEATURE_MSGR_KEEPALIVE2)) {
 	utime_t lk = cur_con->get_last_keepalive_ack();
@@ -744,10 +632,11 @@ void MonClient::tick()
 
 void MonClient::schedule_tick()
 {
-  if (hunting)
-    timer.add_event_after(cct->_conf->mon_client_hunt_interval
-                          * reopen_interval_multiplier, new C_Tick(this));
-  else
+  if (hunting) {
+    auto multiplier = mon_hunters.get_reopen_interval_multiplier();
+    timer.add_event_after(cct->_conf->mon_client_hunt_interval * multiplier,
+			  new C_Tick(this));
+  } else
     timer.add_event_after(cct->_conf->mon_client_ping_interval, new C_Tick(this));
 }
 
@@ -796,7 +685,7 @@ void MonClient::handle_subscribe_ack(MMonSubscribeAck *m)
 int MonClient::_check_auth_tickets()
 {
   assert(monc_lock.is_locked());
-  if (state == MC_STATE_HAVE_SESSION && auth) {
+  if (have_session && auth) {
     if (auth->need_tickets()) {
       ldout(cct, 10) << "_check_auth_tickets getting new tickets!" << dendl;
       MAuth *m = new MAuth;
@@ -820,7 +709,7 @@ int MonClient::_check_auth_rotating()
     return 0;
   }
 
-  if (!auth || state != MC_STATE_HAVE_SESSION) {
+  if (!auth || !have_session) {
     ldout(cct, 10) << "_check_auth_rotating waiting for auth session" << dendl;
     return 0;
   }

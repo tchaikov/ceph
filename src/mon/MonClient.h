@@ -43,12 +43,6 @@ class AuthMethodList;
 class Messenger;
 // class RotatingKeyRing;
 class KeyRing;
-enum MonClientState {
-  MC_STATE_NONE,
-  MC_STATE_NEGOTIATING,
-  MC_STATE_AUTHENTICATING,
-  MC_STATE_HAVE_SESSION,
-};
 
 struct MonClientPinger : public Dispatcher {
 
@@ -106,14 +100,12 @@ class MonClient : public Dispatcher {
 public:
   MonMap monmap;
 private:
-  MonClientState state;
+  bool have_session = false;
 
   Messenger *messenger;
 
   string cur_mon;
   ConnectionRef cur_con;
-
-  SimpleRNG rng;
 
   EntityName entity_name;
 
@@ -185,7 +177,7 @@ private:
   void _reopen_session() {
     _reopen_session(-1, string());
   }
-  void _send_mon_message(Message *m, bool force=false);
+  void _send_mon_message(Message *m);
 
 public:
   void set_entity_name(EntityName name) { entity_name = name; }
@@ -371,10 +363,6 @@ public:
   }
 
   void set_messenger(Messenger *m) { messenger = m; }
-
-  void send_auth_message(Message *m) {
-    _send_mon_message(m, true);
-  }
 
   void set_want_keys(uint32_t want) {
     want_keys = want;
