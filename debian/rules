@@ -25,13 +25,12 @@ override_dh_auto_configure:
 
 override_dh_auto_build:
 	dh_auto_build --buildsystem=cmake
-	cp src/init-ceph debian/ceph-base.ceph.init
 	cp src/init-radosgw debian/radosgw.init
 	cp src/logrotate.conf debian/ceph.logrotate
 
 override_dh_auto_clean:
 	dh_auto_clean --buildsystem=cmake
-	rm -f debian/ceph-base.ceph.init debian/radosgw.init debian/ceph.logrotate
+	rm -f debian/radosgw.init debian/ceph.logrotate
 
 override_dh_auto_install:
 	dh_auto_install --buildsystem=cmake --destdir=$(DESTDIR)
