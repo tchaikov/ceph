@@ -529,7 +529,8 @@ set(librados_srcs
   librados/snap_set_diff.cc
   librados/RadosXattrIter.cc
   )
-add_library(librados ${librados_srcs}
+include(AddCephLibrary)
+ceph_add_library(librados ${librados_srcs} OBJS
   $<TARGET_OBJECTS:cls_references_objs>
   $<TARGET_OBJECTS:common_util_obj>)
 add_dependencies(librados osdc)
@@ -537,7 +538,7 @@ if(WITH_LTTNG)
   add_dependencies(librados rados-tp)
 endif()
 # LINK_PRIVATE instead of PRIVATE is used to backward compatibility with cmake 2.8.11
-target_link_libraries(librados LINK_PRIVATE osdc osd os global common cls_lock_client
+ceph_link_libraries(librados osdc osd os global common cls_lock_client
   ${BLKID_LIBRARIES} ${CRYPTO_LIBS} ${EXTRALIBS})
 if(BUILD_SHARED_LIBS)
   set_target_properties(librados PROPERTIES OUTPUT_NAME rados VERSION 2.0.0
@@ -556,7 +557,7 @@ install(FILES include/rados/librados.h
   include/page.h
   include/crc32c.h
   DESTINATION include/rados)
-install(TARGETS librados DESTINATION lib)
+ceph_install_library(librados)
 
 add_subdirectory(libradosstriper)
 install(FILES
@@ -1116,17 +1117,17 @@ if(WITH_LIBCEPHFS)
   add_library(client STATIC ${libclient_srcs})
   target_link_libraries(client osdc mds)
   set(libcephfs_srcs libcephfs.cc)
-  add_library(cephfs ${libcephfs_srcs}
+  ceph_add_library(cephfs ${libcephfs_srcs} OBJS
     $<TARGET_OBJECTS:cls_references_objs>
     $<TARGET_OBJECTS:common_util_obj>)
-  target_link_libraries(cephfs LINK_PRIVATE client osdc osd os global common
+  ceph_link_libraries(cephfs client osdc osd os global common
     ${BLKID_LIBRARIES}
     ${CRYPTO_LIBS} ${EXTRALIBS})
 if(BUILD_SHARED_LIBS)
   set_target_properties(cephfs PROPERTIES OUTPUT_NAME cephfs VERSION 1.0.0
     SOVERSION 1)
 endif(BUILD_SHARED_LIBS)
-  install(TARGETS cephfs DESTINATION lib)
+  ceph_install_library(cephfs)
   install(DIRECTORY
     "${CMAKE_SOURCE_DIR}/src/include/cephfs"
     DESTINATION include)

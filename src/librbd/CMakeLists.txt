@@ -68,14 +68,14 @@ if(WITH_LTTNG)
   add_dependencies(rbd_internal rbd-tp)
 endif()
 
-add_library(librbd
+ceph_add_library(librbd
+  ${CMAKE_SOURCE_DIR}/src/common/ContextCompletion.cc
+  librbd.cc OBJS
   $<TARGET_OBJECTS:osdc_rbd_objs>
   $<TARGET_OBJECTS:common_util_obj>
   $<TARGET_OBJECTS:krbd_objs>
-  $<TARGET_OBJECTS:parse_secret_objs>
-  ${CMAKE_SOURCE_DIR}/src/common/ContextCompletion.cc
-  librbd.cc)
-target_link_libraries(librbd LINK_PRIVATE 
+  $<TARGET_OBJECTS:parse_secret_objs>)
+ceph_link_libraries(librbd
   rbd_internal
   rbd_types
   journal
@@ -94,4 +94,4 @@ if(BUILD_SHARED_LIBS)
   set_target_properties(librbd PROPERTIES VERSION "1.0.0" SOVERSION "1"
     OUTPUT_NAME rbd)
 endif(BUILD_SHARED_LIBS)
-install(TARGETS librbd DESTINATION lib)
+ceph_install_library(librbd)
