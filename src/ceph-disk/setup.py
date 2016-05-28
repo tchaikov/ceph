@@ -26,13 +26,11 @@ def read(fname):
 
 def filter_included_modules(*m):
     modules = sum(m, [])
-    if sys.version_info[0] == 2 and sys.version_info[1] <= 6:
-        return modules
+    assert sys.version_info >= (2, 7)
     included_modules = set(['argparse', 'importlib', 'sysconfig'])
     return list(set(modules) - included_modules)
 
 
-install_requires = read('requirements.txt').split()
 tests_require = read('test-requirements.txt').split()
 
 setup(
@@ -48,8 +46,7 @@ setup(
     keywords='ceph',
     url="https://git.ceph.com/?p=ceph.git;a=summary",
 
-    install_requires=filter_included_modules(['setuptools'],
-                                             install_requires),
+    install_requires=filter_included_modules(['setuptools']),
     tests_require=filter_included_modules(tests_require),
 
     classifiers=[
