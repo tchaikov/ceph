@@ -916,7 +916,7 @@ add_library(osd STATIC ${osd_srcs}
   $<TARGET_OBJECTS:global_common_objs>
   $<TARGET_OBJECTS:heap_profiler_objs>
   $<TARGET_OBJECTS:common_util_obj>)
-target_link_libraries(osd dl leveldb ${ALLOC_LIBS})
+target_link_libraries(osd os dl leveldb ${ALLOC_LIBS})
 if(WITH_LTTNG)
   add_dependencies(osd osd-tp)
 endif()
@@ -926,7 +926,7 @@ set(ceph_osd_srcs
 add_executable(ceph-osd ${ceph_osd_srcs}
   $<TARGET_OBJECTS:common_util_obj>)
 add_dependencies(ceph-osd erasure_code_plugins)
-target_link_libraries(ceph-osd osd os global ${BLKID_LIBRARIES})
+target_link_libraries(ceph-osd osd global ${BLKID_LIBRARIES})
 if(${HAVE_LIBFUSE})
   target_link_libraries(ceph-osd ${FUSE_LIBRARIES})
 endif(${HAVE_LIBFUSE})
