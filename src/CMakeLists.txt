@@ -533,20 +533,41 @@ set(librados_srcs
   librados/snap_set_diff.cc
   librados/RadosXattrIter.cc
   )
-add_library(librados ${librados_srcs}
+add_library(librados-objs OBJECT ${librados_srcs})
+if(WITH_LTTNG)
+  add_dependencies(librados-objs rados-tp)
+endif()
+set(librados_objs
+  $<TARGET_OBJECTS:librados-objs>
   $<TARGET_OBJECTS:cls_references_objs>
   $<TARGET_OBJECTS:common_util_obj>)
-add_dependencies(librados osdc)
-if(WITH_LTTNG)
-  add_dependencies(librados rados-tp)
-endif()
-# LINK_PRIVATE instead of PRIVATE is used to backward compatibility with cmake 2.8.11
-target_link_libraries(librados LINK_PRIVATE osdc osd os global common cls_lock_client
-  ${BLKID_LIBRARIES} ${CRYPTO_LIBS} ${EXTRALIBS})
 if(BUILD_SHARED_LIBS)
-  set_target_properties(librados PROPERTIES OUTPUT_NAME rados VERSION 2.0.0
-    SOVERSION 2)
-endif(BUILD_SHARED_LIBS)
+  list(APPEND librados_targets librados)
+endif()
+if(BUILD_STATIC_LIBS)
+  list(APPEND librados_targets librados-static)
+endif()
+
+foreach(target ${librados_targets})
+  if(${target} MATCHES "-static$")
+    add_library(${target} STATIC ${librados_objs})
+  else()
+    add_library(${target} SHARED ${librados_objs})
+  endif()
+  # LINK_PRIVATE instead of PRIVATE is used to backward compatibility with cmake 2.8.11
+  target_link_libraries(${target} LINK_PRIVATE
+    osdc osd os global common cls_lock_client
+    ${BLKID_LIBRARIES} ${CRYPTO_LIBS} ${EXTRALIBS})
+  set_target_properties(${target} PROPERTIES
+      OUTPUT_NAME rados
+      VERSION 2.0.0
+      SOVERSION 2)
+  install(TARGETS ${target} DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endforeach(target ${librados_targets})
+if(NOT TARGET librados)
+  add_library(librados ALIAS librados-static)
+endif()
+add_dependencies(librados osdc)
 
 add_library(librados_api STATIC common/buffer.cc librados/librados.cc)
 
@@ -560,7 +581,6 @@ install(FILES include/rados/librados.h
   include/page.h
   include/crc32c.h
   DESTINATION include/rados)
-install(TARGETS librados DESTINATION lib)
 
 add_subdirectory(libradosstriper)
 install(FILES
@@ -1117,18 +1137,38 @@ if(WITH_LIBCEPHFS)
     client/posix_acl.cc)
   add_library(client STATIC ${libclient_srcs})
   target_link_libraries(client osdc mds)
-  set(libcephfs_srcs libcephfs.cc)
-  add_library(cephfs ${libcephfs_srcs}
+
+  add_library(cephfs-objs OBJECT libcephfs.cc)
+  set(cephfs_objs
+    $<TARGET_OBJECTS:cephfs-objs>
     $<TARGET_OBJECTS:cls_references_objs>
     $<TARGET_OBJECTS:common_util_obj>)
-  target_link_libraries(cephfs LINK_PRIVATE client osdc osd os global common
-    ${BLKID_LIBRARIES}
-    ${CRYPTO_LIBS} ${EXTRALIBS})
-if(BUILD_SHARED_LIBS)
-  set_target_properties(cephfs PROPERTIES OUTPUT_NAME cephfs VERSION 1.0.0
-    SOVERSION 1)
-endif(BUILD_SHARED_LIBS)
-  install(TARGETS cephfs DESTINATION lib)
+
+  if(BUILD_SHARED_LIBS)
+    list(APPEND libcephfs_targets cephfs)
+  endif()
+  if(BUILD_STATIC_LIBS)
+    list(APPEND libcephfs_targets cephfs-static)
+  endif()
+  foreach(target ${libcephfs_targets})
+    if(${target} MATCHES "-static$")
+      add_library(${target} STATIC ${cephfs_objs})
+    else()
+      add_library(${target} SHARED ${cephfs_objs})
+    endif()
+    target_link_libraries(${target} LINK_PRIVATE
+      client osdc osd os global common
+      ${BLKID_LIBRARIES}
+      ${CRYPTO_LIBS} ${EXTRALIBS})
+    set_target_properties(${target} PROPERTIES
+      OUTPUT_NAME cephfs
+      VERSION 1.0.0
+      SOVERSION 1)
+    install(TARGETS ${target} DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  endforeach(target ${libcephfs_targets})
+  if(NOT TARGET cephfs)
+    add_library(cephfs ALIAS cephfs-static)
+  endif()
   install(DIRECTORY
     "${CMAKE_SOURCE_DIR}/src/include/cephfs"
     DESTINATION include)
@@ -1411,28 +1451,43 @@ if(${WITH_RADOSGW})
 
   set(librgw_srcs
     rgw/librgw.cc
-    rgw/rgw_file.cc
-    )
-
-  add_library(rgw SHARED ${librgw_srcs})
-  target_link_libraries(rgw LINK_PRIVATE
-    rgw_a
-    librados
-    cls_rgw_client
-    cls_lock_client
-    cls_refcount_client
-    cls_log_client
-    cls_statelog_client
-    cls_timeindex_client
-    cls_version_client
-    cls_replica_log_client
-    cls_user_client
-    curl expat global
-    resolv)
-  set_target_properties(rgw PROPERTIES OUTPUT_NAME rgw VERSION 2.0.0
-    SOVERSION 1)
-
-  install(TARGETS rgw DESTINATION lib)
+    rgw/rgw_file.cc)
+  add_library(rgw-objs OBJECT ${librgw_srcs})
+  if(BUILD_SHARED_LIBS)
+    list(APPEND librgw_targets rgw)
+  endif()
+  if(BUILD_STATIC_LIBS)
+    list(APPEND librgw_targets rgw-static)
+  endif()
+  foreach(target ${librgw_targets})
+    if(${target} MATCHES "-static$")
+      add_library(${target} STATIC $<TARGET_OBJECTS:rgw-objs>)
+    else()
+      add_library(${target} SHARED $<TARGET_OBJECTS:rgw-objs>)
+    endif()
+    target_link_libraries(${target} LINK_PRIVATE
+      rgw_a
+      librados
+      cls_rgw_client
+      cls_lock_client
+      cls_refcount_client
+      cls_log_client
+      cls_statelog_client
+      cls_timeindex_client
+      cls_version_client
+      cls_replica_log_client
+      cls_user_client
+      curl expat global
+      resolv)
+    set_target_properties(${target} PROPERTIES
+      OUTPUT_NAME rgw
+      VERSION 2.0.0
+      SOVERSION 1)
+    install(TARGETS ${target} DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  endforeach(target ${librgw_targets})
+  if(NOT TARGET rgw)
+    add_library(rgw ALIAS rgw-static)
+  endif()
   install(FILES
     include/rados/librgw.h
     include/rados/rgw_file.h

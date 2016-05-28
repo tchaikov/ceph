@@ -151,6 +151,11 @@ CHECK_CXX_SOURCE_COMPILES("
 set(CEPH_MAN_DIR "share/man" CACHE STRING "Install location for man pages (relative to prefix).")
 
 option(BUILD_SHARED_LIBS "Build shared libraries" ON)
+option(BUILD_STATIC_LIBS "Build static libraries" OFF)
+if(NOT BUILD_STATIC_LIBS)
+  # both or shared or static, but not nothing
+  set(BUILD_STATIC_LIBS ON)
+endif()
 
 find_package(execinfo)
 
