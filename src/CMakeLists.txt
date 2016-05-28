@@ -2,6 +2,12 @@ include(GetGitRevisionDescription)
 
 enable_language(C ASM)
 include(GNUInstallDirs)
+set(bindir ${CMAKE_INSTALL_BINDIR})
+set(sbindir ${CMAKE_INSTALL_SBINDIR})
+set(libdir ${CMAKE_INSTALL_LIBDIR})
+set(sysconfdir ${CMAKE_INSTALL_SYSCONFDIR})
+set(pkgdatadir ${CMAKE_INSTALL_DATADIR})
+set(datadir ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME})
 set(prefix ${CMAKE_INSTALL_PREFIX})
 
 add_definitions("-DCEPH_LIBDIR=\"${CMAKE_INSTALL_LIBDIR}\"")
