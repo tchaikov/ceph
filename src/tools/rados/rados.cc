@@ -32,6 +32,7 @@ using namespace libradosstriper;
 #include "auth/Crypto.h"
 #include <iostream>
 #include <fstream>
+#include <boost/algorithm/string.hpp>
 
 #include <stdlib.h>
 #include <time.h>
@@ -150,8 +151,8 @@ void usage(ostream& out)
 "   repair-get [--force] <obj-name> <osdid> <epoch> [outfile]\n"
 "                                    fetch a particular shard/replica of an object\n"
 "                                    --force ignores EIO and returns whatever data it can\n"
-"   repair-copy <obj-name> <osdid> <epoch> <version> [data|omap|xattr]\n"
-"                                    overwrite an object with a particular shard/replica\n"
+"   repair-copy <obj-name> <shards|osds> <epoch> <version> [data|omap|xattr]\n"
+"                                    overwrite an object by specifying a set of bad shard/replica\n"
 "\n"
 "CACHE POOLS: (for testing/development only)\n"
 "   cache-flush <obj-name>           flush cache pool object (blocking)\n"
@@ -365,10 +366,40 @@ static int do_repair_get(IoCtx& io_ctx, const char *objname,
   return ret;
 }
 
-static int do_repair_copy(IoCtx& io_ctx, const string& oid, int32_t osdid,
-			  epoch_t epoch, uint64_t version, uint32_t what)
+static int do_repair_copy(IoCtx& io_ctx, const string& oid, const string& bad_shards_str,
+			  const char* epoch_str, const char* version_str, const string& what_str)
 {
-  int ret = io_ctx.repair_copy(oid, version, what, osdid, epoch);
+  vector<string> strs;
+  boost::split(strs, bad_shards_str, boost::is_any_of(","));
+  vector<pair<int32_t,int8_t>> bad_shards;
+
+  for (const auto& s : strs) {
+    try {
+      auto delim = s.find('/');
+      if (delim == s.npos) {
+	bad_shards.emplace_back(stoi(s), 0);
+      } else {
+	bad_shards.emplace_back(stoi(s.substr(0, delim)),
+				stoi(s.substr(delim + 1)));
+      }
+    } catch (const exception& e) {
+      cerr << "Unable to parse the shards specified: " << strs
+	   << ". " << e.what() << std::endl;
+      return -EINVAL;
+    }
+  }
+  epoch_t epoch = atoi(epoch_str);
+  uint64_t version = atoi(version_str);
+  uint32_t what = (librados::repair_copy_t::DATA |
+		   librados::repair_copy_t::ATTR);
+  if (what_str.compare("data") == 0) {
+    what = librados::repair_copy_t::DATA;
+  } else if (what_str.compare("omap") == 0) {
+    what = librados::repair_copy_t::OMAP;
+  } else if (what_str.compare("xattr") == 0) {
+    what = librados::repair_copy_t::ATTR;
+  }
+  int ret = io_ctx.repair_copy(oid, version, what, bad_shards, epoch);
   if (ret == -EINVAL || ret == -ERANGE) {
     cerr << "Specified epoch or version does not match" << std::endl;
   }
@@ -2152,25 +2183,15 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   else if (strcmp(nargs[0], "repair-copy") == 0)  {
     if (!pool_name || nargs.size() < 5 || nargs.size() > 7)
       usage_exit();
-    string oid{nargs[1]};
-    int32_t osdid = atoi(nargs[2]);
-    epoch_t epoch = atoi(nargs[3]);
-    uint64_t ver = atoi(nargs[4]);
-    uint32_t what = (librados::repair_copy_t::DATA |
-		     librados::repair_copy_t::ATTR);
-    if (nargs.size() == 6) {
-      if (strcmp(nargs[5], "data") == 0) {
-	what = librados::repair_copy_t::DATA;
-      } else if (strcmp(nargs[5], "omap") == 0) {
-	what = librados::repair_copy_t::OMAP;
-      } else if (strcmp(nargs[5], "xattr")) {
-	what = librados::repair_copy_t::ATTR;
-      }
-    }
-    ret = do_repair_copy(io_ctx, oid, osdid, epoch, ver, what);
+    // oid, bad_osds, epoch, ver, what
+    const string oid{nargs[1]};
+    const string bad_shards{nargs[2]};
+    const string epoch{nargs[3]};
+    const string version{nargs[4]};
+    const string what{nargs.size() == 6 ? nargs[5] : ""};
+    ret = do_repair_copy(io_ctx, nargs[1], nargs[2], nargs[3], nargs[4], what);
     if (ret < 0) {
-      cerr << "error copying shard from osd " << osdid << " of "
-	   << pool_name << "/" << nargs[1] << "@" << ver
+      cerr << "error copying " << pool_name << "/" << nargs[1] << "@" << nargs[4]
 	   << ": " << cpp_strerror(ret) << std::endl;
       goto out;
     }

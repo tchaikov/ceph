@@ -2027,17 +2027,27 @@ int librados::IoCtx::cache_unpin(const string& oid)
 }
 
 int librados::IoCtx::repair_copy(const string& oid, uint64_t version, uint32_t what,
-				 int32_t osd, uint32_t epoch)
+				 const vector<pair<int32_t, int8_t>>& bad_shards,
+				 uint32_t epoch)
 {
-  object_t obj(oid);
-  return io_ctx_impl->repair_copy(obj, osd, epoch, version, what);
+  vector<pg_shard_t> shards;
+  for (const auto& shard : bad_shards) {
+    shards.emplace_back(shard.first, shard_id_t(shard.second));
+  }
+  return io_ctx_impl->repair_copy(object_t(oid), version, what, shards, epoch);
 }
 
 int librados::IoCtx::aio_repair_copy(const std::string& oid, AioCompletion *c,
 				     uint64_t version, uint32_t what,
-				     int32_t osdid, uint32_t epoch)
+				     const vector<pair<int32_t, int8_t>>& bad_shards,
+				     uint32_t epoch)
 {
-  return io_ctx_impl->aio_repair_copy(oid, c->pc, version, what, osdid, epoch);
+  vector<pg_shard_t> shards;
+  for (const auto& shard : bad_shards) {
+    shards.emplace_back(shard.first, shard_id_t(shard.second));
+  }
+  return io_ctx_impl->aio_repair_copy(object_t(oid), c->pc, version, what,
+				      shards, epoch);
 }
 
 void librados::IoCtx::locator_set_key(const string& key)

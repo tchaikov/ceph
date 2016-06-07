@@ -1040,10 +1040,10 @@ struct ObjectOperation {
   /**
    * overwrite the object content OSDs with the one from the src_osd
    */
-  void repair_copy(int32_t src_osd, uint32_t what) {
+  void repair_copy(uint32_t what, const std::vector<pg_shard_t> bad_shards) {
     OSDOp& osd_op = add_op(CEPH_OSD_OP_REPAIR_COPY);
-    ::encode(src_osd, osd_op.indata);
     ::encode(what, osd_op.indata);
+    ::encode(bad_shards, osd_op.indata);
   }
 
   /**
@@ -2315,6 +2315,13 @@ public:
     return i;
   }
 
+  /**
+   * get a random osd not listed in blacklist
+   * @note the primary osd will be returned even it is listed in the blacklist
+   *       if the target pool is a erasure pool, the primary osd is returned.
+   */
+  int32_t pick_random_osd(const op_target_t& t,
+			  const vector<pg_shard_t>& blacklist) const;
 
   // high-level helpers
   Op *prepare_stat_op(

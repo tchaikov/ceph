@@ -1311,25 +1311,44 @@ int librados::IoCtxImpl::repair_read(const object_t& oid, bufferlist& bl,
   return bl.length();
 }
 
-int librados::IoCtxImpl::repair_copy(const object_t& oid, int32_t osdid,
-				     epoch_t epoch, uint64_t ver, uint32_t what)
+int librados::IoCtxImpl::repair_copy(const object_t& oid,
+				     uint64_t ver, uint32_t what,
+				     const std::vector<pg_shard_t>& bad_shards,
+				     epoch_t epoch)
 {
   ::ObjectOperation op;
   op.assert_interval(epoch);
   op.assert_version(ver);
-  op.repair_copy(osdid, what);
+  op.repair_copy(what, bad_shards);
   return operate(oid, &op, nullptr, CEPH_OSD_FLAG_REPAIR_WRITES);
 }
 
 int librados::IoCtxImpl::aio_repair_copy(const object_t& oid, AioCompletionImpl *comp,
-					 int32_t osdid, epoch_t epoch, uint64_t ver,
-					 uint32_t what)
+					 uint64_t ver, uint32_t what,
+					 const std::vector<pg_shard_t>& bad_shards,
+					 epoch_t epoch)
 {
   ::ObjectOperation op;
   op.assert_interval(epoch);
   op.assert_version(ver);
-  op.repair_copy(osdid, what);
-  return aio_operate(oid, &op, comp, snapc, CEPH_OSD_FLAG_REPAIR_WRITES);
+  op.repair_copy(what, bad_shards);
+
+  auto ut = ceph::real_clock::now(client->cct);
+  auto onack = new C_aio_Ack(comp);
+  auto oncommit = new C_aio_Safe(comp);
+
+  comp->io = this;
+  queue_aio_write(comp);
+
+  auto objecter_op = objecter->prepare_mutate_op(oid, oloc, op, snapc,
+						 ut, 0, onack,
+						 oncommit, &comp->objver);
+
+  objecter_op->target.osd = objecter->pick_random_osd(objecter_op->target, bad_shards);
+  objecter_op->target.use_osd_epoch = true;
+  objecter_op->target.epoch = epoch;
+  objecter->op_submit(objecter_op, &comp->tid);
+  return 0;
 }
 
 int librados::IoCtxImpl::mapext(const object_t& oid,

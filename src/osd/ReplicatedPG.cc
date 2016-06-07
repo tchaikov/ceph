@@ -1362,37 +1362,21 @@ int ReplicatedPG::do_scrub_ls(MOSDOp *m, OSDOp *osd_op)
 // the src oid is always identical to the dest oid (the one in OpContext)
 int ReplicatedPG::do_repair_copy(OpContext *ctx, const OSDOp& osd_op, bufferlist::iterator& bp)
 {
-  int32_t src_osd;
   uint32_t what;
+  vector<pg_shard_t> bad_shards;
   try {
-    ::decode(src_osd, bp);
     ::decode(what, bp);
+    ::decode(bad_shards, bp);
   } catch (buffer::error&) {
     dout(10) << "corrupted " << __func__ << " arg" << dendl;
     return -EINVAL;
   }
+  if (bad_shards.empty() || !what) {
+    return 0;
+  }
   if (!ctx->copy_cb) {
     // start
-    auto cb = new CopyFromCallback(ctx);
-    ctx->copy_cb = cb;
-    uint32_t to_copy = 0;
-    if (what & librados::repair_copy_t::DATA)
-      to_copy |= CopyOp::COPY_DATA;
-    if (what & librados::repair_copy_t::ATTR)
-      to_copy |= CopyOp::COPY_ATTR;
-    if (what & librados::repair_copy_t::OMAP)
-      to_copy |= CopyOp::COPY_OMAP;
-    unsigned flags = (CEPH_OSD_COPY_FROM_FLAG_IGNORE_OVERLAY |
-		      CEPH_OSD_COPY_FROM_FLAG_IGNORE_CACHE |
-		      CEPH_OSD_COPY_FROM_FLAG_REPAIR);
-    auto m = static_cast<MOSDOp*>(ctx->op->get_req());
-    // we expect the client side to prepend an assert_version() call before
-    // this op, so just pass 0 as the version.
-    start_copy(cb, ctx->obc, src_osd, ctx->obs->oi.soid,
-	       m->get_object_locator(), 0,
-	       to_copy, flags, false,
-	       CEPH_OSD_FLAG_REPAIR_READS | CEPH_OSD_FLAG_IGNORE_OVERLAY,
-	       CEPH_OSD_FLAG_REPAIR_WRITES);
+    start_repair_copy(ctx, what, bad_shards);
     return -EINPROGRESS;
   } else {
     // finish
@@ -1873,6 +1857,8 @@ void ReplicatedPG::do_op(OpRequestRef& op)
 
   // io blocked on obc?
   if (!m->has_flag(CEPH_OSD_FLAG_FLUSH) &&
+      !m->has_flag(CEPH_OSD_FLAG_REPAIR_READS) &&
+      !m->has_flag(CEPH_OSD_FLAG_REPAIR_WRITES) &&
       maybe_await_blocked_snapset(oid, op)) {
     return;
   }
@@ -2890,8 +2876,7 @@ void ReplicatedPG::promote_object(ObjectContextRef obc,
                    CEPH_OSD_COPY_FROM_FLAG_IGNORE_CACHE |
                    CEPH_OSD_COPY_FROM_FLAG_MAP_SNAP_CLONE |
                    CEPH_OSD_COPY_FROM_FLAG_RWORDERED;
-  start_copy(cb, obc, 0, obc->obs.oi.soid, my_oloc, 0, flags,
-	     CopyOp::COPY_ALL,
+  start_copy(cb, obc, obc->obs.oi.soid, my_oloc, 0, flags,
 	     obc->obs.oi.soid.snap == CEPH_NOSNAP,
 	     src_fadvise_flags, 0);
 
@@ -6000,8 +5985,7 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  }
 	  CopyFromCallback *cb = new CopyFromCallback(ctx);
 	  ctx->copy_cb = cb;
-	  start_copy(cb, ctx->obc, 0, src, src_oloc, src_version,
-		     CopyOp::COPY_ALL,
+	  start_copy(cb, ctx->obc, src, src_oloc, src_version,
 		     op.copy_from.flags,
 		     false,
 		     op.copy_from.src_fadvise_flags,
@@ -7219,9 +7203,8 @@ void ReplicatedPG::fill_in_copy_get_noent(OpRequestRef& op, hobject_t oid,
 }
 
 void ReplicatedPG::start_copy(CopyCallback *cb, ObjectContextRef obc,
-			      int32_t src_osd,
 			      hobject_t src, object_locator_t oloc,
-			      version_t version, unsigned what,
+			      version_t version,
 			      unsigned flags,
 			      bool mirror_snapset,
 			      unsigned src_obj_fadvise_flags,
@@ -7246,12 +7229,63 @@ void ReplicatedPG::start_copy(CopyCallback *cb, ObjectContextRef obc,
   }
 
   CopyOpRef cop(std::make_shared<CopyOp>(cb, obc, src, oloc, version, flags,
-			   mirror_snapset, src_osd, what, src_obj_fadvise_flags,
+			   mirror_snapset, src_obj_fadvise_flags,
 			   dest_obj_fadvise_flags));
   copy_ops[dest] = cop;
   obc->start_block();
 
   _copy_some(obc, cop);
+}
+
+void ReplicatedPG::start_repair_copy(OpContext *ctx, uint32_t what,
+				     const vector<pg_shard_t>& bad_shards)
+{
+  const auto& oi = ctx->obs->oi;
+  const auto& dest = oi.soid;
+  auto found = copy_ops.find(dest);
+  if (found != copy_ops.end()) {
+    cancel_copy(found->second, false);
+  }
+  // we expect the client side to prepend an assert_version() call before
+  // this op, so just pass 0 as the version.
+  auto cb = new CopyFromCallback(ctx);
+  ctx->copy_cb = cb;
+  uint32_t to_copy = 0;
+  if (what & librados::repair_copy_t::DATA)
+    to_copy |= CopyOp::COPY_DATA;
+  if (what & librados::repair_copy_t::ATTR)
+    to_copy |= CopyOp::COPY_ATTR;
+  if (what & librados::repair_copy_t::OMAP)
+    to_copy |= CopyOp::COPY_OMAP;
+  const auto m = static_cast<MOSDOp*>(ctx->op->get_req());
+  unsigned flags = (CEPH_OSD_COPY_FROM_FLAG_IGNORE_OVERLAY |
+		    CEPH_OSD_COPY_FROM_FLAG_IGNORE_CACHE |
+		    CEPH_OSD_COPY_FROM_FLAG_REPAIR);
+  unsigned src_flags = (CEPH_OSD_OP_FLAG_FAILOK |
+			CEPH_OSD_OP_FLAG_FADVISE_SEQUENTIAL |
+			CEPH_OSD_OP_FLAG_FADVISE_NOCACHE |
+			CEPH_OSD_FLAG_REPAIR_READS);
+  auto cop(std::make_shared<CopyOp>(cb, ctx->obc,
+				    oi.soid,
+				    m->get_object_locator(), 0,
+				    flags, false,
+				    src_flags, 0));
+  cop->src_osd = pg_whoami.osd;
+  cop->what = to_copy;
+  copy_ops[dest] = cop;
+  ctx->obc->start_block();
+  // mark the bad shard missing so they are not chosen when repairing
+  if (pool.info.require_rollback()) {
+    for (const auto& bad_shard : bad_shards) {
+      if (bad_shard != primary) {
+	peer_missing[bad_shard].add(oi.soid, oi.version, eversion_t());
+      } else {
+	pg_log.missing_add(oi.soid, oi.version, eversion_t());
+	pg_log.set_last_requested(0);
+      }
+    }
+  }
+  _copy_some(ctx->obc, cop);
 }
 
 void ReplicatedPG::_copy_some(ObjectContextRef obc, CopyOpRef cop)
@@ -7270,7 +7304,7 @@ void ReplicatedPG::_copy_some(ObjectContextRef obc, CopyOpRef cop)
   if (cop->flags & CEPH_OSD_COPY_FROM_FLAG_RWORDERED)
     flags |= CEPH_OSD_FLAG_RWORDERED;
   if (cop->flags & CEPH_OSD_COPY_FROM_FLAG_REPAIR)
-    flags |= CEPH_OSD_FLAG_REPAIR_WRITES;
+    flags |= CEPH_OSD_FLAG_REPAIR_READS;
 
   C_GatherBuilder gather(g_ceph_context);
 
@@ -7296,10 +7330,10 @@ void ReplicatedPG::_copy_some(ObjectContextRef obc, CopyOpRef cop)
   }
   op.copy_get(&cop->cursor, get_copy_chunk_size(),
 	      &cop->results.object_size, &cop->results.mtime,
-	      cop->to_copy & CopyOp::COPY_ATTR ? &cop->attrs : nullptr,
-	      cop->to_copy & CopyOp::COPY_DATA ? &cop->data : nullptr,
-	      cop->to_copy & CopyOp::COPY_OMAP ? &cop->omap_header : nullptr,
-	      cop->to_copy & CopyOp::COPY_OMAP ? &cop->omap_data : nullptr,
+	      cop->what & CopyOp::COPY_ATTR ? &cop->attrs : nullptr,
+	      cop->what & CopyOp::COPY_DATA ? &cop->data : nullptr,
+	      cop->what & CopyOp::COPY_OMAP ? &cop->omap_header : nullptr,
+	      cop->what & CopyOp::COPY_OMAP ? &cop->omap_data : nullptr,
 	      &cop->results.snaps, &cop->results.snap_seq,
 	      &cop->results.flags,
 	      &cop->results.source_data_digest,
@@ -7317,11 +7351,15 @@ void ReplicatedPG::_copy_some(ObjectContextRef obc, CopyOpRef cop)
 
   ceph_tid_t tid;
   if (flags & CEPH_OSD_FLAG_REPAIR_WRITES) {
+
     auto objecter_op = osd->objecter->prepare_read_op(cop->src.oid, cop->oloc, op,
 						      cop->src.snap, nullptr,
 						      CEPH_OSD_FLAG_REPAIR_READS | CEPH_OSD_FLAG_IGNORE_OVERLAY,
 						      gather.new_sub(),
 						      nullptr);
+    vector<int> up, acting;
+    int up_primary, acting_primary;
+    get_osdmap()->pg_to_up_acting_osds(info.pgid.pgid, &up, &up_primary, &acting, &acting_primary);
     objecter_op->target.osd = cop->src_osd;
     objecter_op->target.use_osd_epoch = true;
     osd->objecter->op_submit(objecter_op, &tid);

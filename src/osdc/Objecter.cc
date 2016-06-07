@@ -2645,6 +2645,44 @@ int64_t Objecter::get_object_pg_hash_position(int64_t pool, const string& key,
   return p->raw_hash_to_pg(p->hash_key(key, ns));
 }
 
+int32_t Objecter::pick_random_osd(const op_target_t& t,
+				  const vector<pg_shard_t>& blacklist) const
+{
+  const pg_pool_t *pi = osdmap->get_pg_pool(t.base_oloc.pool);
+  if (!pi) {
+    return -1;
+  }
+  pg_t pgid;
+  if (!osdmap->object_locator_to_pg(t.target_oid, t.target_oloc, pgid)) {
+    return -1;
+  }
+  vector<int> acting;
+  int acting_primary;
+  osdmap->pg_to_up_acting_osds(pgid, nullptr, nullptr,
+			       &acting, &acting_primary);
+  if (acting_primary == -1) {
+    return -1;
+  }
+  if (pi->is_erasure()) {
+    // erasure pool will submit sub reads for retrieving the non-missing shards
+    // anyway, and there is chance that both good and bad shards are co-located
+    // in the same osd, so for simplicity, we just return the primary here.
+    return acting_primary;
+  } else {
+    for (auto& shard : blacklist) {
+      auto found = find(acting.begin(), acting.end(), shard.osd);
+      if (found != acting.end()) {
+	acting.erase(found);
+      }
+    }
+    if (acting.empty()) {
+      return -1;
+    }
+    int p = rand() % acting.size();
+    return acting[p];
+  }
+}
+
 int Objecter::_calc_target(op_target_t *t, epoch_t *last_force_resend,
 			   bool any_change)
 {

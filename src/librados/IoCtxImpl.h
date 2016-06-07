@@ -130,8 +130,9 @@ struct librados::IoCtxImpl {
                   const object_t& src_oid, uint64_t src_offset, uint64_t len);
   int read(const object_t& oid, bufferlist& bl, size_t len, uint64_t off);
   int repair_read(const object_t&, ceph::bufferlist&, size_t, uint64_t, int, int32_t, epoch_t);
-  int repair_copy(const object_t& oid, int32_t osdid, epoch_t epoch,
-		  uint64_t ver, uint32_t what);
+  int repair_copy(const object_t& oid, uint64_t ver,
+		  uint32_t what, const std::vector<pg_shard_t>& bad_shards,
+		  epoch_t epoch);
   int mapext(const object_t& oid, uint64_t off, size_t len,
 	     std::map<uint64_t,uint64_t>& m);
   int sparse_read(const object_t& oid, std::map<uint64_t,uint64_t>& m,
@@ -205,8 +206,9 @@ struct librados::IoCtxImpl {
 	       bufferlist *pbl, size_t len, uint64_t off, uint64_t snapid,
 	       int flags, int32_t osdid, epoch_t e);
   int aio_repair_copy(const object_t& oid, AioCompletionImpl *c,
-		      int32_t osdid, epoch_t epoch, uint64_t ver,
-		      uint32_t what);
+		      uint64_t ver, uint32_t what,
+		      const std::vector<pg_shard_t>& bad_shards,
+		      epoch_t epoch);
   int aio_write(const object_t &oid, AioCompletionImpl *c,
 		const bufferlist& bl, size_t len, uint64_t off);
   int aio_append(const object_t &oid, AioCompletionImpl *c,
