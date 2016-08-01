@@ -70,29 +70,29 @@ add_library(rbd_internal STATIC
 if(WITH_LTTNG)
   add_dependencies(rbd_internal rbd-tp)
 endif()
+target_link_libraries(rbd_internal osdc journal)
 
 add_library(librbd ${CEPH_SHARED}
-  $<TARGET_OBJECTS:osdc_rbd_objs>
   $<TARGET_OBJECTS:common_util_obj>
   $<TARGET_OBJECTS:krbd_objs>
   $<TARGET_OBJECTS:parse_secret_objs>  
-  ${CMAKE_SOURCE_DIR}/src/common/ContextCompletion.cc
+  $<TARGET_OBJECTS:common_internals>
   librbd.cc)
 target_link_libraries(librbd LINK_PRIVATE 
   rbd_internal
   rbd_types
   journal
-  librados 
-  common 
-  osdc
+  common
   cls_rbd_client 
   cls_lock_client 
-  cls_journal_client 
+  cls_journal_client
   pthread
   udev
-  keyutils
   ${CMAKE_DL_LIBS}
   ${EXTRALIBS})
+target_link_libraries(librbd LINK_PUBLIC
+  librados
+  keyutils)
 if(ENABLE_SHARED)
   set_target_properties(librbd PROPERTIES
     OUTPUT_NAME rbd

@@ -350,12 +350,7 @@ if(HAVE_GOOD_YASM_ELF64)
     common/crc32c_intel_fast_zero_asm.S)
 endif(HAVE_GOOD_YASM_ELF64)
 
-add_library(common_buffer_obj OBJECT
-  common/buffer.cc)
-
-add_library(common_texttable_obj OBJECT
-  common/TextTable.cc)
-
+add_subdirectory(common)
 set(libcommon_files
   ${CMAKE_BINARY_DIR}/src/include/ceph_ver.h
   ceph_ver.c
@@ -366,7 +361,6 @@ set(libcommon_files
   common/BackTrace.cc
   common/perf_counters.cc
   common/mutex_debug.cc
-  common/Mutex.cc
   common/OutputDataSocket.cc
   common/admin_socket.cc
   common/admin_socket_client.cc
@@ -374,10 +368,8 @@ set(libcommon_files
   common/Readahead.cc
   ${crush_srcs}
   common/cmdparse.cc
-  common/escape.c
   common/io_priority.cc
   common/Clock.cc
-  common/ceph_time.cc
   common/Throttle.cc
   common/Timer.cc
   common/Finisher.cc
@@ -388,7 +380,6 @@ set(libcommon_files
   common/crc32c_intel_fast.c
   ${yasm_srcs}
   xxHash/xxhash.c
-  common/assert.cc
   common/run_cmd.cc
   common/WorkQueue.cc
   common/ConfUtils.cc
@@ -398,12 +389,12 @@ set(libcommon_files
   common/str_list.cc
   common/str_map.cc
   common/snap_types.cc
-  common/errno.cc
   common/TrackedOp.cc
   common/SloppyCRCMap.cc
   common/types.cc
   $<TARGET_OBJECTS:common_buffer_obj>
   $<TARGET_OBJECTS:common_texttable_obj>
+  $<TARGET_OBJECTS:common_internals>
   log/Log.cc
   log/SubsystemMap.cc
   mon/MonCap.cc
@@ -440,13 +431,9 @@ set(libcommon_files
   common/dout.cc
   common/signal.cc
   common/simple_spin.cc
-  common/Thread.cc
-  common/Formatter.cc
-  common/HTMLFormatter.cc
   common/HeartbeatMap.cc
   common/PluginRegistry.cc
   common/ceph_fs.cc
-  common/ceph_hash.cc
   common/ceph_strings.cc
   common/ceph_frag.cc
   common/config.cc
@@ -482,13 +469,6 @@ set(mon_common_files
   auth/cephx/CephxSessionHandler.cc
   erasure-code/ErasureCodePlugin.cc)
 add_library(mon_common_objs OBJECT ${mon_common_files})
-set(common_mountcephfs_files
-  common/armor.c
-  common/safe_io.c
-  common/module.c
-  common/addr_parsing.c)
-add_library(common_mountcephfs_objs OBJECT
-  ${common_mountcephfs_files})
 
 if(WITH_PROFILER)
   list(APPEND libcommon_files

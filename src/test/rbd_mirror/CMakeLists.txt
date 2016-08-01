@@ -9,6 +9,7 @@ set(rbd_mirror_test_srcs
 add_library(rbd_mirror STATIC ${rbd_mirror_test_srcs})
 set_target_properties(rbd_mirror PROPERTIES COMPILE_FLAGS
   ${UNITTEST_CXX_FLAGS})
+target_link_libraries(rbd_mirror librbd)
 
 add_executable(unittest_rbd_mirror
   test_main.cc
@@ -69,10 +70,9 @@ target_link_libraries(ceph_test_rbd_mirror
   cls_lock_client
   cls_journal_client
   rbd_types
-  librados
+  radostest
   osdc
   global
-  radostest
   ${UNITTEST_LIBS}
   )
 

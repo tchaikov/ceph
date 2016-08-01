@@ -1,9 +1,10 @@
 # radostest 
 set(libradostest_srcs 
   test.cc 
-  TestCase.cc)
+  TestCase.cc
+  $<TARGET_OBJECTS:common_internals>)
 add_library(radostest STATIC ${libradostest_srcs})
-target_link_libraries(radostest common json_spirit)
+target_link_libraries(radostest json_spirit)
 set_target_properties(radostest PROPERTIES COMPILE_FLAGS ${UNITTEST_CXX_FLAGS})
 
 # ceph_test_rados_api_cmd

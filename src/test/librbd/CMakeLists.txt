@@ -11,6 +11,7 @@ set(librbd_test
   journal/test_Replay.cc)
 add_library(rbd_test STATIC ${librbd_test})
 set_target_properties(rbd_test PROPERTIES COMPILE_FLAGS ${UNITTEST_CXX_FLAGS})
+target_link_libraries(rbd_test radostest)
 
 set(librbd_test_mock_srcs
   mock/MockImageCtx.cc
@@ -65,6 +66,7 @@ target_link_libraries(unittest_librbd
   journal
   journal_test_mock
   cls_journal
+  cls_journal
   cls_journal_client
   rados_test_stub
   librados
@@ -76,6 +78,7 @@ target_link_libraries(unittest_librbd
   rbd_types
   osdc
   global
+  librbd
   ${UNITTEST_LIBS}
   radostest
   keyutils
@@ -85,23 +88,12 @@ add_executable(ceph_test_librbd
   test_main.cc
   ${CMAKE_SOURCE_DIR}/src/common/ContextCompletion.cc
   $<TARGET_OBJECTS:common_texttable_obj>
-  $<TARGET_OBJECTS:parse_secret_objs>
   )
 target_link_libraries(ceph_test_librbd
   librados
+  librbd
   rbd_test
-  rbd_api
-  rbd_internal
-  rbd_types
-  journal
-  cls_journal_client
-  cls_rbd_client
-  cls_lock_client
-  osdc
-  global
   ${UNITTEST_LIBS}
-  radostest
-  keyutils
   )
 set_target_properties(ceph_test_librbd PROPERTIES COMPILE_FLAGS
   ${UNITTEST_CXX_FLAGS})
@@ -111,12 +103,10 @@ add_executable(ceph_test_librbd_api
   test_librbd.cc
   test_main.cc
   $<TARGET_OBJECTS:common_texttable_obj>
-  $<TARGET_OBJECTS:parse_secret_objs>
   )
 target_link_libraries(ceph_test_librbd_api
   librbd
   librados
-  common
   radostest
   ${UNITTEST_LIBS}
   keyutils
@@ -132,7 +122,6 @@ add_executable(ceph_test_librbd_fsx
   )
 target_link_libraries(ceph_test_librbd_fsx
   librbd
-  librados
   journal
   global
   m
