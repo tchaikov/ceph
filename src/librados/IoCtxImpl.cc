@@ -784,7 +784,9 @@ int librados::IoCtxImpl::aio_operate_repair_read(const object_t& oid,
 				      ::ObjectOperation *o,
 				      AioCompletionImpl *c,
 				      bufferlist *pbl,
-				      int flags, int32_t osdid, epoch_t e, int op_flags)
+				      uint64_t snapid,
+				      int flags, int32_t osdid, epoch_t e,
+				      int op_flags)
 {
   if (!o->size())
     return 0;
@@ -808,7 +810,7 @@ int librados::IoCtxImpl::aio_operate_repair_read(const object_t& oid,
   o->out_bl[1] = pbl;
   o->ops[1].op.flags = op_flags;
   Objecter::Op *objecter_op = objecter->prepare_read_op(oid, oloc,
-	                                      *o, snap_seq, NULL,
+	                                      *o, snapid, NULL,
 	                                      flags | CEPH_OSD_FLAG_REPAIR_READS | CEPH_OSD_FLAG_IGNORE_OVERLAY,
 	                                      onack, &c->objver);
   objecter_op->target.osd = osdid;

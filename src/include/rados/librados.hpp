@@ -757,7 +757,7 @@ namespace librados
     int writesame(const std::string& oid, bufferlist& bl,
 		  size_t write_len, uint64_t off);
     int read(const std::string& oid, bufferlist& bl, size_t len, uint64_t off);
-    int repair_read(const std::string& oid, bufferlist& bl, size_t len, uint64_t off, int flags, int32_t osdid, uint32_t e);
+    int repair_read(const std::string& oid, bufferlist& bl, size_t len, uint64_t off, int flags, int32_t osdid, uint32_t epoch);
     /**
      * Rewrite the object with the replica hosted by specified osd
      *
@@ -982,7 +982,7 @@ namespace librados
 			std::map<uint64_t,uint64_t> *m, bufferlist *data_bl,
 			size_t len, uint64_t off);
     int aio_repair_read(const std::string& oid, AioCompletion *c,
-		 bufferlist *pbl, size_t len, uint64_t off, uint64_t snapid, int flags, int32_t osdid, uint32_t e);
+		 bufferlist *pbl, size_t len, uint64_t off, uint64_t snapid, int flags, int32_t osdid, uint32_t epoch);
     int aio_repair_copy(const std::string& oid, AioCompletion *c,
          uint64_t version, uint32_t what,
          const std::vector<std::pair<int32_t, int8_t> >& bad_osds, uint32_t e);
