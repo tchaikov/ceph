@@ -2253,12 +2253,12 @@ int librados::IoCtx::repair_copy(const string& oid, uint64_t version, uint32_t w
 
 int librados::IoCtx::aio_repair_copy(const std::string& oid, AioCompletion *c,
 				     uint64_t version, uint32_t what,
-				     const vector<pair<int32_t, int8_t>>& bad_shards,
+				     const vector<osd_shard_t>& bad_shards,
 				     uint32_t epoch)
 {
   vector<pg_shard_t> shards;
-  for (const auto& shard : bad_shards) {
-    shards.emplace_back(shard.first, shard_id_t(shard.second));
+  for (const auto& bad_shard : bad_shards) {
+    shards.emplace_back(bad_shard.osd, shard_id_t(bad_shard.shard));
   }
   return io_ctx_impl->aio_repair_copy(object_t(oid), c->pc, version, what,
 				      shards, epoch);

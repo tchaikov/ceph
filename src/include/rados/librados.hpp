@@ -985,7 +985,7 @@ namespace librados
 		 bufferlist *pbl, size_t len, uint64_t off, uint64_t snapid, int flags, int32_t osdid, uint32_t epoch);
     int aio_repair_copy(const std::string& oid, AioCompletion *c,
          uint64_t version, uint32_t what,
-         const std::vector<std::pair<int32_t, int8_t> >& bad_osds, uint32_t e);
+         const std::vector<osd_shard_t>& bad_osd_shards, uint32_t epoch);
     /**
      * Asynchronously read existing extents from an object at a
      * particular snapshot

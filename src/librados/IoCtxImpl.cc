@@ -1451,13 +1451,14 @@ int librados::IoCtxImpl::aio_repair_copy(const object_t& oid, AioCompletionImpl 
   op.assert_version(ver);
   op.repair_copy(what, bad_shards);
 
-  auto ut = ceph::real_clock::now();
   auto onack = new C_aio_Complete(comp);
 
   comp->io = this;
   queue_aio_write(comp);
 
-  auto objecter_op = objecter->prepare_mutate_op(oid, oloc, op, snapc, ut, 0,
+  auto objecter_op = objecter->prepare_mutate_op(oid, oloc, op, snapc,
+						 ceph::real_clock::now(),
+						 CEPH_OSD_FLAG_REPAIR_WRITES,
 						 onack, &comp->objver);
 
   objecter_op->target.osd = objecter->pick_random_osd(objecter_op->target, bad_shards);
