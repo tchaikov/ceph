@@ -1276,8 +1276,8 @@ int librados::IoCtx::repair_read(const std::string& oid, bufferlist& bl,
   io_ctx_impl->prepare_assert_ops(&op.impl->o);
   op.read(off, len, &bl, nullptr);
   // Only 1 flag can be passed from user
-  flags &= CEPH_OSD_OP_FLAG_FAILOK;
-  int r = operate_repair_read(oid, &op, &bl, osdid, epoch, flags);
+  op.set_op_flags2(flags & CEPH_OSD_OP_FLAG_FAILOK);
+  int r = operate_repair_read(oid, &op, osdid, epoch);
   if (r < 0)
     return r;
   return bl.length();
@@ -1560,13 +1560,13 @@ int librados::IoCtx::operate(const std::string& oid, librados::ObjectReadOperati
   return io_ctx_impl->operate_read(obj, &o->impl->o, pbl);
 }
 
-int librados::IoCtx::operate_repair_read(const std::string& oid, librados::ObjectReadOperation *o, bufferlist *pbl,
-  uint32_t osdid, int32_t epoch, int op_flags)
+int librados::IoCtx::operate_repair_read(const std::string& oid, librados::ObjectReadOperation *o,
+  uint32_t osdid, int32_t epoch)
 {
   auto c = new librados::AioCompletionImpl;
-  int r = io_ctx_impl->aio_operate_repair_read(oid, &o->impl->o, c, pbl,
+  int r = io_ctx_impl->aio_operate_repair_read(oid, &o->impl->o, c,
 					       io_ctx_impl->snap_seq, 0,
-					       osdid, epoch, op_flags);
+					       osdid, epoch);
   if (r < 0)
     return r;
   c->wait_for_complete();
@@ -1973,10 +1973,9 @@ int librados::IoCtx::aio_repair_read(const std::string& oid, librados::AioComple
   io_ctx_impl->prepare_assert_ops(&rd);
   rd.read(off, len, pbl, NULL, NULL);
   // Only 1 flag can be passed from user
-  flags &= CEPH_OSD_OP_FLAG_FAILOK;
-  return io_ctx_impl->aio_operate_repair_read(oid, &rd, c->pc, pbl,
-					      snapid, 0,
-					      osdid, e, flags);
+  rd.set_last_op_flags(flags & CEPH_OSD_OP_FLAG_FAILOK);
+  return io_ctx_impl->aio_operate_repair_read(oid, &rd, c->pc,
+					      snapid, 0, osdid, e);
 }
 
 int librados::IoCtx::aio_write(const std::string& oid, librados::AioCompletion *c,

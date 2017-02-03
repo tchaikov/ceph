@@ -783,10 +783,8 @@ int librados::IoCtxImpl::operate_read(const object_t& oid,
 int librados::IoCtxImpl::aio_operate_repair_read(const object_t& oid,
 				      ::ObjectOperation *o,
 				      AioCompletionImpl *c,
-				      bufferlist *pbl,
 				      uint64_t snapid,
-				      int flags, int32_t osdid, epoch_t e,
-				      int op_flags)
+				      int flags, int32_t osdid, epoch_t e)
 {
   if (!o->size())
     return 0;
@@ -799,16 +797,12 @@ int librados::IoCtxImpl::aio_operate_repair_read(const object_t& oid,
   int op = o->ops[0].op.op;
   ldout(client->cct, 10) << ceph_osd_op_name(op) << " oid=" << oid << " nspace=" << oloc.nspace << dendl;
   // Prepend assert_interval op
-  OSDOp tmp;
-  tmp.op.op = CEPH_OSD_OP_ASSERT_INTERVAL;
-  tmp.op.assert_interval.epoch = e;
-  o->ops.insert(o->ops.begin(), tmp);
-  int size = o->ops.size();
-  o->out_bl.resize(size);
-  o->out_handler.resize(size);
-  o->out_rval.resize(size);
-  o->out_bl[1] = pbl;
-  o->ops[1].op.flags = op_flags;
+  o->assert_interval(e);
+  for (int i = o->size() - 1; i > 0; i--) {
+    std::swap(o->ops[i - 1], o->ops[i]);
+    std::swap(o->out_bl[i - 1], o->out_bl[i]);
+    std::swap(o->out_rval[i - 1], o->out_rval[i]);
+  }
   Objecter::Op *objecter_op = objecter->prepare_read_op(oid, oloc,
 	                                      *o, snapid, NULL,
 	                                      flags | CEPH_OSD_FLAG_REPAIR_READS | CEPH_OSD_FLAG_IGNORE_OVERLAY,
