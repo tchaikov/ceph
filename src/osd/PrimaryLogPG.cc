@@ -7285,6 +7285,9 @@ void PrimaryLogPG::_copy_some(ObjectContextRef obc, CopyOpRef cop)
 
   ceph_tid_t tid;
   if (cop->flags & CEPH_OSD_COPY_FROM_FLAG_REPAIR) {
+    // we are holding the write lock of the object being repaired, so, to read from
+    // it, we need to SKIPRWLOCKS here. and since we are the very one holding the
+    // write lock, it's safe to skip the rwlock.
     auto objecter_op = osd->objecter->prepare_read_op(cop->src.oid, cop->oloc, op,
 			      cop->src.snap, nullptr,
 			      (CEPH_OSD_FLAG_REPAIR_READS |
