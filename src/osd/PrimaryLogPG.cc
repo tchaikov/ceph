@@ -1909,7 +1909,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
 
   // missing object?
   if (is_unreadable_object(head) &&
-      !(m->get_flags() & CEPH_OSD_FLAG_REPAIR_READS)) {
+      !m->has_flag(CEPH_OSD_FLAG_REPAIR_READS)) {
     wait_for_unreadable_object(head, op);
     return;
   }
