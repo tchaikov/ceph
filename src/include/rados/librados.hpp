@@ -981,8 +981,31 @@ namespace librados
     int aio_sparse_read(const std::string& oid, AioCompletion *c,
 			std::map<uint64_t,uint64_t> *m, bufferlist *data_bl,
 			size_t len, uint64_t off);
+    /**
+     * Asynchronously read a replica hosted by the specified osd
+     *
+     * @param oid the name of the object to read from
+     * @param bl where to store the read chunk
+     * @param len the number of bytes to read
+     * @param off the offset to start reading from in the object
+     * @param snapid the snapid of the replica to read
+     * @param flags the flags applied to the underlying read op. Only
+     *        @c CEPH_OSD_OP_FLAG_FAILOK or 0 is allowed. Any flags
+     *        other than @c CEPH_OSD_OP_FLAG_FAILOK will be ignored.
+     *        If @c CEPH_OSD_OP_FLAG_FAILOK is specified, the read payload
+     *        will be returned despite of CRC mismatch or size mismatch.
+     *        Otherwise, @c -EIO will be returned instead.
+     * @param osdid from which osd the replica is read
+     * @param interval the PG interval when the inconsistency was reported
+     * @returns 0 on success, negative error code on failure
+     * @note Please make sure that the @c interval should be the one returned
+     *       by @c get_inconsistent_objects() or @c get_inconsistent_snapsets()
+     *       call. If the PG interval expires when the request is served by OSD,
+     *       @c -ERANGE will be returned.
+     */
     int aio_repair_read(const std::string& oid, AioCompletion *c,
-		 bufferlist *pbl, size_t len, uint64_t off, uint64_t snapid, int flags, int32_t osdid, uint32_t epoch);
+                        bufferlist *pbl, size_t len, uint64_t off, uint64_t snapid, int flags,
+                        int32_t osdid, uint32_t interval);
     int aio_repair_copy(const std::string& oid, AioCompletion *c,
          uint64_t version, uint32_t what,
          const std::vector<osd_shard_t>& bad_osd_shards, uint32_t epoch);
