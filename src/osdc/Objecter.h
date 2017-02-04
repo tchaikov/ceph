@@ -1978,23 +1978,7 @@ private:
   Objecter(CephContext *cct_, Messenger *m, MonClient *mc,
 	   Finisher *fin,
 	   double mon_timeout,
-	   double osd_timeout) :
-    Dispatcher(cct_), messenger(m), monc(mc), finisher(fin),
-    osdmap(new OSDMap), initialized(0), last_tid(0), client_inc(-1),
-    max_linger_id(0), num_in_flight(0), global_op_flags(0),
-    keep_balanced_budget(false), honor_osdmap_full(true),
-    last_seen_osdmap_version(0), last_seen_pgmap_version(0),
-    logger(NULL), tick_event(0), m_request_state_hook(NULL),
-    num_homeless_ops(0),
-    homeless_session(new OSDSession(cct, -1)),
-    mon_timeout(ceph::make_timespan(mon_timeout)),
-    osd_timeout(ceph::make_timespan(osd_timeout)),
-    op_throttle_bytes(cct, "objecter_bytes",
-		      cct->_conf->objecter_inflight_op_bytes),
-    op_throttle_ops(cct, "objecter_ops", cct->_conf->objecter_inflight_ops),
-    epoch_barrier(0),
-    retry_writes_after_first_reply(cct->_conf->objecter_retry_writes_after_first_reply)
-  { }
+	   double osd_timeout);
   ~Objecter();
 
   void init();
