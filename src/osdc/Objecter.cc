@@ -2645,6 +2645,7 @@ int64_t Objecter::get_object_pg_hash_position(int64_t pool, const string& key,
 int32_t Objecter::pick_random_osd(const op_target_t& t,
 				  const vector<pg_shard_t>& blacklist) const
 {
+  shared_lock rl(rwlock);
   const pg_pool_t *pi = osdmap->get_pg_pool(t.base_oloc.pool);
   if (!pi) {
     return -1;
