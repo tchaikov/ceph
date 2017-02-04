@@ -786,16 +786,11 @@ int librados::IoCtxImpl::aio_operate_repair_read(const object_t& oid,
 				      uint64_t snapid,
 				      int flags, int32_t osdid, epoch_t e)
 {
-  if (!o->size())
-    return 0;
-
   auto onack = new C_aio_Complete(c);
 
   c->is_read = true;
   c->io = this;
 
-  int op = o->ops[0].op.op;
-  ldout(client->cct, 10) << ceph_osd_op_name(op) << " oid=" << oid << " nspace=" << oloc.nspace << dendl;
   // Prepend assert_interval op
   o->assert_interval(e);
   for (int i = o->size() - 1; i > 0; i--) {
