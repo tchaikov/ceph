@@ -1560,20 +1560,14 @@ int librados::IoCtx::operate(const std::string& oid, librados::ObjectReadOperati
   return io_ctx_impl->operate_read(obj, &o->impl->o, pbl);
 }
 
-int librados::IoCtx::operate_repair_read(const std::string& oid, librados::ObjectReadOperation *o,
-  uint32_t osdid, int32_t epoch)
+int librados::IoCtx::aio_operate_repair_read(const std::string& oid,
+					     AioCompletion *c,
+					     librados::ObjectReadOperation *o,
+					     uint32_t osdid, int32_t epoch)
 {
-  auto c = new librados::AioCompletionImpl;
-  int r = io_ctx_impl->aio_operate_repair_read(oid, &o->impl->o, c,
-					       io_ctx_impl->snap_seq, 0,
-					       osdid, epoch);
-  if (r < 0)
-    return r;
-  c->wait_for_complete();
-  r = c->get_return_value();
-  if (r >= 0)
-    io_ctx_impl->set_sync_op_version(c->get_version());
-  return r;
+  return io_ctx_impl->aio_operate_repair_read(oid, &o->impl->o, c->pc,
+					      io_ctx_impl->snap_seq, 0,
+					      osdid, epoch);
 }
 
 int librados::IoCtx::aio_operate(const std::string& oid, AioCompletion *c,
