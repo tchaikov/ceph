@@ -520,6 +520,8 @@ if [ "$start_mon" -eq 1 ]; then
         filestore fd cache size = 32
         run dir = $CEPH_OUT_DIR
         enable experimental unrecoverable data corrupting features = *
+        ms inject socket failures = 2500
+        ms tcp read timeout = 5
 EOF
 		if [ "$lockdep" -eq 1 ] ; then
 			wconf <<EOF
