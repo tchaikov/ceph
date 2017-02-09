@@ -472,6 +472,8 @@ int MonClient::authenticate(double timeout)
 
 void MonClient::handle_auth(MAuthReply *m)
 {
+  ldout(cct, 10) << __func__ << *m << dendl;
+
   assert(monc_lock.is_locked());
   if (!_hunting()) {
     std::swap(active_con->get_auth(), auth);
@@ -1185,6 +1187,8 @@ int MonConnection::handle_auth(MAuthReply* m,
 			       uint32_t want_keys,
 			       RotatingKeyRing* keyring)
 {
+  ldout(cct, 10) << __func__ << dendl;
+
   if (state == State::NEGOTIATING) {
     int r = _negotiate(m, entity_name, want_keys, keyring);
     if (r) {
@@ -1204,6 +1208,8 @@ int MonConnection::_negotiate(MAuthReply *m,
 			      uint32_t want_keys,
 			      RotatingKeyRing* keyring)
 {
+  ldout(cct, 10) << __func__ << dendl;
+
   if (auth && (int)m->protocol == auth->get_protocol()) {
     // good, negotiation completed
     auth->reset();
@@ -1239,6 +1245,8 @@ int MonConnection::_negotiate(MAuthReply *m,
 
 int MonConnection::authenticate(MAuthReply *m)
 {
+  ldout(cct, 10) << __func__ << dendl;
+
   assert(auth);
 
   if (m->global_id && m->global_id != global_id) {

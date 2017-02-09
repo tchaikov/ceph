@@ -1,5 +1,6 @@
 #!/bin/bash -ex
 
+PATH=$PATH:/var/ceph/ceph/build/bin
 parallel=1
 [ "$1" = "--serial" ] && parallel=0
 
