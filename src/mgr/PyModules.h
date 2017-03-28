@@ -27,7 +27,9 @@ class ServeThread;
 
 class PyModules
 {
-  protected:
+  PyObject* py_logger = nullptr;
+
+protected:
   std::map<std::string, MgrPyModule*> modules;
   std::map<std::string, ServeThread*> serve_threads;
 
