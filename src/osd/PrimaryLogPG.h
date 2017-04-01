@@ -1378,11 +1378,10 @@ private:
   bool check_src_targ(const hobject_t& soid, const hobject_t& toid) const;
 
   uint64_t temp_seq; ///< last id for naming temp objects
-  /// generate a new temp object name
-  hobject_t generate_temp_object(const hobject_t& target);
+  hobject_t generate_temp_object();  ///< generate a new temp object name
   /// generate a new temp object name (for recovery)
-  hobject_t get_temp_recovery_object(const hobject_t& target,
-				     eversion_t version) override;
+  hobject_t get_temp_recovery_object(eversion_t version,
+				     snapid_t snap) override;
   int get_recovery_op_priority() const {
       int pri = 0;
       pool.info.opts.get(pool_opts_t::RECOVERY_OP_PRIORITY, &pri);

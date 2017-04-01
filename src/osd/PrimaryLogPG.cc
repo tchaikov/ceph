@@ -6526,27 +6526,24 @@ void PrimaryLogPG::do_osd_op_effects(OpContext *ctx, const ConnectionRef& conn)
   }
 }
 
-hobject_t PrimaryLogPG::generate_temp_object(const hobject_t& target)
+hobject_t PrimaryLogPG::generate_temp_object()
 {
   ostringstream ss;
-  ss << "temp_" << info.pgid << "_" << get_role()
-     << "_" << osd->monc->get_global_id() << "_" << (++temp_seq);
-  hobject_t hoid = target.make_temp_hobject(ss.str());
+  ss << "temp_" << info.pgid << "_" << get_role() << "_" << osd->monc->get_global_id() << "_" << (++temp_seq);
+  hobject_t hoid = info.pgid.make_temp_hobject(ss.str());
   dout(20) << __func__ << " " << hoid << dendl;
   return hoid;
 }
 
-hobject_t PrimaryLogPG::get_temp_recovery_object(
-  const hobject_t& target,
-  eversion_t version)
+hobject_t PrimaryLogPG::get_temp_recovery_object(eversion_t version, snapid_t snap)
 {
   ostringstream ss;
   ss << "temp_recovering_" << info.pgid  // (note this includes the shardid)
      << "_" << version
      << "_" << info.history.same_interval_since
-     << "_" << target.snap;
+     << "_" << snap;
   // pgid + version + interval + snapid is unique, and short
-  hobject_t hoid = target.make_temp_hobject(ss.str());
+  hobject_t hoid = info.pgid.make_temp_hobject(ss.str());
   dout(20) << __func__ << " " << hoid << dendl;
   return hoid;
 }
@@ -7256,7 +7253,7 @@ void PrimaryLogPG::process_copy_chunk(hobject_t oid, ceph_tid_t tid, int r)
     if (cop->temp_cursor.is_initial()) {
       assert(!cop->results.started_temp_obj);
       cop->results.started_temp_obj = true;
-      cop->results.temp_oid = generate_temp_object(oid);
+      cop->results.temp_oid = generate_temp_object();
       dout(20) << __func__ << " using temp " << cop->results.temp_oid << dendl;
     }
     ObjectContextRef tempobc = get_object_context(cop->results.temp_oid, true);
