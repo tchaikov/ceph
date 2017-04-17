@@ -135,6 +135,11 @@ public:
   struct Collection;
   typedef boost::intrusive_ptr<Collection> CollectionRef;
 
+  struct AioContext {
+    virtual void aio_finish(BlueStore *store) = 0;
+    virtual ~AioContext() {}
+  };
+
   /// cached buffer
   struct Buffer {
     MEMPOOL_CLASS_HELPERS();
@@ -1370,7 +1375,7 @@ public:
   class OpSequencer;
   typedef boost::intrusive_ptr<OpSequencer> OpSequencerRef;
 
-  struct TransContext {
+  struct TransContext : public AioContext {
     typedef enum {
       STATE_PREPARE,
       STATE_AIO_WAIT,
@@ -1545,6 +1550,8 @@ public:
       onodes.erase(o);
       modified_objects.erase(o);
     }
+
+    void aio_finish(BlueStore *store) override;
   };
 
   typedef boost::intrusive::list<
@@ -1554,7 +1561,7 @@ public:
       boost::intrusive::list_member_hook<>,
       &TransContext::deferred_queue_item> > deferred_queue_t;
 
-  struct DeferredBatch {
+  struct DeferredBatch : public AioContext {
     struct deferred_io {
       bufferlist bl;    ///< data
       uint64_t seq;     ///< deferred transaction seq
@@ -1575,6 +1582,8 @@ public:
     void prepare_write(CephContext *cct,
 		       uint64_t seq, uint64_t offset, uint64_t length,
 		       bufferlist::const_iterator& p);
+
+    void aio_finish(BlueStore *store) override;
   };
 
   class OpSequencer : public Sequencer_impl {
