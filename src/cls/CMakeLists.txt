@@ -3,6 +3,22 @@
 set(cls_dir ${CMAKE_INSTALL_LIBDIR}/rados-classes)
 set(cls_embedded_srcs)
 
+# cls_sdk
+add_library(cls_sdk SHARED sdk/cls_sdk.cc)
+set_target_properties(cls_sdk PROPERTIES VERSION "1.0.0" SOVERSION "1")
+install(TARGETS cls_sdk DESTINATION ${cls_dir})
+
+# cls_zlog
+find_package(Protobuf REQUIRED)
+include_directories(${PROTOBUF_INCLUDE_DIRS})
+PROTOBUF_GENERATE_CPP(PROTO_SRCS PROTO_HDRS zlog/zlog.proto)
+add_library(cls_zlog SHARED zlog/cls_zlog.cc ${PROTO_SRCS})
+target_include_directories(cls_zlog PUBLIC
+    ${PROTOBUF_INCLUDE_DIRS} ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(cls_zlog ${PROTOBUF_LIBRARIES})
+set_target_properties(cls_zlog PROPERTIES VERSION "1.0.0" SOVERSION "1")
+install(TARGETS cls_zlog DESTINATION ${cls_dir})
+
 # cls_hello
 set(cls_hello_srcs hello/cls_hello.cc)
 add_library(cls_hello SHARED ${cls_hello_srcs})
