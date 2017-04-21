@@ -723,6 +723,8 @@ Summary:        RADOS object class development kit
 Group:          Development/Libraries
 License:        LGPL-2.0
 Requires:       librados2-devel = %{epoch}:%{version}-%{release}
+BuildRequires:  protobuf-devel
+BuildRequires:  protobuf-compiler
 %description -n rados-objclass-dev
 This package contains libraries and headers needed to develop RADOS object
 class plugins.
