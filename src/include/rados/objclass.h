@@ -8,7 +8,7 @@
 
 #include <map>
 #include <set>
-#include "../include/buffer.h"
+#include "buffer.h"
 
 extern "C" {
 #endif
