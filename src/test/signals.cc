@@ -2,6 +2,7 @@
 #include "common/signal.h"
 #include "global/signal_handler.h"
 #include "common/debug.h"
+#include "include/coredumpctl.h"
 
 #include "gtest/gtest.h"
 
@@ -118,7 +119,9 @@ TEST(SignalHandler, Multiple)
 TEST(SignalHandler, LogInternal)
 {
   g_ceph_context->_log->inject_segv();
+  unsetprdumpable();
   ASSERT_DEATH(derr << "foo" << dendl, ".*");
+  setprdumpable();
   g_ceph_context->_log->reset_segv();
 }
 
