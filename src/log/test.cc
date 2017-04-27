@@ -202,9 +202,10 @@ void do_segv()
 
   log.inject_segv();
   Entry *e = new Entry(ceph_clock_now(), pthread_self(), 10, 1);
-  unsetprdumpable();
-  log.submit_entry(e);  // this should segv
-  setprdumpable();
+  {
+    PrCtl unset_dumpable;
+    log.submit_entry(e);  // this should segv
+  }
 
   log.flush();
   log.stop();

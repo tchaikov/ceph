@@ -38,10 +38,11 @@ TEST(CephCompatSet, AllSet) {
   CompatSet::FeatureSet ro;
   CompatSet::FeatureSet incompat;
 
-  unsetprdumpable();
-  EXPECT_DEATH(compat.insert(CompatSet::Feature(0, "test")), "");
-  EXPECT_DEATH(compat.insert(CompatSet::Feature(64, "test")), "");
-  setprdumpable();
+  {
+    PrCtl unset_dumpable;
+    EXPECT_DEATH(compat.insert(CompatSet::Feature(0, "test")), "");
+    EXPECT_DEATH(compat.insert(CompatSet::Feature(64, "test")), "");
+  }
 
   for (int i = 1; i < 64; i++) {
     stringstream cname;

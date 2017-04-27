@@ -1,25 +1,39 @@
-#include <iostream>
 #ifdef HAVE_SYS_PRCTL_H
+#include <iostream>
 #include <sys/prctl.h>
-#endif
-
 #include "common/errno.h"
 
-void setprdumpable() {
-#if defined(HAVE_SYS_PRCTL_H)
-  if (prctl(PR_SET_DUMPABLE, 1) == -1) {
-    std::cerr << "warning: unable to set dumpable flag: " << cpp_strerror(errno)
-              << std::endl;
+struct PrCtl {
+  int saved_state = -1;
+  int set_dumpable(int new_state) {
+    int r = prctl(PR_SET_DUMPABLE, new_state);
+    if (r) {
+      r = -errno;
+      std::cerr << "warning: unable to " << (new_state ? "set" : "unset")
+                << " dumpable flag: " << cpp_strerror(r)
+                << std::endl;
+    }
+    return r;
   }
-#endif
-}
-
-void unsetprdumpable() {
-// Don't dump a core
-#if defined(HAVE_SYS_PRCTL_H)
-  if (prctl(PR_SET_DUMPABLE, 0) == -1) {
-    std::cerr << "warning: unable to unset dumpable flag: "
-              << cpp_strerror(errno) << std::endl;
+  PrCtl(int new_state = 0) {
+    int r = prctl(PR_GET_DUMPABLE);
+    if (r == -1) {
+      r = errno;
+      std::cerr << "warning: unable to get dumpable flag: " << cpp_strerror(r)
+                << std::endl;
+    } else if (r != new_state) {
+      if (!set_dumpable(new_state)) {
+        saved_state = r;
+      }
+    }
   }
+  ~PrCtl() {
+    if (saved_state < 0) {
+      return;
+    }
+    set_dumpable(saved_state);
+  }
+};
+#else
+struct PrCtl {};
 #endif
-}

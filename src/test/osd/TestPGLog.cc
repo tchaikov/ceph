@@ -1212,10 +1212,9 @@ TEST_F(PGLogTest, merge_log) {
     olog.tail = eversion_t(1, 1);
 
     TestHandler h(remove_snap);
-    unsetprdumpable();
+    PrCtl unset_dumpable;
     ASSERT_DEATH(merge_log(oinfo, olog, fromosd, info, &h,
 			   dirty_info, dirty_big_info), "");
-    setprdumpable();
   }
 
 }

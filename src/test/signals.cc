@@ -119,9 +119,10 @@ TEST(SignalHandler, Multiple)
 TEST(SignalHandler, LogInternal)
 {
   g_ceph_context->_log->inject_segv();
-  unsetprdumpable();
-  ASSERT_DEATH(derr << "foo" << dendl, ".*");
-  setprdumpable();
+  {
+    PrCtl unset_dumpable;
+    ASSERT_DEATH(derr << "foo" << dendl, ".*");
+  }
   g_ceph_context->_log->reset_segv();
 }
 

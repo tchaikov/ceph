@@ -73,7 +73,8 @@ TEST(TextTable, TooManyItems) {
   t.define_column("3", TextTable::LEFT, TextTable::LEFT);
 
   // expect assertion failure on this, which throws FailedAssertion
-  unsetprdumpable();
-  ASSERT_DEATH((t << "1" << "2" << "3" << "4" << TextTable::endrow), "");
-  setprdumpable();
+  {
+    PrCtl unset_dumpable;
+    ASSERT_DEATH((t << "1" << "2" << "3" << "4" << TextTable::endrow), "");
+  }
 }

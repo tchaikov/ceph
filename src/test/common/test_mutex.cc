@@ -63,7 +63,8 @@ TEST(Mutex, RecursiveWithoutLockdep) {
 TEST(Mutex, DeleteLocked) {
   Mutex* m = new Mutex("Recursive3",false);
   m->Lock();
-  unsetprdumpable();
-  EXPECT_DEATH(delete m,".*");
-  setprdumpable();
+  {
+    PrCtl unset_dumpable;
+    EXPECT_DEATH(delete m,".*");
+  }
 }
