@@ -3511,6 +3511,8 @@ int OSDMap::calc_pg_upmaps(
   }
   OSDMap tmp;
   tmp.deepish_copy_from(*this);
+  float start_deviation = 0;
+  float end_deviation = 0;
   int num_changed = 0;
   while (true) {
     map<int,set<pg_t>> pgs_by_osd;
@@ -3558,6 +3560,7 @@ int OSDMap::calc_pg_upmaps(
     ldout(cct, 10) << " pgs_per_weight " << pgs_per_weight << dendl;
 
     // osd deviation
+    float total_deviation = 0;
     map<int,float> osd_deviation;       // osd, deviation(pgs)
     multimap<float,int> deviation_osd;  // deviation(pgs), osd
     set<int> overfull;
@@ -3573,7 +3576,12 @@ int OSDMap::calc_pg_upmaps(
       deviation_osd.insert(make_pair(deviation, i.first));
       if (deviation >= 1.0)
 	overfull.insert(i.first);
+      total_deviation += abs(deviation);
     }
+    if (num_changed == 0) {
+      start_deviation = total_deviation;
+    }
+    end_deviation = total_deviation;
 
     // build underfull, sorted from least-full to most-average
     vector<int> underfull;
@@ -3584,7 +3592,8 @@ int OSDMap::calc_pg_upmaps(
 	break;
       underfull.push_back(i->second);
     }
-    ldout(cct, 10) << " overfull " << overfull
+    ldout(cct, 10) << " total_deviation " << total_deviation
+		   << " overfull " << overfull
 		   << " underfull " << underfull << dendl;
     if (overfull.empty() || underfull.empty())
       break;
@@ -3672,5 +3681,7 @@ int OSDMap::calc_pg_upmaps(
       break;
     }
   }
+  ldout(cct, 10) << " start deviation " << start_deviation << dendl;
+  ldout(cct, 10) << " end deviation " << end_deviation << dendl;
   return num_changed;
 }
