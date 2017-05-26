@@ -22,6 +22,10 @@ ifeq ($(DEB_HOST_ARCH), armel)
   extraopts += -DWITH_ATOMIC_OPS=OFF
 endif
 
+ifeq (,$(filter $(DEB_HOST_ARCH), s390 s390x))
+  extraopts += -DWITH_RADOSGW_BEAST_FRONTEND=OFF
+endif
+
 %:
 	dh $@ --buildsystem=cmake --with javahelper,python2,python3,systemd --parallel
 
