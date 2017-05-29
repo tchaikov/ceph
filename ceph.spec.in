@@ -25,10 +25,14 @@
 %bcond_with xio
 %ifarch s390 s390x
 %bcond_with tcmalloc
-%bcond_with rgw_beast
 %else
 %bcond_without tcmalloc
+%endif
+# beast depends on libboost_context which only supports following archs
+%ifarch aarch64 armv7hl mips mipsel ppc ppc64 ppc64le ${ix86} x86_64
 %bcond_without rgw_beast
+%else
+%bcond_with rgw_beast
 %endif
 %bcond_with lowmem_builder
 %if 0%{?fedora} || 0%{?rhel}
