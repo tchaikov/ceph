@@ -17,6 +17,11 @@ set_target_properties(ceph_test_cephd_api_misc PROPERTIES COMPILE_FLAGS
   ${UNITTEST_CXX_FLAGS})
 target_link_libraries(ceph_test_cephd_api_misc
 	cephd global ${UNITTEST_LIBS} cephdtest z snappy ceph_zstd)
+if(WITH_RADOSGW_BEAST_FRONTEND)
+  target_link_libraries(ceph_test_cephd_api_misc LINK_PRIVATE
+    ${Boost_COROUTINE_LIBRARY}
+    ${Boost_CONTEXT_LIBRARY})
+endif()
 
 install(TARGETS
   ceph_test_cephd_api_misc
