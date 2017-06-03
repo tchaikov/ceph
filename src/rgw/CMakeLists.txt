@@ -265,9 +265,4 @@ if(WITH_EMBEDDED)
   if(WITH_RADOSGW_FCGI_FRONTEND) 
     target_link_libraries(cephd_rgw ${FCGI_LIBRARY})
   endif()
-  if(WITH_RADOSGW_BEAST_FRONTEND)
-    target_link_libraries(cephd_rgw LINK_PRIVATE
-      ${Boost_COROUTINE_LIBRARY}
-      ${Boost_CONTEXT_LIBRARY})
-  endif()
 endif()
