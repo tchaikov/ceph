@@ -5461,7 +5461,7 @@ ostream& operator<<(ostream& out, const PG& pg)
     out << "/" << pg.acting;
   out << " r=" << pg.get_role();
   out << " lpr=" << pg.get_last_peering_reset();
-
+  out << " rq=" << pg.recovery_queued;
   if (!pg.past_intervals.empty()) {
     out << " pi=[" << pg.past_intervals.get_bounds()
 	<< ")/" << pg.past_intervals.size();
