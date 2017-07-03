@@ -933,18 +933,19 @@ public:
     Mutex::Locker l(recovery_lock);
     _maybe_queue_recovery();
   }
-  void clear_queued_recovery(PG *pg) {
+  bool clear_queued_recovery(PG *pg) {
     Mutex::Locker l(recovery_lock);
     for (list<pair<epoch_t, PGRef> >::iterator i = awaiting_throttle.begin();
 	 i != awaiting_throttle.end();
       ) {
       if (i->second.get() == pg) {
 	awaiting_throttle.erase(i);
-	return;
+	return true;
       } else {
 	++i;
       }
     }
+    return false;
   }
   // delayed pg activation
   void queue_for_recovery(PG *pg, bool front = false) {

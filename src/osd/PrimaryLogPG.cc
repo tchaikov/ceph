@@ -10757,8 +10757,13 @@ void PrimaryLogPG::on_change(ObjectStore::Transaction *t)
   }
 
   if (recovery_queued) {
+    dout(10) << __func__ << " clear_queued_recovery" << dendl;
     recovery_queued = false;
-    osd->clear_queued_recovery(this);
+    if (osd->clear_queued_recovery(this)) {
+      dout(10) << __func__ << " removed" << dendl;
+    } else {
+      dout(10) << __func__ << " not removed" << dendl;
+    }
   }
 
   // requeue everything in the reverse order they should be
