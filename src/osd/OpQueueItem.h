@@ -77,9 +77,9 @@ public:
     /// Items with the same queue token will end up in the same shard
     virtual uint32_t get_queue_token() const = 0;
 
-    /* Items will be dequeued and locked atomically w.r.t. other items with the
-       * same ordering token */
-    virtual const spg_t& get_ordering_token() const = 0;
+    /// Items will be dequeued and locked atomically w.r.t. other items with the
+    /// same ordering token
+    virtual size_t get_ordering_token() const = 0;
     virtual OrderLocker::Ref get_order_locker(PGRef pg) = 0;
     virtual op_type_t get_op_type() const = 0;
     virtual boost::optional<OpRequestRef> maybe_get_op() const {
@@ -133,7 +133,7 @@ public:
   uint32_t get_queue_token() const {
     return qitem->get_queue_token();
   }
-  const spg_t& get_ordering_token() const {
+  size_t get_ordering_token() const {
     return qitem->get_ordering_token();
   }
   using op_type_t = OpQueueable::op_type_t;
@@ -177,8 +177,8 @@ public:
     return get_pgid().ps();
   }
 
-  const spg_t& get_ordering_token() const override final {
-    return get_pgid();
+  size_t get_ordering_token() const override final {
+    return std::hash<spg_t>{}(get_pgid());
   }
 
   OpQueueItem::OrderLocker::Ref get_order_locker(PGRef pg) override final {
@@ -217,3 +217,43 @@ public:
   }
   void run(OSD *osd, PGRef& pg, ThreadPool::TPHandle &handle) override final;
 };
+
+namespace ceph {
+  namespace details {
+    template<typename Item> class QueueToken {};
+    template<>
+    class QueueToken<OpQueueItem> {
+    const OpQueueItem& item;
+    public:
+      QueueToken(const OpQueueItem& item)
+	: item(item)
+      {}
+      uint32_t shard_index(size_t nshards) const {
+	return item.get_queue_token() % nshards;
+      }
+      size_t ordering_token() const {
+	return item.get_ordering_token();
+      }
+    };
+    template<>
+    class QueueToken<spg_t> {
+      const spg_t pgid;
+    public:
+      QueueToken(const spg_t& pgid)
+	: pgid(pgid)
+      {}
+      uint32_t shard_index(size_t nshards) const {
+	return pgid.ps() % nshards;
+      }
+      size_t ordering_token() const {
+	return std::hash<spg_t>{}(pgid);
+      }
+    };
+  } // namaspace details
+  template<typename T> uint32_t get_shard_index(const T& item, size_t shards) {
+    return details::QueueToken<T>{item}.queue_token() % shards;
+  }
+  template<typename T> size_t get_ordering_token(const T& item) {
+    return details::QueueToken<T>{item}.ordering_token();
+  }
+}

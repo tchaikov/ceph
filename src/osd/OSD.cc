@@ -9866,14 +9866,15 @@ void OSD::PeeringWQ::_dequeue(list<PG*> *out) {
 
 void OSD::ShardedOpWQ::wake_pg_waiters(spg_t pgid)
 {
-  uint32_t shard_index = pgid.hash_to_shard(shard_list.size());
+  auto shard_index = ceph::get_shard_index(pgid, shard_list.size());
   auto sdata = shard_list[shard_index];
+  assert(sdata);
   bool queued = false;
   unsigned pushes_to_free = 0;
   {
     Mutex::Locker l(sdata->sdata_op_ordering_lock);
-    auto p = sdata->pg_slots.find(pgid);
-    if (p != sdata->pg_slots.end()) {
+    auto p = sdata->slots.find(ceph::get_ordering_token(pgid));
+    if (p != sdata->slots.end()) {
       dout(20) << __func__ << " " << pgid
 	       << " to_process " << p->second.to_process
 	       << " waiting_for_pg=" << (int)p->second.waiting_for_pg << dendl;
@@ -9907,9 +9908,9 @@ void OSD::ShardedOpWQ::prune_pg_waiters(OSDMapRef osdmap, int whoami)
   for (auto sdata : shard_list) {
     Mutex::Locker l(sdata->sdata_op_ordering_lock);
     sdata->waiting_for_pg_osdmap = osdmap;
-    auto p = sdata->pg_slots.begin();
-    while (p != sdata->pg_slots.end()) {
-      ShardData::pg_slot& slot = p->second;
+    auto p = sdata->slots.begin();
+    while (p != sdata->slots.end()) {
+      auto& slot = p->second;
       if (!slot.to_process.empty() && slot.num_running == 0) {
 	if (osdmap->is_up_acting_osd_shard(p->first, whoami)) {
 	  dout(20) << __func__ << "  " << p->first << " maps to us, keeping"
@@ -9946,10 +9947,11 @@ void OSD::ShardedOpWQ::prune_pg_waiters(OSDMapRef osdmap, int whoami)
 
 void OSD::ShardedOpWQ::clear_pg_pointer(spg_t pgid)
 {
-  uint32_t shard_index = pgid.hash_to_shard(shard_list.size());
+  auto shard_index = ceph::get_shard_index(pgid, shard_list.size());
   auto sdata = shard_list[shard_index];
+  assert(sdata);
   Mutex::Locker l(sdata->sdata_op_ordering_lock);
-  auto p = sdata->pg_slots.find(pgid);
+  auto p = sdata->pg_slots.find(std::hash<spg_t>{}(pgid));
   if (p != sdata->pg_slots.end()) {
     auto& slot = p->second;
     dout(20) << __func__ << " " << pgid << " pg " << slot.pg << dendl;
@@ -10003,7 +10005,7 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
   uint64_t requeue_seq;
   const auto token = item.get_ordering_token();
   {
-    auto& slot = sdata->pg_slots[token];
+    auto slot = sdata->slots[token];
     dout(30) << __func__ << " " << token
 	     << " to_process " << slot.to_process
 	     << " waiting_for_pg=" << (int)slot.waiting_for_pg << dendl;
@@ -10039,8 +10041,8 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
   // osd->service.release_reserved_pushes() call below
   sdata->sdata_op_ordering_lock.Lock();
 
-  auto q = sdata->pg_slots.find(token);
-  assert(q != sdata->pg_slots.end());
+  auto q = sdata->slots.find(token);
+  assert(q != sdata->slots.end());
   auto& slot = q->second;
   --slot.num_running;
 
@@ -10173,11 +10175,9 @@ void OSD::ShardedOpWQ::_process(uint32_t thread_index, heartbeat_handle_d *hb)
 }
 
 void OSD::ShardedOpWQ::_enqueue(OpQueueItem&& item) {
-  uint32_t shard_index =
-    item.get_ordering_token().hash_to_shard(shard_list.size());
-
-  ShardData* sdata = shard_list[shard_index];
-  assert (NULL != sdata);
+  auto shard_index = ceph::get_shard_index(item, shard_list.size());
+  auto sdata = shard_list[shard_index];
+  assert(sdata);
   unsigned priority = item.get_priority();
   unsigned cost = item.get_cost();
   sdata->sdata_op_ordering_lock.Lock();
@@ -10199,12 +10199,12 @@ void OSD::ShardedOpWQ::_enqueue(OpQueueItem&& item) {
 
 void OSD::ShardedOpWQ::_enqueue_front(OpQueueItem&& item)
 {
-  auto shard_index = item.get_ordering_token().hash_to_shard(shard_list.size());
+  auto shard_index = ceph::get_shard_index(item, shard_list.size());
   auto& sdata = shard_list[shard_index];
   assert(sdata);
   sdata->sdata_op_ordering_lock.Lock();
-  auto p = sdata->pg_slots.find(item.get_ordering_token());
-  if (p != sdata->pg_slots.end() && !p->second.to_process.empty()) {
+  auto p = sdata->slots.find(item.get_ordering_token());
+  if (p != sdata->slots.end() && !p->second.to_process.empty()) {
     // we may be racing with _process, which has dequeued a new item
     // from pqueue, put it on to_process, and is now busy taking the
     // pg lock.  ensure this old requeued item is ordered before any

@@ -1605,7 +1605,7 @@ private:
       Mutex sdata_op_ordering_lock;   ///< protects all members below
 
       OSDMapRef waiting_for_pg_osdmap;
-      struct pg_slot {
+      struct slot_t {
 	PGRef pg;                     ///< cached pg reference [optional]
 	list<OpQueueItem> to_process; ///< order items for this slot
 	int num_running = 0;          ///< _process threads doing pg lookup/lock
@@ -1619,10 +1619,10 @@ private:
 	uint64_t requeue_seq = 0;
       };
 
-      /// map of slots for each spg_t.  maintains ordering of items dequeued
+      /// map of slots for each token.  maintains ordering of items dequeued
       /// from pqueue while _process thread drops shard lock to acquire the
       /// pg lock.  slots are removed only by prune_pg_waiters.
-      unordered_map<spg_t,pg_slot> pg_slots;
+      unordered_map<size_t,slot_t> slots;
 
       /// priority queue
       std::unique_ptr<OpQueue<OpQueueItem, entity_inst_t>> pqueue;
@@ -1745,11 +1745,13 @@ private:
 
     /// Must be called on ops queued back to front
     struct Pred {
-      spg_t pgid;
+      size_t token;
       list<OpRequestRef> *out_ops;
       uint64_t reserved_pushes_to_free;
       Pred(spg_t pg, list<OpRequestRef> *out_ops = 0)
-	: pgid(pg), out_ops(out_ops), reserved_pushes_to_free(0) {}
+	: token(std::hash<spg_t>{}(pg)),
+	  out_ops(out_ops),
+	  reserved_pushes_to_free(0) {}
       void accumulate(const OpQueueItem &op) {
 	reserved_pushes_to_free += op.get_reserved_pushes();
 	if (out_ops) {
@@ -1759,7 +1761,7 @@ private:
 	}
       }
       bool operator()(const OpQueueItem &op) {
-	if (op.get_ordering_token() == pgid) {
+	if (op.get_ordering_token() == token) {
 	  accumulate(op);
 	  return true;
 	} else {
