@@ -48,7 +48,7 @@ def task(ctx, config):
                 'cd', dir,
                 run.Raw('&&'),
                 'wget','-q', '-Orun_seed_to.sh',
-                'http://git.ceph.com/?p=ceph.git;a=blob_plain;f=src/test/objectstore/run_seed_to.sh;hb=HEAD',
+                'https://raw.githubusercontent.com/tchaikov/ceph/4be41d6afe5c9a0e911acc652e27f7d284af21a7/src/test/objectstore/run_seed_to.sh',
                 run.Raw('&&'),
                 'wget','-q', '-Orun_seed_to_range.sh',
                 'http://git.ceph.com/?p=ceph.git;a=blob_plain;f=src/test/objectstore/run_seed_to_range.sh;hb=HEAD',
