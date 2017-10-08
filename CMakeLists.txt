@@ -572,6 +572,12 @@ if (WITH_SYSTEM_ROCKSDB)
   find_package(rocksdb 5.8 REQUIRED)
 endif()
 
+option(WITH_SEASTAR "Build seastar components")
+if(WITH_SEASTAR)
+  find_package(Seastar REQUIRED)
+  set(HAVE_SEASTAR ${SEASTAR_FOUND})
+endif()
+
 # Boost
 option(WITH_SYSTEM_BOOST "require and build with system Boost" OFF)
 

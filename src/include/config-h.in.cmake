@@ -336,4 +336,7 @@
 /* Defined if boost::context is available */
 #cmakedefine HAVE_BOOST_CONTEXT
 
+/* Define if seastar is available. */
+#cmakedefine HAVE_SEASTAR
+
 #endif /* CONFIG_H */
