@@ -402,6 +402,17 @@ endif(HAVE_RDMA)
 add_library(common_buffer_obj OBJECT
   common/buffer.cc)
 
+if(HAVE_SEASTAR)
+  add_library(seastar_buffer_obj OBJECT common/buffer_seastar.cc)
+  set_target_properties(seastar_buffer_obj PROPERTIES CXX_STANDARD 14)
+  # target_link_libraries() doesn't work for object libraries, so the
+  # Seastar properties are applied manually (and link is unnecessary)
+  target_compile_definitions(seastar_buffer_obj
+    PUBLIC $<TARGET_PROPERTY:Seastar::Seastar,INTERFACE_COMPILE_DEFINITIONS>)
+  target_include_directories(seastar_buffer_obj
+    PUBLIC $<TARGET_PROPERTY:Seastar::Seastar,INTERFACE_INCLUDE_DIRECTORIES>)
+endif()
+
 add_library(common_texttable_obj OBJECT
   common/TextTable.cc)
 
