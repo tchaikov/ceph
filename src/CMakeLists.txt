@@ -39,7 +39,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -rdynamic")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wstrict-null-sentinel -Woverloaded-virtual")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-new-ttp-matching")
-  if(NOT WITH_OSD_INSTRUMENT_FUNCTIONS)
+  if(NOT WITH_OSD_INSTRUMENT_FUNCTIONS AND NOT HAVE_SEASTAR)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie")
   endif()
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL Clang)
@@ -381,6 +381,8 @@ include_directories("${CMAKE_SOURCE_DIR}/src/dmclock/support/src")
 # needed for source files that friend unit tests (e.g., using FRIEND_TEST)
 include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/src/googletest/googletest/include")
 
+add_subdirectory(crimson)
+
 set(xio_common_srcs)
 if(HAVE_XIO)
   list(APPEND xio_common_srcs
@@ -402,6 +404,16 @@ endif(HAVE_RDMA)
 
 add_library(common_buffer_obj OBJECT
   common/buffer.cc)
+
+if(HAVE_SEASTAR)
+  add_library(seastar_buffer_obj OBJECT common/buffer_seastar.cc)
+  # target_link_libraries() doesn't work for object libraries, so the
+  # Seastar properties are applied manually (and link is unnecessary)
+  target_compile_definitions(seastar_buffer_obj
+    PUBLIC $<TARGET_PROPERTY:Seastar::Seastar,INTERFACE_COMPILE_DEFINITIONS>)
+  target_include_directories(seastar_buffer_obj
+    PUBLIC $<TARGET_PROPERTY:Seastar::Seastar,INTERFACE_INCLUDE_DIRECTORIES>)
+endif()
 
 add_library(common_texttable_obj OBJECT
   common/TextTable.cc)
