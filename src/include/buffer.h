@@ -263,7 +263,7 @@ namespace buffer CEPH_BUFFER_API {
     bool have_raw() const { return _raw ? true:false; }
 
     raw *clone();
-    void swap(ptr& other);
+    void swap(ptr& other) noexcept;
     ptr& make_shareable();
 
     iterator begin(size_t offset=0) const {
@@ -671,7 +671,7 @@ namespace buffer CEPH_BUFFER_API {
 			      _memcopy_count(other._memcopy_count), last_p(this) {
       make_shareable();
     }
-    list(list&& other);
+    list(list&& other) noexcept;
     list& operator= (const list& other) {
       if (this != &other) {
         _buffers = other._buffers;
@@ -681,7 +681,7 @@ namespace buffer CEPH_BUFFER_API {
       return *this;
     }
 
-    list& operator= (list&& other) {
+    list& operator= (list&& other) noexcept {
       _buffers = std::move(other._buffers);
       _len = other._len;
       _memcopy_count = other._memcopy_count;
@@ -705,7 +705,7 @@ namespace buffer CEPH_BUFFER_API {
 
     unsigned get_memcopy_count() const {return _memcopy_count; }
     const std::list<ptr>& buffers() const { return _buffers; }
-    void swap(list& other);
+    void swap(list& other) noexcept;
     unsigned length() const {
 #if 0
       // DEBUG: verify _len
@@ -735,7 +735,7 @@ namespace buffer CEPH_BUFFER_API {
     bool is_zero() const;
 
     // modifiers
-    void clear() {
+    void clear() noexcept {
       _buffers.clear();
       _len = 0;
       _memcopy_count = 0;
