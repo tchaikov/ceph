@@ -1,7 +1,7 @@
 overrides:
   ceph:
-    fs: btrfs
+    fs: xfs
     conf:
       osd:
+        osd objectstore: filestore
         osd sloppy crc: true
-        osd op thread timeout: 60
