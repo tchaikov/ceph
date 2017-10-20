@@ -71,6 +71,9 @@ class XioDispatchHook;
 #ifdef HAVE_SEASTAR
 namespace seastar {
 template <typename T> class temporary_buffer;
+namespace net {
+class packet;
+}
 }
 #endif // HAVE_SEASTAR
 class deleter;
@@ -354,6 +357,13 @@ namespace buffer CEPH_BUFFER_API {
     void zero(bool crc_reset);
     void zero(unsigned o, unsigned l);
     void zero(unsigned o, unsigned l, bool crc_reset);
+
+#ifdef HAVE_SEASTAR
+    /// create a temporary_buffer, copying the ptr as its deleter
+    operator seastar::temporary_buffer<char>() &;
+    /// convert to temporary_buffer, stealing the ptr as its deleter
+    operator seastar::temporary_buffer<char>() &&;
+#endif // HAVE_SEASTAR
 
   };
 
@@ -832,6 +842,11 @@ namespace buffer CEPH_BUFFER_API {
         }
       }
     }
+
+#ifdef HAVE_SEASTAR
+    /// convert the bufferlist into a network packet
+    operator seastar::net::packet() &&;
+#endif
 
     iterator begin() {
       return iterator(this, 0);
