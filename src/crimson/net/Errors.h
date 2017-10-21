@@ -21,6 +21,7 @@ namespace net {
 
 /// net error codes
 enum class error {
+  read_eof,
   connection_aborted,
   connection_refused,
   connection_reset,
