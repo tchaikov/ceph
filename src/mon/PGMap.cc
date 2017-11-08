@@ -3589,8 +3589,8 @@ void PGMap::get_health(
   }
 
   // pg skew
-  int num_in = osdmap.get_num_in_osds();
-  int sum_pg_up = MAX(pg_sum.up, static_cast<int32_t>(pg_stat.size()));
+  auto num_in = osdmap.get_num_in_osds();
+  auto sum_pg_up = MAX(static_cast<unsigned>(pg_sum.up), pg_stat.size());
   int sum_objects = pg_sum.stats.sum.num_objects;
   if (sum_objects < cct->_conf->mon_pg_warn_min_objects) {
     return;
@@ -3598,7 +3598,7 @@ void PGMap::get_health(
   const auto min_pg_per_osd =
     cct->_conf->get_val<uint64_t>("mon_pg_warn_min_per_osd");
   if (num_in && min_pg_per_osd > 0) {
-    int per = sum_pg_up / num_in;
+    auto per = sum_pg_up / num_in;
     if (per < min_pg_per_osd && per) {
       ostringstream ss;
       ss << "too few PGs per OSD (" << per << " < min " << min_pg_per_osd << ")";
