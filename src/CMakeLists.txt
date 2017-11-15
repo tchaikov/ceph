@@ -299,7 +299,6 @@ endif(HAVE_RDMA)
 
 if(HAVE_DPDK)
   set(CMAKE_CXX_FLAGS "-march=native ${CMAKE_CXX_FLAGS} -I${DPDK_INCLUDE_DIR}")
-  list(APPEND EXTRALIBS ${DPDK_LIBRARY})
   if(NOT USE_CRYPTOPP)
     message(FATAL_ERROR "CRYPTOPP must be supported when enable DPDK.")
   endif(NOT USE_CRYPTOPP)
