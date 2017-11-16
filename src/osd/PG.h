@@ -2159,6 +2159,9 @@ protected:
       boost::statechart::result react(const RemoteReservationRevoked&) {
 	return discard_event();
       }
+      boost::statechart::result react(const DoRecovery&) {
+	return discard_event();
+      }
     };
 
     struct Clean : boost::statechart::state< Clean, Active >, NamedState {
