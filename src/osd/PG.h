@@ -1820,7 +1820,6 @@ protected:
   public:
   TrivialEvent(NullEvt)
   protected:
-  TrivialEvent(FlushedEvt)
   TrivialEvent(Backfilled)
   TrivialEvent(LocalBackfillReserved)
   public:
@@ -2007,14 +2006,12 @@ protected:
 	boost::statechart::custom_reaction< AdvMap >,
 	boost::statechart::custom_reaction< ActMap >,
 	boost::statechart::custom_reaction< NullEvt >,
-	boost::statechart::custom_reaction< FlushedEvt >,
 	boost::statechart::custom_reaction< IntervalFlush >,
 	boost::statechart::transition< boost::statechart::event_base, Crashed >
 	> reactions;
       boost::statechart::result react(const QueryState& q);
       boost::statechart::result react(const AdvMap&);
       boost::statechart::result react(const ActMap&);
-      boost::statechart::result react(const FlushedEvt&);
       boost::statechart::result react(const IntervalFlush&);
       boost::statechart::result react(const boost::statechart::event_base&) {
 	return discard_event();
@@ -2031,13 +2028,11 @@ protected:
 	boost::statechart::custom_reaction< QueryState >,
 	boost::statechart::custom_reaction< AdvMap >,
 	boost::statechart::custom_reaction< NullEvt >,
-	boost::statechart::custom_reaction< FlushedEvt >,
 	boost::statechart::custom_reaction< IntervalFlush >,
 	boost::statechart::transition< boost::statechart::event_base, Crashed >
 	> reactions;
       boost::statechart::result react(const QueryState& q);
       boost::statechart::result react(const AdvMap&);
-      boost::statechart::result react(const FlushedEvt&);
       boost::statechart::result react(const IntervalFlush&);
       boost::statechart::result react(const boost::statechart::event_base&) {
 	return discard_event();
@@ -2840,6 +2835,7 @@ protected:
 
 
   // abstract bits
+  friend class FlushState;
 
   virtual void on_role_change() = 0;
   virtual void on_pool_change() = 0;
