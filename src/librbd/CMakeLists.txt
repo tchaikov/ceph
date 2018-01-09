@@ -130,6 +130,12 @@ target_link_libraries(rbd_internal PRIVATE
 
 add_library(librbd ${CEPH_SHARED}
   librbd.cc)
+target_compile_definitions(librbd
+  PRIVATE RBD_C_API)
+add_library(librbd_cxx ${CEPH_SHARED}
+  librbd.cc)
+target_compile_definitions(librbd_cxx
+  PRIVATE RBD_CXX_API)
 
 target_link_libraries(librbd PRIVATE
   rbd_internal
@@ -162,6 +168,12 @@ if(ENABLE_SHARED)
       set_property(TARGET librbd APPEND_STRING PROPERTY
         LINK_FLAGS " -Wl,--exclude-libs,ALL")
     endif()
+  set_target_properties(librbd_cxx PROPERTIES
+    OUTPUT_NAME rbdpp
+    VERSION 1.0.0
+    SOVERSION 1
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON)
 endif(ENABLE_SHARED)
 install(TARGETS librbd DESTINATION ${CMAKE_INSTALL_LIBDIR})
 

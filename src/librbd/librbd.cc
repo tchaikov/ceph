@@ -35,6 +35,7 @@
 #include "librbd/io/ImageRequestWQ.h"
 #include "librbd/io/ReadResult.h"
 #include <algorithm>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -61,15 +62,20 @@ using librados::IoCtx;
 
 namespace {
 
+#if defined(RBD_CXX_API) || defined(RBD_C_API)
 TracepointProvider::Traits tracepoint_traits("librbd_tp.so", "rbd_tracing");
+#endif
 
+#ifdef RBD_C_API
 buffer::raw* create_write_raw(librbd::ImageCtx *ictx, const char *buf,
                               size_t len) {
   // TODO: until librados can guarantee memory won't be referenced after
   // it ACKs a request, always make a copy of the user-provided memory
   return buffer::copy(buf, len);
 }
+#endif
 
+#if defined(RBD_CXX_API) || defined(RBD_C_API)
 CephContext* get_cct(IoCtx &io_ctx) {
   return reinterpret_cast<CephContext*>(io_ctx.cct());
 }
@@ -121,7 +127,9 @@ struct C_OpenComplete : public C_AioCompletion {
     C_AioCompletion::finish(r);
   }
 };
+#endif	// RBD_{C,CXX}_API
 
+#ifdef RBD_CXX_API
 struct C_OpenAfterCloseComplete : public Context {
   librbd::ImageCtx *ictx;
   librbd::io::AioCompletion* comp;
@@ -140,7 +148,9 @@ struct C_OpenAfterCloseComplete : public Context {
     ictx->state->open(false, new C_OpenComplete(ictx, comp, ictxp));
   }
 };
+#endif
 
+#ifdef RBD_C_API
 struct C_UpdateWatchCB : public librbd::UpdateWatchCtx {
   rbd_update_callback_t watch_cb;
   void *arg;
@@ -236,10 +246,11 @@ struct C_MirrorImageGetStatus : public Context {
     on_finish->complete(0);
   }
 };
-
+#endif	// RBD_C_API
 } // anonymous namespace
 
 namespace librbd {
+#if defined(RBD_CXX_API) || defined(RBD_C_API)
   ProgressContext::~ProgressContext()
   {
   }
@@ -259,7 +270,9 @@ namespace librbd {
     librbd_progress_fn_t m_fn;
     void *m_data;
   };
+#endif
 
+#ifdef RBD_CXX_API
   /*
     RBD
   */
@@ -2018,8 +2031,10 @@ namespace librbd {
     tracepoint(librbd, list_watchers_exit, r, watchers.size());
     return r;
   }
-
+#endif	// RBD_CXX_API
 } // namespace librbd
+
+#ifdef RBD_C_API
 
 extern "C" void rbd_version(int *major, int *minor, int *extra)
 {
@@ -4547,3 +4562,5 @@ extern "C" void rbd_watchers_list_cleanup(rbd_image_watcher_t *watchers,
     free(watchers[i].addr);
   }
 }
+
+#endif	// RBD_C_API
