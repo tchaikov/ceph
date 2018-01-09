@@ -21,8 +21,11 @@
 #include "common/common_init.h"
 #include "common/TracepointProvider.h"
 #include "common/hobject.h"
+#if defined(RADOS_CXX_API) || defined(RADOS_C_API)
 #include "include/rados/librados.h"
+// librados::WatchCtx2 is part of the C API, so include it also
 #include "include/rados/librados.hpp"
+#endif
 #include "include/types.h"
 #include <include/stringify.h>
 
@@ -58,15 +61,15 @@ using std::vector;
 using std::list;
 using std::runtime_error;
 
-#define dout_subsys ceph_subsys_rados
-#undef dout_prefix
-#define dout_prefix *_dout << "librados: "
-
+#ifdef RADOS_C_API
 #define RADOS_LIST_MAX_ENTRIES 1024
+#endif
 
 namespace {
 
+#ifdef RADOS_C_API
 TracepointProvider::Traits tracepoint_traits("librados_tp.so", "rados_tracing");
+#endif
 
 uint8_t get_checksum_op_type(rados_checksum_type_t type) {
   switch (type) {
@@ -103,6 +106,8 @@ uint8_t get_checksum_op_type(rados_checksum_type_t type) {
  * +--------------------------------------+
  */
 
+#ifdef RADOS_CXX_API
+
 namespace librados {
 
 struct ObjectOperationImpl {
@@ -121,6 +126,9 @@ size_t librados::ObjectOperation::size()
   return o->size();
 }
 
+#endif	// RADOS_CXX_API
+
+#if defined(RADOS_CXX_API) || defined(RADOS_C_API)
 static void set_op_flags(::ObjectOperation *o, int flags)
 {
   int rados_flags = 0;
@@ -140,7 +148,9 @@ static void set_op_flags(::ObjectOperation *o, int flags)
     rados_flags |= CEPH_OSD_OP_FLAG_FADVISE_NOCACHE;
   o->set_last_op_flags(rados_flags);
 }
+#endif
 
+#ifdef RADOS_CXX_API
 //deprcated
 void librados::ObjectOperation::set_op_flags(ObjectOperationFlags flags)
 {
@@ -680,6 +690,10 @@ void librados::ObjectWriteOperation::cache_unpin()
   o->cache_unpin();
 }
 
+#endif	// RADOS_CXX_API
+
+#ifdef RADOS_C_API
+
 librados::WatchCtx::
 ~WatchCtx()
 {
@@ -689,7 +703,9 @@ librados::WatchCtx2::
 ~WatchCtx2()
 {
 }
+#endif	// RADOS_C_API
 
+#if defined(RADOS_CXX_API) || defined(RADOS_C_API)
 
 struct librados::ObjListCtx {
   librados::IoCtxImpl dupctx;
@@ -710,6 +726,10 @@ struct librados::ObjListCtx {
     delete nlc;
   }
 };
+
+#endif
+
+#ifdef RADOS_CXX_API
 
 ///////////////////////////// NObjectIteratorImpl /////////////////////////////
 librados::NObjectIteratorImpl::NObjectIteratorImpl(ObjListCtx *ctx_)
@@ -1471,7 +1491,9 @@ int librados::IoCtx::omap_rm_keys(const std::string& oid,
   return operate(oid, &op);
 }
 
+#endif	// RADOS_CXX_API
 
+#if defined(RADOS_CXX_API) || defined(RADOS_C_API)
 
 static int translate_flags(int flags)
 {
@@ -1497,7 +1519,9 @@ static int translate_flags(int flags)
 
   return op_flags;
 }
+#endif
 
+#ifdef RADOS_CXX_API
 int librados::IoCtx::operate(const std::string& oid, librados::ObjectWriteOperation *o)
 {
   object_t obj(oid);
@@ -2591,7 +2615,9 @@ int librados::Rados::cluster_fsid(string *fsid)
 {
   return client->get_fsid(fsid);
 }
+#endif // RADOS_CXX_API
 
+#if defined(RADOS_CXX_API) || defined(RADOS_C_API)
 namespace librados {
   struct PlacementGroupImpl {
     pg_t pgid;
@@ -2676,7 +2702,9 @@ namespace {
     return 0;
   }
 }
+#endif	// RADOS_{C,CXX}_API
 
+#ifdef RADOS_CXX_API
 int librados::Rados::get_inconsistent_pgs(int64_t pool_id,
 					  std::vector<PlacementGroup>* pgs)
 {
@@ -2769,6 +2797,10 @@ librados::ObjectOperation::~ObjectOperation()
 {
   delete impl;
 }
+
+#endif	// RADOS_CXX_API
+
+#ifdef RADOS_C_API
 
 ///////////////////////////// C API //////////////////////////////
 
@@ -5384,8 +5416,12 @@ extern "C" int rados_lock_shared(rados_ioctx_t io, const char * o,
   tracepoint(librados, rados_lock_shared_enter, io, o, name, cookie, tag, desc, duration, flags);
   librados::IoCtx ctx;
   librados::IoCtx::from_rados_ioctx_t(io, ctx);
+  utime_t dur = utime_t();
+  if (duration)
+    dur.set_from_timeval(duration);
 
-  int retval = ctx.lock_shared(o, name, cookie, tag, desc, duration, flags);
+  int retval = rados::cls::lock::lock(&ctx, o, name, LOCK_SHARED, cookie, tag,
+				      desc, dur, flags);
   tracepoint(librados, rados_lock_shared_exit, retval);
   return retval;
 }
@@ -5425,58 +5461,55 @@ extern "C" ssize_t rados_list_lockers(rados_ioctx_t io, const char *o,
   librados::IoCtx ctx;
   librados::IoCtx::from_rados_ioctx_t(io, ctx);
   std::string name_str = name;
-  std::string oid = o;
   std::string tag_str;
-  int tmp_exclusive;
-  std::list<librados::locker_t> lockers;
-  int r = ctx.list_lockers(oid, name_str, &tmp_exclusive, &tag_str, &lockers);
+  ClsLockType lock_type;
+  map<rados::cls::lock::locker_id_t, rados::cls::lock::locker_info_t> rados_lockers;
+  int r = rados::cls::lock::get_lock_info(&ctx, o, name_str, &rados_lockers, &lock_type, &tag_str);
   if (r < 0) {
     tracepoint(librados, rados_list_lockers_exit, r, *exclusive, "", *tag_len, *clients_len, *cookies_len, *addrs_len);
 	  return r;
   }
 
+  if (tag_str.size() + 1 > *tag_len) {
+    r = -ERANGE;
+  }
+  *tag_len = tag_str.size() + 1;
   size_t clients_total = 0;
   size_t cookies_total = 0;
   size_t addrs_total = 0;
-  list<librados::locker_t>::const_iterator it;
-  for (it = lockers.begin(); it != lockers.end(); ++it) {
-    clients_total += it->client.length() + 1;
-    cookies_total += it->cookie.length() + 1;
-    addrs_total += it->address.length() + 1;
-  }
-
-  bool too_short = ((clients_total > *clients_len) ||
-                    (cookies_total > *cookies_len) ||
-                    (addrs_total > *addrs_len) ||
-                    (tag_str.length() + 1 > *tag_len));
-  *clients_len = clients_total;
-  *cookies_len = cookies_total;
-  *addrs_len = addrs_total;
-  *tag_len = tag_str.length() + 1;
-  if (too_short) {
-    tracepoint(librados, rados_list_lockers_exit, -ERANGE, *exclusive, "", *tag_len, *clients_len, *cookies_len, *addrs_len);
-    return -ERANGE;
-  }
-
-  strcpy(tag, tag_str.c_str());
   char *clients_p = clients;
   char *cookies_p = cookies;
   char *addrs_p = addrs;
-  for (it = lockers.begin(); it != lockers.end(); ++it) {
-    strcpy(clients_p, it->client.c_str());
-    strcpy(cookies_p, it->cookie.c_str());
-    strcpy(addrs_p, it->address.c_str());
-    tracepoint(librados, rados_list_lockers_locker, clients_p, cookies_p, addrs_p);
-    clients_p += it->client.length() + 1;
-    cookies_p += it->cookie.length() + 1;
-    addrs_p += it->address.length() + 1;
+  for (const auto& locker : rados_lockers) {
+    auto client = stringify(locker.first.locker);
+    clients_total += client.size() + 1;
+    if (*clients_len < clients_total) {
+      r = -ERANGE;
+    }
+    cookies_total += locker.first.cookie.size() + 1;
+    if (*cookies_len < cookies_total) {
+      r = -ERANGE;
+    }
+    auto address = stringify(locker.second.addr);
+    addrs_total += address.size() + 1;
+    if (*addrs_len < addrs_total) {
+      r = -ERANGE;
+    }
+    if (!r) {
+      clients_p = copy(begin(client), end(client), clients_p) + 1;
+      cookies_p = copy(begin(locker.first.cookie), end(locker.first.cookie), cookies_p) + 1;
+      addrs_p = copy(begin(address), end(address), addrs_p) + 1;
+      tracepoint(librados, rados_list_lockers_locker, clients_p, cookies_p, addrs_p);
+    }
   }
-  if (tmp_exclusive)
-    *exclusive = 1;
-  else
-    *exclusive = 0;
+  
+  if (r) {
+    tracepoint(librados, rados_list_lockers_exit, r, *exclusive, "", *tag_len, *clients_len, *cookies_len, *addrs_len);
+    return r;
+  }
+  *exclusive = (lock_type == LOCK_EXCLUSIVE);
 
-  int retval = lockers.size();
+  int retval = rados_lockers.size();
   tracepoint(librados, rados_list_lockers_exit, retval, *exclusive, tag, *tag_len, *clients_len, *cookies_len, *addrs_len);
   return retval;
 }
@@ -6262,6 +6295,9 @@ extern "C" int rados_cache_unpin(rados_ioctx_t io, const char *o)
   return retval;
 }
 
+#endif	// RADOS_C_API
+
+#ifdef RADOS_CXX_API
 
 ///////////////////////////// ListObject //////////////////////////////
 librados::ListObject::ListObject() : impl(NULL)
@@ -6323,6 +6359,10 @@ std::ostream& librados::operator<<(std::ostream& out, const librados::ListObject
   return out;
 }
 
+#endif	// RADOS_CXX_API
+
+#ifdef RADOS_C_API
+
 CEPH_RADOS_API void rados_object_list_slice(
     rados_ioctx_t io,
     const rados_object_list_cursor start,
@@ -6351,6 +6391,10 @@ CEPH_RADOS_API void rados_object_list_slice(
       split_start_hobj,
       split_finish_hobj);
 }
+
+#endif
+
+#ifdef RADOS_CXX_API
 
 librados::ObjectCursor::ObjectCursor()
 {
@@ -6567,4 +6611,4 @@ int librados::IoCtx::application_metadata_list(const std::string& app_name,
   return io_ctx_impl->application_metadata_list(app_name, values);
 }
 
-
+#endif	// RADOS_CXX_API

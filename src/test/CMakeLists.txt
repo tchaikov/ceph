@@ -127,7 +127,7 @@ target_link_libraries(ceph_bench_log global pthread rt ${BLKID_LIBRARIES} ${CMAK
 add_executable(ceph_test_mutate
   test_mutate.cc
   )
-target_link_libraries(ceph_test_mutate global librados ${BLKID_LIBRARIES} 
+target_link_libraries(ceph_test_mutate global librados_cxx ${BLKID_LIBRARIES} 
   ${CMAKE_DL_LIBS})
 
 # test_trans
@@ -161,7 +161,7 @@ if(WITH_KVS)
     ${CMAKE_SOURCE_DIR}/src/key_value_store/kv_flat_btree_async.cc
     )
   add_executable(ceph_kvstorebench ${kvstorebench_srcs})
-  target_link_libraries(ceph_kvstorebench librados global ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS})
+  target_link_libraries(ceph_kvstorebench librados_cxx global ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS})
   install(TARGETS ceph_kvstorebench DESTINATION bin)
 endif(WITH_KVS)
 
