@@ -184,7 +184,36 @@ namespace buffer CEPH_BUFFER_API {
 #if defined(HAVE_XIO)
   raw* create_msg(unsigned len, char *buf, XioDispatchHook *m_hook);
 #endif
+} // namespace buffer
+} // namespace ceph
 
+namespace details {
+
+template<bool is_const>
+class buffer_iterator_impl {
+public:
+  using pointer = std::conditional_t<is_const, const char*, char*>;
+  buffer_iterator_impl(pointer first, const char* last)
+    : pos(first), end_ptr(last)
+  {}
+  pointer get_pos_add(size_t n) {
+    auto r = pos;
+    if (pos += n; pos > end_ptr) {
+      throw buffer::end_of_buffer{};
+    }
+    return r;
+  }
+  pointer get() const {
+    return pos;
+  }
+protected:
+  pointer pos;
+  const char* end_ptr;
+};
+}
+
+namespace ceph {
+namespace buffer CEPH_BUFFER_API {
   /*
    * a buffer pointer.  references (a subsequence of) a raw buffer.
    */
@@ -195,48 +224,33 @@ namespace buffer CEPH_BUFFER_API {
     void release();
 
     template<bool is_const>
-    class iterator_impl {
+    class iterator_impl : details::buffer_iterator_impl<is_const> {
+      using parent = details::buffer_iterator_impl<is_const>;
+      using parent::pos;
+      using parent::end_ptr;
       const ptr *bp;     ///< parent ptr
       const char *start; ///< starting pointer into bp->c_str()
-      const char *pos;   ///< pointer into bp->c_str()
-      const char *end_ptr;   ///< pointer to bp->end_c_str()
       static constexpr bool deep = is_const;   ///< if true, do not allow shallow ptr copies
 
-      iterator_impl(const ptr *p, size_t offset)
-	: bp(p),
-	  start(p->c_str() + offset),
-	  pos(start),
-	  end_ptr(p->end_c_str())
+      iterator_impl(std::conditional_t<is_const, const ptr*, ptr*> p, size_t offset)
+	: parent(p->c_str() + offset, p->end_c_str()),
+	  bp(p), start(pos)
       {}
 
       friend class ptr;
 
     public:
-      const char *get_pos_add(size_t n) {
-	const char *r = pos;
-	pos += n;
-	if (pos > end_ptr)
-	  throw end_of_buffer();
-	return r;
-      }
-
+      using pointer = std::conditional_t<is_const, const char*, char *>;
+      using parent::get_pos_add;
       ptr get_ptr(size_t len) {
 	if constexpr (deep) {
-	  return buffer::copy(get_pos_add(len), len);
+	  return buffer::copy(parent::get_pos_add(len), len);
 	} else {
 	  size_t off = pos - bp->c_str();
 	  pos += len;
 	  if (pos > end_ptr)
 	    throw end_of_buffer();
 	  return ptr(*bp, off, len);
-	}
-      }
-      ptr get_preceding_ptr(size_t len) {
-	if constexpr (deep) {
-	  return buffer::copy(get_pos() - len, len);
-	} else {
-	  size_t off = pos - bp->c_str();
-	  return ptr(*bp, off - len, len);
 	}
       }
 

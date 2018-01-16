@@ -225,7 +225,6 @@ inline constexpr bool denc_supported = denc_traits<T>::supported;
 
   */
 
-
 // ---------------------------------------------------------------------
 // raw types
 namespace _denc {
@@ -243,6 +242,30 @@ template<typename T>
 using underlying_type_t = typename underlying_type<T>::type;
 }
 
+template<class It>
+struct is_const_iterator {
+  using pointer = typename It::pointer;
+  static constexpr bool value = std::is_const_v<std::remove_pointer_t<pointer>>;
+};
+template<>
+struct is_const_iterator<buffer::list::contiguous_appender> {
+  // appender is used for *changing* the buffer
+  static constexpr bool value = false;
+};
+template<class It>
+inline constexpr bool is_const_iterator_v = is_const_iterator<It>::value;
+
+template<typename T, class It>
+std::enable_if_t<is_const_iterator_v<It>, const T&>
+get_pos_add(It& i) {
+  return *reinterpret_cast<const T*>(i.get_pos_add(sizeof(T)));
+}
+
+template<typename T, class It>
+std::enable_if_t<!is_const_iterator_v<It>, T&>
+get_pos_add(It& i) {
+  return *reinterpret_cast<T*>(i.get_pos_add(sizeof(T)));
+}
 
 template<typename T>
 struct denc_traits<
@@ -261,14 +284,15 @@ struct denc_traits<
   static void bound_encode(const T &o, size_t& p, uint64_t f=0) {
     p += sizeof(T);
   }
+  template<class It>
   static void encode(const T &o,
-		     buffer::list::contiguous_appender& p,
+		     It& p,
 		     uint64_t f=0) {
-    p.append((const char*)&o, sizeof(o));
+    get_pos_add<T>(p) = o;
   }
-  static void decode(T& o, buffer::ptr::const_iterator &p,
-		     uint64_t f=0) {
-    o = *(T *)p.get_pos_add(sizeof(o));
+  template<class It>
+  static void decode(T& o, It& p, uint64_t f=0) {
+    o = get_pos_add<T>(p);
   }
   static void decode(T& o, buffer::list::iterator &p) {
     p.copy(sizeof(T), reinterpret_cast<char*>(&o));
@@ -330,13 +354,14 @@ struct denc_traits<T, std::enable_if_t<!std::is_void_v<_denc::ExtType_t<T>>>>
   static void bound_encode(const T &o, size_t& p, uint64_t f=0) {
     p += sizeof(etype);
   }
-  static void encode(const T &o, buffer::list::contiguous_appender& p,
+  template<class It>
+  static void encode(const T &o, It& p,
 		     uint64_t f=0) {
-    *(etype *)p.get_pos_add(sizeof(etype)) = o;
+    get_pos_add<etype>(p) = o;
   }
-  static void decode(T& o, buffer::ptr::const_iterator &p,
-		     uint64_t f=0) {
-    o = *(etype*)p.get_pos_add(sizeof(etype));
+  template<class It>
+  static void decode(T& o, It &p, uint64_t f=0) {
+    o = get_pos_add<etype>(p);
   }
   static void decode(T& o, buffer::list::iterator &p) {
     etype e;
@@ -353,26 +378,26 @@ inline void denc_varint(T v, size_t& p) {
   p += sizeof(T) + 1;
 }
 
-template<typename T>
-inline void denc_varint(T v, bufferlist::contiguous_appender& p) {
+template<typename T, class It>
+inline void denc_varint(T v, It& p) {
   uint8_t byte = v & 0x7f;
   v >>= 7;
   while (v) {
     byte |= 0x80;
-    *(__u8*)p.get_pos_add(1) = byte;
+    get_pos_add<__u8>(p) = byte;
     byte = (v & 0x7f);
     v >>= 7;
   }
-  *(__u8*)p.get_pos_add(1) = byte;
+  get_pos_add<__u8>(p) = byte;
 }
 
-template<typename T>
-inline void denc_varint(T& v, bufferptr::iterator& p) {
+template<typename T, class It>
+inline void denc_varint(T& v, It& p) {
   uint8_t byte = *(__u8*)p.get_pos_add(1);
   v = byte & 0x7f;
   int shift = 7;
   while (byte & 0x80) {
-    byte = *(__u8*)p.get_pos_add(1);
+    byte = get_pos_add<__u8>(p);
     v |= (T)(byte & 0x7f) << shift;
     shift += 7;
   }
@@ -386,7 +411,8 @@ inline void denc_varint(T& v, bufferptr::iterator& p) {
 inline void denc_signed_varint(int64_t v, size_t& p) {
   p += sizeof(v) + 2;
 }
-inline void denc_signed_varint(int64_t v, bufferlist::contiguous_appender& p) {
+template<class It>
+inline void denc_signed_varint(int64_t v, It& p) {
   if (v < 0) {
     v = (-v << 1) | 1;
   } else {
@@ -395,8 +421,8 @@ inline void denc_signed_varint(int64_t v, bufferlist::contiguous_appender& p) {
   denc_varint(v, p);
 }
 
-template<typename T>
-inline void denc_signed_varint(T& v, bufferptr::iterator& p)
+template<typename T, class It>
+inline void denc_signed_varint(T& v, It& p)
 {
   int64_t i = 0;
   denc_varint(i, p);
@@ -415,7 +441,8 @@ inline void denc_signed_varint(T& v, bufferptr::iterator& p)
 inline void denc_varint_lowz(uint64_t v, size_t& p) {
   p += sizeof(v) + 2;
 }
-inline void denc_varint_lowz(uint64_t v, bufferlist::contiguous_appender& p) {
+template<class It>
+inline void denc_varint_lowz(uint64_t v, It& p) {
   int lowznib = v ? (ctz(v) / 4) : 0;
   if (lowznib > 3)
     lowznib = 3;
@@ -425,8 +452,8 @@ inline void denc_varint_lowz(uint64_t v, bufferlist::contiguous_appender& p) {
   denc_varint(v, p);
 }
 
-template<typename T>
-inline void denc_varint_lowz(T& v, bufferptr::iterator& p)
+template<typename T, class It>
+inline void denc_varint_lowz(T& v, It& p)
 {
   uint64_t i = 0;
   denc_varint(i, p);
@@ -445,8 +472,8 @@ inline void denc_varint_lowz(T& v, bufferptr::iterator& p)
 inline void denc_signed_varint_lowz(int64_t v, size_t& p) {
   p += sizeof(v) + 2;
 }
-inline void denc_signed_varint_lowz(int64_t v,
-				    bufferlist::contiguous_appender& p) {
+template<class It>
+inline void denc_signed_varint_lowz(int64_t v, It& p) {
   bool negative = false;
   if (v < 0) {
     v = -v;
@@ -462,8 +489,8 @@ inline void denc_signed_varint_lowz(int64_t v,
   denc_varint(v, p);
 }
 
-template<typename T>
-inline void denc_signed_varint_lowz(T& v, bufferptr::iterator& p)
+template<typename T, class It>
+inline void denc_signed_varint_lowz(T& v, It& p)
 {
   int64_t i = 0;
   denc_varint(i, p);
@@ -494,7 +521,8 @@ inline void denc_lba(uint64_t v, size_t& p) {
   p += sizeof(v) + 2;
 }
 
-inline void denc_lba(uint64_t v, bufferlist::contiguous_appender& p) {
+template<class It>
+inline void denc_lba(uint64_t v, It& p) {
   int low_zero_nibbles = v ? (int)(ctz(v) / 4) : 0;
   int pos;
   uint32_t word;
@@ -530,7 +558,8 @@ inline void denc_lba(uint64_t v, bufferlist::contiguous_appender& p) {
   *(__u8*)p.get_pos_add(1) = byte;
 }
 
-inline void denc_lba(uint64_t& v, bufferptr::iterator& p) {
+template<class It>
+inline void denc_lba(uint64_t& v, It& p) {
   uint32_t word = *(__le32*)p.get_pos_add(sizeof(uint32_t));
   int shift;
   switch (word & 7) {
@@ -567,60 +596,46 @@ inline void denc_lba(uint64_t& v, bufferptr::iterator& p) {
 // denc top-level methods that call into denc_traits<T> methods
 
 template<typename T, typename traits=denc_traits<T>>
-inline std::enable_if_t<traits::supported &&
-			!traits::featured> denc(
+inline std::enable_if_t<traits::supported> denc(
   const T& o,
   size_t& p,
   uint64_t f=0)
 {
-  traits::bound_encode(o, p);
-}
-template<typename T, typename traits=denc_traits<T>>
-inline std::enable_if_t<traits::supported &&
-			traits::featured> denc(
-  const T& o,
-  size_t& p,
-  uint64_t f)
-{
-  traits::bound_encode(o, p, f);
+  if constexpr (traits::featured) {
+    traits::bound_encode(o, p, f);
+  } else {
+    traits::bound_encode(o, p);
+  }
 }
 
-template<typename T, typename traits=denc_traits<T>>
+template<typename T, class It, typename traits=denc_traits<T>>
 inline std::enable_if_t<traits::supported &&
-			!traits::featured> denc(
-  const T& o,
-  buffer::list::contiguous_appender& p,
-  uint64_t features=0)
+                        (std::is_base_of_v<details::buffer_iterator_impl<false>, It> ||
+                         std::is_same_v<buffer::list::contiguous_appender, It>)>
+denc(const T& o,
+     It& p,
+     uint64_t features=0)
 {
-  traits::encode(o, p);
-}
-template<typename T, typename traits=denc_traits<T>>
-inline std::enable_if_t<traits::supported &&
-			traits::featured> denc(
-  const T& o,
-  buffer::list::contiguous_appender& p,
-  uint64_t features)
-{
-  traits::encode(o, p, features);
+  if constexpr (traits::featured) {
+    traits::encode(o, p, features);
+  } else {
+    traits::encode(o, p);
+  }
 }
 
-template<typename T, typename traits=denc_traits<T>>
+template<typename T, class It, typename traits=denc_traits<T>>
 inline std::enable_if_t<traits::supported &&
-			!traits::featured> denc(
-  T& o,
-  buffer::ptr::const_iterator& p,
-  uint64_t features=0)
+                        (std::is_base_of_v<details::buffer_iterator_impl<true>, It> ||
+                         std::is_same_v<buffer::ptr::const_iterator, It>)>
+denc(T& o,
+     It& p,
+     uint64_t features=0)
 {
-  traits::decode(o, p);
-}
-template<typename T, typename traits=denc_traits<T>>
-inline std::enable_if_t<traits::supported &&
-			traits::featured> denc(
-  T& o,
-  buffer::ptr::const_iterator& p,
-  uint64_t features=0)
-{
-  traits::decode(o, p, features);
+  if constexpr (traits::featured) {
+    traits::decode(o, p, features);
+  } else {
+    traits::decode(o, p);
+  }
 }
 
 namespace _denc {
@@ -676,14 +691,16 @@ public:
   static void bound_encode(const value_type& s, size_t& p, uint64_t f=0) {
     p += sizeof(uint32_t) + s.size();
   }
+  template<class It>
   static void encode(const value_type& s,
-		     buffer::list::contiguous_appender& p,
-	      uint64_t f=0) {
+		     It& p,
+                     uint64_t f=0) {
     denc((uint32_t)s.size(), p);
     memcpy(p.get_pos_add(s.size()), s.data(), s.size());
   }
+  template<class It>
   static void decode(value_type& s,
-		     buffer::ptr::const_iterator& p,
+		     It& p,
 		     uint64_t f=0) {
     uint32_t len;
     denc(len, p);
@@ -696,16 +713,19 @@ public:
     s.clear();
     p.copy(len, s);
   }
+  template<class It>
   static void decode_nohead(size_t len, value_type& s,
-			    buffer::ptr::const_iterator& p) {
+                            It& p) {
     s.clear();
     if (len) {
       s.append(p.get_pos_add(len), len);
     }
   }
+  template<class It>
   static void encode_nohead(const value_type& s,
-			    buffer::list::contiguous_appender& p) {
-    p.append(s.data(), s.length());
+			    It& p) {
+    auto len = s.length();
+    maybe_inline_memcpy(p.get_pos_add(len), s.data(), len, 16);
   }
 };
 
@@ -721,12 +741,14 @@ struct denc_traits<bufferptr> {
   static void bound_encode(const bufferptr& v, size_t& p, uint64_t f=0) {
     p += sizeof(uint32_t) + v.length();
   }
-  static void encode(const bufferptr& v, buffer::list::contiguous_appender& p,
+  template <class It>
+  static void encode(const bufferptr& v, It& p,
 	      uint64_t f=0) {
     denc((uint32_t)v.length(), p);
     p.append(v);
   }
-  static void decode(bufferptr& v, buffer::ptr::const_iterator& p, uint64_t f=0) {
+  template <class It>
+  static void decode(bufferptr& v, It& p, uint64_t f=0) {
     uint32_t len;
     denc(len, p);
     v = p.get_ptr(len);
