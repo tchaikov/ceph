@@ -40,7 +40,7 @@ struct denc_traits<health_status_t> {
 		     uint64_t f=0) {
     ::denc((uint8_t)v, p);
   }
-  static void decode(health_status_t& v, buffer::ptr::iterator& p,
+  static void decode(health_status_t& v, buffer::ptr::const_iterator& p,
 		     uint64_t f=0) {
     uint8_t tmp;
     ::denc(tmp, p);

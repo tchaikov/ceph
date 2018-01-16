@@ -63,7 +63,7 @@ struct bluefs_fnode_t {
     _denc_friend(*this, p);
     DENC_DUMP_POST(bluefs_fnode_t);
   }
-  void decode(buffer::ptr::iterator& p) {
+  void decode(buffer::ptr::const_iterator& p) {
     _denc_friend(*this, p);
     recalc_allocated();
   }

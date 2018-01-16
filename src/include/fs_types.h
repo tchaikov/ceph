@@ -41,7 +41,7 @@ struct denc_traits<inodeno_t> {
   static void encode(const inodeno_t &o, buffer::list::contiguous_appender& p) {
     denc(o.val, p);
   }
-  static void decode(inodeno_t& o, buffer::ptr::iterator &p) {
+  static void decode(inodeno_t& o, buffer::ptr::const_iterator &p) {
     denc(o.val, p);
   }
 };

@@ -123,7 +123,7 @@ struct denc_counter_t {
     p.append("a", 1);
     ++counts.num_encode;
   }
-  void decode(buffer::ptr::iterator &p) {
+  void decode(buffer::ptr::const_iterator &p) {
     p.advance(1);
     ++counts.num_decode;
   }
@@ -139,7 +139,7 @@ struct denc_counter_bounded_t {
     p.append("a", 1);
     ++counts.num_encode;
   }
-  void decode(buffer::ptr::iterator &p) {
+  void decode(buffer::ptr::const_iterator &p) {
     p.advance(1);
     ++counts.num_decode;
   }
@@ -496,7 +496,7 @@ TEST(denc, bufferptr_shallow_and_deep) {
   {
     cout << "bl is " << bl2 << std::endl;
     bl2.hexdump(cout);
-    auto p = bl2.front().begin_deep();
+    auto p = bl2.front().begin();
     bufferptr op;
     int32_t i;
     denc(i, p);
