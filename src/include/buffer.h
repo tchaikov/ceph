@@ -194,20 +194,20 @@ namespace buffer CEPH_BUFFER_API {
 
     void release();
 
-  public:
-    class iterator {
+    template<bool is_const>
+    class iterator_impl {
       const ptr *bp;     ///< parent ptr
       const char *start; ///< starting pointer into bp->c_str()
       const char *pos;   ///< pointer into bp->c_str()
       const char *end_ptr;   ///< pointer to bp->end_c_str()
-      bool deep;         ///< if true, do not allow shallow ptr copies
+      static constexpr bool deep = is_const;   ///< if true, do not allow shallow ptr copies
 
-      iterator(const ptr *p, size_t offset, bool d)
+      iterator_impl(const ptr *p, size_t offset)
 	: bp(p),
 	  start(p->c_str() + offset),
 	  pos(start),
-	  end_ptr(p->end_c_str()),
-	  deep(d) {}
+	  end_ptr(p->end_c_str())
+      {}
 
       friend class ptr;
 
@@ -221,7 +221,7 @@ namespace buffer CEPH_BUFFER_API {
       }
 
       ptr get_ptr(size_t len) {
-	if (deep) {
+	if constexpr (deep) {
 	  return buffer::copy(get_pos_add(len), len);
 	} else {
 	  size_t off = pos - bp->c_str();
@@ -232,7 +232,7 @@ namespace buffer CEPH_BUFFER_API {
 	}
       }
       ptr get_preceding_ptr(size_t len) {
-	if (deep) {
+	if constexpr (deep) {
 	  return buffer::copy(get_pos() - len, len);
 	} else {
 	  size_t off = pos - bp->c_str();
@@ -262,6 +262,10 @@ namespace buffer CEPH_BUFFER_API {
       }
     };
 
+  public:
+    using const_iterator = iterator_impl<true>;
+    using iterator = iterator_impl<false>;
+
     ptr() : _raw(0), _off(0), _len(0) {}
     // cppcheck-suppress noExplicitConstructor
     ptr(raw *r);
@@ -283,11 +287,11 @@ namespace buffer CEPH_BUFFER_API {
     void swap(ptr& other) noexcept;
     ptr& make_shareable();
 
-    iterator begin(size_t offset=0) const {
-      return iterator(this, offset, false);
+    iterator begin(size_t offset=0) {
+      return iterator(this, offset);
     }
-    iterator begin_deep(size_t offset=0) const {
-      return iterator(this, offset, true);
+    const_iterator begin(size_t offset=0) const {
+      return const_iterator(this, offset);
     }
 
     // misc

@@ -138,7 +138,7 @@ struct denc_traits<snapid_t> {
   static void encode(const snapid_t &o, buffer::list::contiguous_appender& p) {
     denc(o.val, p);
   }
-  static void decode(snapid_t& o, buffer::ptr::iterator &p) {
+  static void decode(snapid_t& o, buffer::ptr::const_iterator &p) {
     denc(o.val, p);
   }
 };

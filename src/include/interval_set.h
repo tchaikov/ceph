@@ -348,7 +348,7 @@ class interval_set {
   void encode(bufferlist::contiguous_appender& p) const {
     denc(m, p);
   }
-  void decode(bufferptr::iterator& p) {
+  void decode(bufferptr::const_iterator& p) {
     denc(m, p);
     _size = 0;
     for (const auto& i : m) {
@@ -366,7 +366,7 @@ class interval_set {
   void encode_nohead(bufferlist::contiguous_appender& p) const {
     denc_traits<Map>::encode_nohead(m, p);
   }
-  void decode_nohead(int n, bufferptr::iterator& p) {
+  void decode_nohead(int n, bufferptr::const_iterator& p) {
     denc_traits<Map>::decode_nohead(n, m, p);
     _size = 0;
     for (const auto& i : m) {
@@ -784,7 +784,7 @@ struct denc_traits<interval_set<T,Map>> {
 		     bufferlist::contiguous_appender& p) {
     v.encode(p);
   }
-  static void decode(interval_set<T,Map>& v, bufferptr::iterator& p) {
+  static void decode(interval_set<T,Map>& v, bufferptr::const_iterator& p) {
     v.decode(p);
   }
   template<typename U=T>
@@ -797,7 +797,7 @@ struct denc_traits<interval_set<T,Map>> {
     v.encode_nohead(p);
   }
   static void decode_nohead(size_t n, interval_set<T,Map>& v,
-			    bufferptr::iterator& p) {
+			    bufferptr::const_iterator& p) {
     v.decode_nohead(n, p);
   }
 };
