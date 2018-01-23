@@ -56,6 +56,7 @@ function(do_build_boost version)
   set(BOOST_CXXFLAGS "-fPIC -w") # check on arm, etc <---XXX
   list(APPEND boost_features "cxxflags=${BOOST_CXXFLAGS}")
 
+  list(FIND Boost_BUILD_COMPONENTS "python" with_python)
   string(REPLACE ";" "," boost_with_libs "${Boost_BUILD_COMPONENTS}")
   # build b2 and prepare the project-config.jam for boost
   set(configure_command
@@ -80,7 +81,16 @@ function(do_build_boost version)
   else()
     message(SEND_ERROR "unknown compiler: ${CMAKE_CXX_COMPILER_ID}")
   endif()
+  list(APPEND b2 --user-config=user-config.jam)
   list(APPEND b2 toolset=${toolset})
+  if(with_python GREATER -1)
+    if(NOT PYTHONLIBS_FOUND)
+      message(FATAL_ERROR "Please call find_package(PythonLibs) first for building "
+        "Boost.Python")
+    endif()
+    set(python_ver ${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR})
+    list(APPEND b2 python=${python_ver})
+  endif()
 
   set(build_command
     ${b2} headers stage
@@ -130,7 +140,19 @@ function(do_build_boost version)
   # edit the user-config.jam so, so b2 will be able to use the specified
   # toolset
   file(WRITE ${source_dir}/user-config.jam
-    "using ${toolset} : : ${CMAKE_CXX_COMPILER} ;")
+    "using ${toolset}"
+    " : "
+    " : ${CMAKE_CXX_COMPILER}"
+    " ;\n")
+  if(with_python GREATER -1)
+    file(APPEND ${source_dir}/user-config.jam
+      "using python"
+      " : ${python_ver}"
+      " : ${PYTHON_EXECUTABLE}"
+      " : ${PYTHON_INCLUDE_DIRS}"
+      " : ${PYTHON_LIBRARIES}"
+      " ;\n")
+  endif()
 endfunction()
 
 macro(build_boost version)
