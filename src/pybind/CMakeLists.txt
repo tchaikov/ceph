@@ -4,9 +4,14 @@ set(CYTHON_MODULE_DIR ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/cython_modules)
 
 # Keep the default version last
 if(WITH_PYTHON3)
-  set(py_vers 3)
+  list(APPEND py_vers 3)
 endif()
-list(APPEND py_vers 2)
+if(WITH_PYTHON2)
+  list(APPEND py_vers 2)
+endif()
+if(NOT py_vers)
+  message(FATAL_ERROR "No Python binding enabled. Please enable WITH_PYTHON2 and/or WITH_PYTHON3.")
+endif()
 
 foreach(python_version ${py_vers})
   if(${python_version} EQUAL 2)
@@ -58,7 +63,7 @@ endforeach()
 
 install(FILES
   ${CMAKE_CURRENT_SOURCE_DIR}/ceph_rest_api.py
-  DESTINATION ${PYTHON_INSTDIR})
+  DESTINATION ${PYTHON${PYTHON_VERSION}_INSTDIR})
 
 if(WITH_MGR)
   # Location needs to match default setting for mgr_module_path, currently:
