@@ -3144,7 +3144,7 @@ void PG::read_state(ObjectStore *store, bufferlist &bl)
 		  info_struct_v < 8 ? OSD::make_pg_log_oid(pg_id) : pgmeta_oid,
 		  info, oss);
   if (oss.str().length())
-    osd->clog->error() << oss;
+    osd->clog->error() << oss.str();
 
   // log any weirdness
   log_weirdness();
