@@ -16,6 +16,7 @@ tasks:
         - \(MDS_DEGRADED\)
         - \(FS_WITH_FAILED_MDS\)
         - \(MDS_DAMAGE\)
+        - \(MDS_ALL_DOWN\)
   - rgw: [client.0]
   - cephfs_test_runner:
       fail_on_skip: false
