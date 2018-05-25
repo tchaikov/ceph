@@ -25,8 +25,9 @@ TEMP_FILE=$(mktemp $TEMP_DIR/test_invalid.XXX)
 
 function test_ceph_kvstore_tool()
 {
-  # create a data directory
-  ceph-objectstore-tool --data-path ${TEMP_DIR} --op mkfs --no-mon-config
+    # create a data directory
+    echo "=========== test_ceph_kvstore_tool ========"
+  ceph-objectstore-tool --data-path ${TEMP_DIR} --op mkfs --no-mon-config || sleep 3h
 
   # list
   origin_kv_nums=`ceph-kvstore-tool  bluestore-kv ${TEMP_DIR} list 2>/dev/null | wc -l`
