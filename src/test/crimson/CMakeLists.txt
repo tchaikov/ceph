@@ -22,3 +22,8 @@ add_executable(unittest_seastar_thread_pool
   test_thread_pool.cc)
 add_ceph_unittest(unittest_seastar_thread_pool)
 target_link_libraries(unittest_seastar_thread_pool crimson)
+
+add_executable(unittest_seastar_sharded_ptr
+  test_sharded_ptr.cc)
+add_ceph_unittest(unittest_seastar_sharded_ptr)
+target_link_libraries(unittest_seastar_sharded_ptr crimson)
