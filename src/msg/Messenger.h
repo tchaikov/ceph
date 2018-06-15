@@ -44,6 +44,7 @@ private:
   list <Dispatcher*> fast_dispatchers;
   ZTracer::Endpoint trace_endpoint;
 
+protected:
   void set_endpoint_addr(const entity_addr_t& a,
                          const entity_name_t &name);
 
@@ -52,7 +53,7 @@ protected:
   entity_name_t my_name;
 
   /// my addr
-  entity_addr_t my_addr;
+  entity_addrvec_t my_addrs;
 
   int default_send_priority;
   /// set to true once the Messenger has started, and set to false on shutdown
@@ -149,9 +150,11 @@ public:
    * @return A const reference to the address this Messenger
    * currently believes to be its own.
    */
-  const entity_addr_t& get_myaddr() { return my_addr; }
-  entity_addrvec_t get_myaddrs() {
-    return entity_addrvec_t(my_addr);
+  entity_addr_t get_myaddr() {
+    return my_addrs.front();
+  }
+  const entity_addrvec_t& get_myaddrs() {
+    return my_addrs;
   }
 
   /**
@@ -164,9 +167,9 @@ protected:
   /**
    * set messenger's address
    */
-  virtual void set_myaddr(const entity_addr_t& a) {
-    my_addr = a;
-    set_endpoint_addr(a, my_name);
+  virtual void set_myaddrs(const entity_addrvec_t& a) {
+    my_addrs = a;
+    set_endpoint_addr(a.front(), my_name);
   }
 public:
   /**
@@ -194,7 +197,7 @@ public:
    *
    * @param addr The address to use as a template.
    */
-  virtual void set_addr_unknowns(const entity_addr_t &addr) = 0;
+  virtual bool set_addr_unknowns(const entity_addrvec_t &addrs) = 0;
   /**
    * Set the address for this Messenger. This is useful if the Messenger
    * binds to a specific address but advertises a different address on the
@@ -202,7 +205,7 @@ public:
    *
    * @param addr The address to use.
    */
-  virtual void set_addr(const entity_addr_t &addr) = 0;
+  virtual void set_addrs(const entity_addrvec_t &addr) = 0;
   /// Get the default send priority.
   int get_default_send_priority() { return default_send_priority; }
   /**
@@ -361,6 +364,7 @@ public:
    * we can be more specific about the failure.
    */
   virtual int bind(const entity_addr_t& bind_addr) = 0;
+
   /**
    * This function performs a full restart of the Messenger component,
    * whatever that means.  Other entities who connect to this
@@ -379,6 +383,9 @@ public:
    * @return 0 on success, or -1 on error, or -errno if
    */
   virtual int client_bind(const entity_addr_t& bind_addr) = 0;
+
+  virtual int bindv(const entity_addrvec_t& addrs);
+
   /**
    * @} // Configuration
    */
