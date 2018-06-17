@@ -27,6 +27,8 @@ function run() {
     CEPH_ARGS+="--mon-host=$CEPH_MON "
     CEPH_ARGS+="--crush-location=root=default,host=HOST "
     CEPH_ARGS+="--osd-crush-initial-weight=3 "
+    CEPH_ARGS+="--debug-ms=1"
+    CEPH_ARGS+="--debug-monc=10"
     #
     # Disable device auto class feature for now.
     # The device class is non-deterministic and will
