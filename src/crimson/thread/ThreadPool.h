@@ -64,7 +64,12 @@ class ThreadPool {
   bool stopping() const {
     return stop.load(std::memory_order_relaxed);
   }
-
+  // @returns true if there is any task waiting outside of the queue, false
+  //          otherwise.
+  // @note this is not thread/fiber safe, we assume that the clients of
+  //       ThreadPool also stop posting tasks to it when we are stopping. use
+  //       @seastar::gate for this purpose.
+  bool have_stray_tasks() const;
   ThreadPool(const ThreadPool&) = delete;
   ThreadPool& operator=(const ThreadPool&) = delete;
 public:

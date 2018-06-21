@@ -39,6 +39,16 @@ std::vector<std::thread> ThreadPool::create_threads(size_t n)
   return workers;
 }
 
+bool ThreadPool::have_stray_tasks() const
+{
+  for (auto& free_slot : free_slots) {
+    if (free_slot.waiters() > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void ThreadPool::loop()
 {
   using namespace std::chrono_literals;
@@ -55,7 +65,11 @@ void ThreadPool::loop()
     if (work_item) {
       work_item->process();
     } else if (stopping()) {
-      break;
+      if (!have_stray_tasks()) {
+        // keep running for waiting for tasks outside of the queue if any,
+        // otherwise say goodbye
+        break;
+      }
     }
   }
 }
