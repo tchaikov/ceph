@@ -11,3 +11,5 @@ add_library(crimson STATIC
   ${crimson_thread_srcs}
   ${CMAKE_SOURCE_DIR}/src/common/buffer_seastar.cc)
 target_link_libraries(crimson Seastar::seastar)
+
+add_subdirectory(osd)
