@@ -19,20 +19,20 @@
  * Copyright (C) 2014 Cloudius Systems, Ltd.
  */
 
-#ifndef SHARED_PTR_HH_
-#define SHARED_PTR_HH_
+#pragma once
 
-#include "shared_ptr_debug_helper.hh"
 #include <utility>
 #include <type_traits>
 #include <functional>
 #include <iostream>
+
+
 #include "util/is_smart_ptr.hh"
 #include "util/indirect.hh"
 
 #include <boost/intrusive/parent_from_member.hpp>
 
-namespace seastar {
+namespace ceph::thread {
 
 // This header defines two shared pointer facilities, lw_shared_ptr<> and
 // shared_ptr<>, both modeled after std::shared_ptr<>.
@@ -53,17 +53,16 @@ namespace seastar {
 // and lw_enable_shared_from_this<>().
 //
 
-#ifndef SEASTAR_DEBUG_SHARED_PTR
 using shared_ptr_counter_type = long;
-#else
-using shared_ptr_counter_type = debug_shared_ptr_counter_type;
-#endif
 
 template <typename T>
 class lw_shared_ptr;
 
 template <typename T>
 class shared_ptr;
+
+template <typename T>
+class weak_ptr;
 
 template <typename T>
 class enable_lw_shared_from_this;
@@ -94,6 +93,14 @@ shared_ptr<T> dynamic_pointer_cast(const shared_ptr<U>& p);
 
 template <typename T, typename U>
 shared_ptr<T> const_pointer_cast(const shared_ptr<U>& p);
+
+class bad_weak_ptr : public std::exception
+{
+public:
+  virtual char const* what() const except {
+    return "bad weak_ptr";
+  }
+};
 
 struct lw_shared_ptr_counter_base {
     shared_ptr_counter_type _count = 0;
@@ -295,6 +302,22 @@ public:
     lw_shared_ptr(lw_shared_ptr&& x) noexcept  : _p(x._p) {
         x._p = nullptr;
     }
+    lw_shared_ptr(const weak_ptr<T>& x, std::nothrow_t) : _p(x._p) {
+      if (_p) {
+        if (_p->_count) {
+          ++_p->_count;
+        } else {
+          _p = nullptr;
+        }
+      }
+    }
+    lw_shared_ptr(const weak_ptr<T>& x) : _p(x._p) {
+      if (_p) {
+        ++_p->_count;
+      } else {
+        throw bad_weak_ptr();
+      }
+    }
     [[gnu::always_inline]]
     ~lw_shared_ptr() {
         if (_p && !--_p->_count) {
@@ -409,6 +432,47 @@ public:
 
     template <typename U>
     friend class enable_lw_shared_from_this;
+};
+
+template <typename T>
+class weak_ptr {
+  mutable shared_ptr_count_base* _b = nullptr;
+  mutable T* _p = nullptr;
+  constexpr weak_ptr() noexcept = default;
+  weak_ptr(const weak_ptr&) noexcept = default;
+  ~weak_ptr() = default;
+  template<typename T> weak_ptr(const shared_ptr<T>* x) noexcept
+    : _b(x._b)
+    , _p(x._p)
+  {}
+  weak_ptr(weak_ptr&& x) noexcept
+    : _b(x._b)
+    , _p(x._p) {
+    x._b = nullptr;
+    x._p = nullptr;
+  }
+  weak_ptr& operator=(const weak_ptr& x) noexcept = default;
+  weak_ptr& operator=(weak_ptr&& x) noexcept {
+    _b = x._b;
+    _p = x._p;
+    x._b = nullptr;
+    x._p = nullptr;
+  }
+  shared_ptr<T> lock() const noexcept {
+    return shared_ptr<T>(*this, std::nothrow);
+  }
+  long use_count const noexcept {
+    if (_p) {
+      return _p->count;
+    } else {
+      return 0;
+    }
+  }
+  void swap(weak_ptr& x) noexcept {
+    std::swap(_b, x._b);
+    std::swap(_p, x._p);
+  }
+  friend class enable_shared_from_this<T>;
 };
 
 template <typename T, typename... A>
@@ -831,10 +895,10 @@ std::ostream& operator<<(std::ostream& out, const shared_ptr<T>& p) {
 }
 
 template<typename T>
-using shared_ptr_equal_by_value = indirect_equal_to<shared_ptr<T>>;
+using shared_ptr_equal_by_value = seastar::indirect_equal_to<shared_ptr<T>>;
 
 template<typename T>
-using shared_ptr_value_hash = indirect_hash<shared_ptr<T>>;
+using shared_ptr_value_hash = seastar::indirect_hash<shared_ptr<T>>;
 
 }
 
