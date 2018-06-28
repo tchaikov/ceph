@@ -395,6 +395,17 @@ public:
     vector<Transaction>& tls,
     TrackedOpRef op = TrackedOpRef(),
     ThreadPool::TPHandle *handle = NULL) override;
+
+public:
+  seastar::future<bufferlist>
+  read(CollectionHandle& c,
+       const ghobject_t& oid,
+       uint64_t offset,
+       size_t len,
+       uint32_t op_flags = 0) override;
+  seastar::future<>
+  commit_transaction(CollectionHandle& ch,
+		     Transaction&& t) override;
 };
 
 

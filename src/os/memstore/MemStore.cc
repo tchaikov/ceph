@@ -1404,6 +1404,27 @@ int MemStore::_split_collection(const coll_t& cid, uint32_t bits, uint32_t match
 
   return 0;
 }
+
+seastar::future<bufferlist>
+MemStore::read(CollectionHandle& c,
+	       const ghobject_t& oid,
+	       uint64_t offset,
+	       size_t len,
+	       uint32_t op_flags = 0)
+{
+  bufferlist bl;
+  auto ret = read(c, oid, offset, len, bl, op_flags);
+  if (ret < 0) {
+    throw std::system_error(-ret);
+  }
+  return seastar::make_ready_future<bufferlist>(std::move(bl));
+}
+
+seastar::future<>
+MemStore::commit_transaction(CollectionHandle& ch,
+			     Transaction&& t)
+{}
+
 namespace {
 struct BufferlistObject : public MemStore::Object {
   ceph::spinlock mutex;

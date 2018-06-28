@@ -151,6 +151,19 @@ int ObjectStore::read_meta(const std::string& key,
   return 0;
 }
 
+seastar::future<bufferlist>
+ObjectStore::read(CollectionHandle& c,
+		  const ghobject_t& oid,
+		  uint64_t offset,
+		  size_t len,
+		  uint32_t op_flags = 0) {
+  bufferlist bl;
+  auto ret = read(c, oid, offset, len, bl, op_flags);
+  if (ret < 0) {
+    throw std::system_error(-ret);
+  }
+  return seastar::make_ready_future<bufferlist>(bl);
+}
 
 
 

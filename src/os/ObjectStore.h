@@ -1874,6 +1874,23 @@ public:
   virtual bool has_builtin_csum() const {
     return false;
   }
+
+  // interfaces for seastar
+  virtual seastar::future<bufferlist>
+  read(CollectionHandle& c,
+       const ghobject_t& oid,
+       uint64_t offset,
+       size_t len,
+       uint32_t op_flags = 0) {
+    // not implemented by default
+    throw std::system_error(EINVAL);
+  }
+  virtual seastar::future<>
+  commit_transaction(CollectionHandle& ch,
+		     Transaction&& t) {
+    // not implemented by default
+    throw std::system_error(EINVAL);
+  }
 };
 WRITE_CLASS_ENCODER(ObjectStore::Transaction)
 WRITE_CLASS_ENCODER(ObjectStore::Transaction::TransactionData)
