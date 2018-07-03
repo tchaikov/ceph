@@ -13,17 +13,18 @@ class ConfigObserver {
 };
 
 // a Proxy offering access to the single instance of md_config_impl
-class ConfigProxy {
-  using Config =
-    ceph::internal::md_config_impl<ceph::internal::LockPolicy::SINGLE>;
+class ConfigProxy : public seastar::peering_sharded_service<ConfigProxy> {
+  static seastar::sharded<ConfigProxy> _the_proxies;
 public:
-  using local_config_t = seastar::lw_shared_ptr<Config>;
-  using foreign_config_t =
-    seastar::future<seastar::foreign_ptr<local_config_t>>
-  seastar::future<foreign_config_t>> get(config_ref_t old_config);
-  seastar::future<foreign_config_t> set_val(const std::string& key,
-					    const char* val);
-private:
+  seastar::future<> local_set_val(const std::string& key,
+				  const char* val);
+  // needed by seastar:sharded
+  future<> stop();
+public:
+  ConfigProxy& get_local_proxy() {
+    return _the_proxies.local();
+  }
 };
 
+extern 
 } // namespace ceph::common

@@ -1418,32 +1418,13 @@ int md_config_impl<lp>::_set_val(
       return -ENOSYS;
     }
   }
-
   // Apply the value to its entry in the `values` map
-  auto p = values.find(opt.name);
-  if (p != values.end()) {
-    auto q = p->second.find(level);
-    if (q != p->second.end()) {
-      if (new_value == q->second) {
-	// no change!
-	return 0;
-      }
-      q->second = new_value;
-    } else {
-      p->second[level] = new_value;
-    }
-    values_bl.clear();
-    if (p->second.rbegin()->first > level) {
-      // there was a higher priority value; no effect
-      return 0;
-    }
+  if (values.set_value(opt.name, new_value, level)) {
+    _refresh(opt);
+    return 1;
   } else {
-    values_bl.clear();
-    values[opt.name][level] = new_value;
+    return 0;
   }
-
-  _refresh(opt);
-  return 1;
 }
 
 template<LockPolicy lp>
