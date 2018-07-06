@@ -481,7 +481,7 @@ public:
       m_factory(std::bind(ImageRequestAllocator<RequestT>(),
                           std::ref(m_io_ctx), std::ref(m_throttle),
                           std::placeholders::_1, std::forward<Args>(args)...)),
-      m_throttle(g_conf->get_val<int64_t>("rbd_concurrent_management_ops"),
+      m_throttle(g_conf().get_val<int64_t>("rbd_concurrent_management_ops"),
                  true) {
   }
 
@@ -532,7 +532,7 @@ int execute_peer_add(const po::variables_map &vm,
   size_t arg_index = 0;
   std::string pool_name = utils::get_pool_name(vm, &arg_index);
 
-  std::string remote_client_name = g_ceph_context->_conf->name.to_str();
+  std::string remote_client_name = g_ceph_context->_conf.name().to_str();
   std::string remote_cluster;
   int r = get_remote_cluster_spec(
     vm, utils::get_positional_argument(vm, arg_index),

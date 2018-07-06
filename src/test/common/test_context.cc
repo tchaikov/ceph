@@ -23,18 +23,18 @@
 #include "include/types.h"
 #include "include/msgr.h"
 #include "common/ceph_context.h"
-#include "common/config.h"
+#include "common/config_proxy.h"
 #include "log/Log.h"
 
 TEST(CephContext, do_command)
 {
   CephContext *cct = (new CephContext(CEPH_ENTITY_TYPE_CLIENT))->get();
 
-  cct->_conf->cluster = "ceph";
+  cct->_conf.set_cluster("ceph");
 
   string key("key");
   string value("value");
-  cct->_conf->set_val(key.c_str(), value.c_str());
+  cct->_conf.set_val(key.c_str(), value.c_str());
   cmdmap_t cmdmap;
   cmdmap["var"] = key;
 
@@ -65,36 +65,36 @@ TEST(CephContext, experimental_features)
 {
   CephContext *cct = (new CephContext(CEPH_ENTITY_TYPE_CLIENT))->get();
 
-  cct->_conf->cluster = "ceph";
+  cct->_conf.set_cluster("ceph");
 
   ASSERT_FALSE(cct->check_experimental_feature_enabled("foo"));
   ASSERT_FALSE(cct->check_experimental_feature_enabled("bar"));
   ASSERT_FALSE(cct->check_experimental_feature_enabled("baz"));
 
-  cct->_conf->set_val("enable_experimental_unrecoverable_data_corrupting_features",
+  cct->_conf.set_val("enable_experimental_unrecoverable_data_corrupting_features",
 		      "foo,bar");
-  cct->_conf->apply_changes(&cout);
+  cct->_conf.apply_changes(&cout);
   ASSERT_TRUE(cct->check_experimental_feature_enabled("foo"));
   ASSERT_TRUE(cct->check_experimental_feature_enabled("bar"));
   ASSERT_FALSE(cct->check_experimental_feature_enabled("baz"));
 
-  cct->_conf->set_val("enable_experimental_unrecoverable_data_corrupting_features",
+  cct->_conf.set_val("enable_experimental_unrecoverable_data_corrupting_features",
 		      "foo bar");
-  cct->_conf->apply_changes(&cout);
+  cct->_conf.apply_changes(&cout);
   ASSERT_TRUE(cct->check_experimental_feature_enabled("foo"));
   ASSERT_TRUE(cct->check_experimental_feature_enabled("bar"));
   ASSERT_FALSE(cct->check_experimental_feature_enabled("baz"));
 
-  cct->_conf->set_val("enable_experimental_unrecoverable_data_corrupting_features",
+  cct->_conf.set_val("enable_experimental_unrecoverable_data_corrupting_features",
 		      "baz foo");
-  cct->_conf->apply_changes(&cout);
+  cct->_conf.apply_changes(&cout);
   ASSERT_TRUE(cct->check_experimental_feature_enabled("foo"));
   ASSERT_FALSE(cct->check_experimental_feature_enabled("bar"));
   ASSERT_TRUE(cct->check_experimental_feature_enabled("baz"));
 
-  cct->_conf->set_val("enable_experimental_unrecoverable_data_corrupting_features",
+  cct->_conf.set_val("enable_experimental_unrecoverable_data_corrupting_features",
 		      "*");
-  cct->_conf->apply_changes(&cout);
+  cct->_conf.apply_changes(&cout);
   ASSERT_TRUE(cct->check_experimental_feature_enabled("foo"));
   ASSERT_TRUE(cct->check_experimental_feature_enabled("bar"));
   ASSERT_TRUE(cct->check_experimental_feature_enabled("baz"));

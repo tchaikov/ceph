@@ -38,7 +38,7 @@ public:
     RWLock::RLocker l(lock);
     AuthUnknownAuthorizer *auth = new AuthUnknownAuthorizer();
     if (auth) {
-      auth->build_authorizer(cct->_conf->name, global_id);
+      auth->build_authorizer(cct->_conf.name(), global_id);
     }
     return auth;
   }
