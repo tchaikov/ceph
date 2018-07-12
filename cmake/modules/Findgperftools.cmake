@@ -31,12 +31,34 @@ if(Tcmalloc_INCLUDE_DIR AND EXISTS "${Tcmalloc_INCLUDE_DIR}/gperftools/tcmalloc.
   endif()
 endif()
 
+if(GPERFTOOLS_USE_STATIC_LIBS)
+  find_package(Unwind REQUIRED)
+  find_package(Threads)
+  set(_gperftools_orig_CMAKE_FIND_LIBRARY_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
+  set(CMAKE_FIND_LIBRARY_SUFFIXES ${CMAKE_STATIC_LIBRARY_SUFFIX})
+endif()
+
 foreach(component tcmalloc tcmalloc_minimal profiler)
   string(TOUPPER ${component} COMPONENT)
   find_library(GPERFTOOLS_${COMPONENT}_LIBRARY ${component}
     HINTS $ENV{GPERF_ROOT}/lib)
   list(APPEND GPERFTOOLS_LIBRARIES GPERFTOOLS_${COMPONENT}_LIBRARY)
+  add_library(gperftools::${component} UNKNOWN IMPORTED)
+  set_target_properties(gperftools::${component} PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${GPERFTOOLS_INCLUDE_DIR}"
+    IMPORTED_LINK_INTERFACE_LANGUAGES "CXX"
+    IMPORTED_LOCATION "${GPERFTOOLS_${COMPONENT}_LIBRARY}")
+  if(GPERFTOOLS_USE_STATIC_LIBS)
+    if(NOT component STREQUAL tcmalloc_minimal)
+      set_target_properties(gperftools::${component} PROPERTIES
+        INTERFACE_LINK_LIBRARIES "Unwind::unwind;Threads::Threads")
+    endif()
+  endif()
 endforeach()
+
+if(GPERFTOOLS_USE_STATIC_LIBS)
+  set(CMAKE_FIND_LIBRARY_SUFFIXES ${_gperftools_orig_CMAKE_FIND_LIBRARY_SUFFIXES})
+endif()
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(gperftools
