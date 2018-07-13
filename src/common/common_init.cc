@@ -72,19 +72,17 @@ CephContext *common_preinit(const CephInitParameters &iparams,
 }
 
 void complain_about_parse_errors(CephContext *cct,
-				 std::deque<std::string> *parse_errors)
+				 const std::deque<std::string>& parse_errors)
 {
-  if (parse_errors->empty())
+  if (parse_errors.empty())
     return;
   lderr(cct) << "Errors while parsing config file!" << dendl;
   int cur_err = 0;
   static const int MAX_PARSE_ERRORS = 20;
-  for (std::deque<std::string>::const_iterator p = parse_errors->begin();
-       p != parse_errors->end(); ++p)
-  {
-    lderr(cct) << *p << dendl;
+  for (auto& p : parse_errors) {
+    lderr(cct) << p << dendl;
     if (cur_err == MAX_PARSE_ERRORS) {
-      lderr(cct) << "Suppressed " << (parse_errors->size() - MAX_PARSE_ERRORS)
+      lderr(cct) << "Suppressed " << (parse_errors.size() - MAX_PARSE_ERRORS)
 	   << " more errors." << dendl;
       break;
     }

@@ -518,21 +518,21 @@ void md_config_impl<lp>::parse_env(ConfigValues& values, const char *args_var)
 }
 
 template<LockPolicy lp>
-void md_config_impl<lp>::show_config(const ConfigValues& values, std::ostream& out)
+void md_config_impl<lp>::show_config(const ConfigValues& values, std::ostream& out) const
 {
   auto locker = lock();
   _show_config(values, &out, nullptr);
 }
 
 template<LockPolicy lp>
-void md_config_impl<lp>::show_config(const ConfigValues& values, Formatter *f)
+void md_config_impl<lp>::show_config(const ConfigValues& values, Formatter *f) const
 {
   auto locker = lock();
   _show_config(values, nullptr, f);
 }
 
 template<LockPolicy lp>
-void md_config_impl<lp>::config_options(Formatter *f)
+void md_config_impl<lp>::config_options(Formatter *f) const
 {
   auto locker = lock();
   f->open_array_section("options");
@@ -544,7 +544,7 @@ void md_config_impl<lp>::config_options(Formatter *f)
 
 template<LockPolicy lp>
 void md_config_impl<lp>::_show_config(const ConfigValues& values,
-				      std::ostream *out, Formatter *f)
+				      std::ostream *out, Formatter *f) const
 {
   if (out) {
     *out << "name = " << values.name << std::endl;
@@ -656,7 +656,7 @@ int md_config_impl<lp>::parse_argv(ConfigValues& values,
 }
 
 template<LockPolicy lp>
-void md_config_impl<lp>::do_argv_commands(const ConfigValues& values)
+void md_config_impl<lp>::do_argv_commands(const ConfigValues& values) const
 {
   auto locker = lock();
 
@@ -1614,7 +1614,7 @@ void md_config_impl<lp>::diff(
 template<LockPolicy lp>
 void md_config_impl<lp>::complain_about_parse_errors(CephContext *cct)
 {
-  ::complain_about_parse_errors(cct, &parse_errors);
+  ::complain_about_parse_errors(cct, parse_errors);
 }
 
 // explicit instantiate the only md_config_impl type we need

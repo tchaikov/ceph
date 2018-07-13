@@ -90,13 +90,13 @@ public:
   void call_all_observers() {
     config->call_all_observers(*this);
   }
-  void show_config(std::ostream& out) {
+  void show_config(std::ostream& out) const {
     config->show_config(values, out);
   }
-  void show_config(Formatter *f) {
+  void show_config(Formatter *f) const {
     config->show_config(values, f);
   }
-  void config_options(Formatter *f) {
+  void config_options(Formatter *f) const {
     config->config_options(f);
   }
   int rm_val(const std::string& key) {

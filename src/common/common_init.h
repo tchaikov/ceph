@@ -64,7 +64,7 @@ CephContext *common_preinit(const CephInitParameters &iparams,
 
 /* Print out some parse errors. */
 void complain_about_parse_errors(CephContext *cct,
-				 std::deque<std::string> *parse_errors);
+				 const std::deque<std::string>& parse_errors);
 
 /* This function is called after you have done your last
  * fork. When you make this call, the system will initialize everything that
