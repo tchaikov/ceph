@@ -283,6 +283,7 @@ int md_config_impl<lp>::set_mon_vals(CephContext *cct,
     ldout(cct, 4) << __func__ << " no callback set" << dendl;
   }
 
+  int num_changed = 0;
   for (auto& i : kv) {
     if (config_cb && config_cb(i.first, i.second)) {
       ldout(cct, 4) << __func__ << " callback consumed " << i.first << dendl;
@@ -310,6 +311,7 @@ int md_config_impl<lp>::set_mon_vals(CephContext *cct,
       ldout(cct,20) << __func__ << " " << i.first << " = " << i.second
 		    << " (no change)" << dendl;
     } else if (r == 1) {
+      num_changed++;
       ldout(cct,10) << __func__ << " " << i.first << " = " << i.second << dendl;
     } else {
       ceph_abort();
@@ -330,7 +332,7 @@ int md_config_impl<lp>::set_mon_vals(CephContext *cct,
   });
   values_bl.clear();
   _apply_changes(values, proxy, nullptr);
-  return 0;
+  return num_changed;
 }
 
 template<LockPolicy lp>
