@@ -7,6 +7,7 @@
 namespace ceph::internal {
 template<LockPolicy lp> struct md_config_impl;
 template<LockPolicy lp> class md_config_obs_impl;
+template<class ConfigType, LockPolicy lp> class config_proxy_impl;
 }
 
 using md_config_t =
