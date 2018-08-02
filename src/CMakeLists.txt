@@ -305,7 +305,7 @@ include_directories("${CMAKE_SOURCE_DIR}/src/dmclock/support/src")
 include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/src/googletest/googletest/include")
 
 if(WITH_SEASTAR)
-  find_package(fmt 4.0.0)
+  find_package(fmt 4.0.0 QUIET MODULE)
   if(NOT fmt_FOUND)
     add_subdirectory(fmt)
   endif()
