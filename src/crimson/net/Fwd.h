@@ -26,6 +26,14 @@ using auth_proto_t = int;
 class Message;
 using MessageRef = boost::intrusive_ptr<Message>;
 
+struct MMonMap;
+struct MAuthReply;
+struct MMonSubscribeAck;
+struct MMonGetVersionReply;
+struct MMonCommandAck;
+struct MLogAck;
+struct MConfig;
+
 namespace ceph::net {
 
 using msgr_tag_t = uint8_t;
