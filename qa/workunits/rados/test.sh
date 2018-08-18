@@ -33,7 +33,7 @@ do
 	echo "test $f on pid $pid"
 	pids[$f]=$pid
     else
-	ceph_test_rados_$f
+	ceph_test_rados_$f --gtest_catch_exceptions=0
     fi
 done
 
