@@ -41,6 +41,10 @@ int wait_for_healthy(rados_t *cluster)
     }
 
     std::string out(outbuf, outlen);
+    std::cout << "===============" << std::endl;
+    std::cout << out << std::endl;
+    std::cout << "===============" << std::endl;
+
     rados_buffer_free(outbuf);
 
     json_spirit::mValue root;
