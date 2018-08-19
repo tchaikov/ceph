@@ -30,6 +30,7 @@
 #include "common/environment.h"
 #include "common/Clock.h"
 #include "common/safe_io.h"
+#include "json_spirit/json_spirit.h"
 
 #include "gtest/gtest.h"
 #include "stdlib.h"
@@ -3004,6 +3005,33 @@ TEST(BufferHash, all) {
   }
 }
 
+TEST(foo, bar) {
+  // std::string out{"{\"fsid\":\"33ade8de-39cf-443d-9d3f-05c641d4a6d0\",\"health\":{\"checks\":{\"OSDMAP_FLAGS\":{\"severity\":\"HEALTH_WARN\",\"summary\":{\"message\":\"nodeep-scrub flag(s) set\"}},\"POOL_APP_NOT_ENABLED\":{\"severity\":\"HEALTH_WARN\",\"summary\":{\"message\":\"application not enabled on 3 pool(s)\"}}},\"status\":\"HEALTH_WARN\",\"overall_status\":\"HEALTH_WARN\"},\"election_epoch\":10,\"quorum\":[0,1,2],\"quorum_names\":[\"a\",\"b\",\"c\"],\"monmap\":{\"epoch\":1,\"fsid\":\"33ade8de-39cf-443d-9d3f-05c641d4a6d0\",\"modified\":\"2018-08-18 14:24:55.273230\",\"created\":\"2018-08-18 14:24:55.273230\",\"features\":{\"persistent\":[\"kraken\",\"luminous\",\"mimic\",\"osdmap-prune\",\"nautilus\"],\"optional\":[]},\"mons\":[{\"rank\":0,\"name\":\"a\",\"addr\":\"172.21.4.124:6789/0\",\"public_addr\":\"172.21.4.124:6789/0\"},{\"rank\":1,\"name\":\"b\",\"addr\":\"172.21.6.112:6789/0\",\"public_addr\":\"172.21.6.112:6789/0\"},{\"rank\":2,\"name\":\"c\",\"addr\":\"172.21.4.124:6790/0\",\"public_addr\":\"172.21.4.124:6790/0\"}]},\"osdmap\":{\"osdmap\":{\"epoch\":25,\"num_osds\":8,\"num_up_osds\":8,\"num_in_osds\":7,\"full\":false,\"nearfull\":false,\"num_remapped_pgs\":0}},\"pgmap\":{\"pgs_by_state\":[{\"state_name\":\"active+clean\",\"count\":78},{\"state_name\":\"unknown\",\"count\":55},{\"state_name\":\"creating+peering\",\"count\":16},{\"state_name\":\"peering\",\"count\":3}],\"num_pgs\":152,\"num_pools\":19,\"num_objects\":22,\"data_bytes\":2512,\"bytes_used\":7536836608,\"bytes_avail\":668920512512,\"bytes_total\":676457349120,\"unknown_pgs_ratio\":0.361842,\"inactive_pgs_ratio\":0.125000,\"read_bytes_sec\":5670,\"write_bytes_sec\":2835,\"read_op_per_sec\":6,\"write_op_per_sec\":7},\"fsmap\":{\"epoch\":1,\"by_rank\":[]},\"mgrmap\":{\"epoch\":3,\"active_gid\":4100,\"active_name\":\"x\",\"active_addrs\":{\"addrvec\":[{\"type\":\"legacy\",\"addr\":\"172.21.6.112:6800\",\"nonce\":31806}]},\"available\":true,\"standbys\":[{\"gid\":4099,\"name\":\"y\",\"available_modules\":[{\"name\":\"balancer\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"dashboard\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"devicehealth\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"influx\",\"can_run\":false,\"error_string\":\"influxdb python module not found\"},{\"name\":\"iostat\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"localpool\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"orchestrator_cli\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"progress\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"prometheus\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"restful\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"rook\",\"can_run\":false,\"error_string\":\"Kubernetes module not found\"},{\"name\":\"selftest\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"smart\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"status\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"telegraf\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"telemetry\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"zabbix\",\"can_run\":true,\"error_string\":\"\"}]}],\"modules\":[\"balancer\",\"crash\",\"devicehealth\",\"iostat\",\"restful\",\"status\"],\"available_modules\":[{\"name\":\"balancer\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"dashboard\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"devicehealth\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"influx\",\"can_run\":false,\"error_string\":\"influxdb python module not found\"},{\"name\":\"iostat\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"localpool\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"orchestrator_cli\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"progress\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"prometheus\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"restful\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"rook\",\"can_run\":false,\"error_string\":\"Kubernetes module not found\"},{\"name\":\"selftest\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"smart\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"status\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"telegraf\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"telemetry\",\"can_run\":true,\"error_string\":\"\"},{\"name\":\"zabbix\",\"can_run\":true,\"error_string\":\"\"}],\"services\":{}},\"servicemap\":{\"epoch\":2,\"modified\":\"2018-08-18 14:27:03.416218\",\"services\":{\"laundry\":{\"daemons\":{\"summary\":\"\",\"pid37832\":{\"start_epoch\":2,\"start_stamp\":\"2018-08-18 14:27:01.869886\",\"gid\":4361,\"addr\":\"172.21.4.124:35914/249771480\",\"metadata\":{\"arch\":\"x86_64\",\"ceph_release\":\"nautilus\",\"ceph_version\":\"ceph version 14.0.0-2334-g89056f6 (89056f6dfef19d8f54da4d933938a6cac5ff75c1) nautilus (dev)\",\"ceph_version_short\":\"14.0.0-2334-g89056f6\",\"cpu\":\"Intel(R) Xeon(R) CPU           X3440  @ 2.53GHz\",\"distro\":\"rhel\",\"distro_description\":\"Employee SKU\",\"distro_version\":\"7.5\",\"foo\":\"bar\",\"hostname\":\"mira027\",\"kernel_description\":\"#1 SMP Mon Apr 30 12:37:51 EDT 2018\",\"kernel_version\":\"3.10.0-862.2.3.el7.x86_64\",\"mem_swap_kb\":\"0\",\"mem_total_kb\":\"16257428\",\"os\":\"Linux\",\"this\":\"that\"}}}}}}}"};
+std::string out{"{\"fsid\":\"33ade8de-39cf-443d-9d3f-05c641d4a6d0\"}"};
+  bool healthy;
+  json_spirit::mValue root;
+  assert(json_spirit::read(out, root));
+std::cout << " ===== " << std::endl;
+  json_spirit::mObject root_obj = root.get_obj();
+std::cout << " ===== " << std::endl;
+  json_spirit::mObject pgmap = root_obj["pgmap"].get_obj();
+std::cout << " ===== " << std::endl;
+  json_spirit::mArray pgs_by_state = pgmap["pgs_by_state"].get_array();
+
+  if (pgs_by_state.size() == 1) {
+    json_spirit::mObject state = pgs_by_state[0].get_obj();
+std::cout << " ===== " << std::endl;
+    std::string state_name = state["state_name"].get_str();
+    if (state_name != std::string("active+clean")) {
+      healthy = false;
+    } else {
+      healthy = true;
+    }
+  } else {
+    healthy = false;
+  }
+  
+}
 /*
  * Local Variables:
  * compile-command: "cd .. ; make unittest_bufferlist && 
