@@ -39,36 +39,44 @@ int main(int argc, const char* argv[])
     return EXIT_SUCCESS;
   }
 
+  // TODO: add heartbeat
   seastar::app_template app;
   return app.run(argc, argv, [&] {
-    return ceph::common::sharded_conf().start().then([] {
-    auto& conf = ceph::common::local_conf();
-    conf->name = init_params.name;
-    conf->cluster = cluster;
-    return conf.parse_config_files(conf_file_list);
-  }).then([] {
-      const entity_name_t whoami = entity_name_t::OSD(0);
-      return seastar::do_with(ceph::net::SocketMessenger{whoami}, // talk to osd
-                              ceph::net::SocketMessenger{whoami}, // talk to mon/mgr
-                              // TODO: add heartbeat
-        [](ceph::net::Messenger& cluster_msgr,
-           ceph::net::Messenger& client_msgr) {
-        auto& conf = ceph::common::local_conf();
-        if (conf->ms_crc_data) {
-          cluster_msgr.set_crc_data();
-          client_msgr.set_crc_data();
-        }
-        if (conf->ms_crc_header) {
-          cluster_msgr.set_crc_header();
-          client_msgr.set_crc_header();
-        }
-        return seastar::do_with(ceph::mon::Client{conf->name,
-                                                  client_msgr},
-          (auto& monc) {
-            
-          }
-                              )
-    return test_monc().then([] {
+    return seastar::async([] {
+      ceph::common::sharded_conf().start().get();
+      engine().at_exit([] {
+        ceph::common::sharded_conf().stop();
+      });
+      auto& conf = ceph::common::local_conf();
+      conf->name = init_params.name;
+      conf->cluster = cluster;
+      conf.parse_config_files(conf_file_list).get();
+      auto& conf = ceph::common::local_conf();
+      const auto whoami = std::stoi(conf->name.get_id());
+      // talk with osd
+      ceph::net::SocketMessenger cluster_msgr{entity_name_t::OSD(whoami)};
+      // talk with mon/mgr
+      ceph::net::SocketMessenger client_msgr{entity_name_t::OSD(whoami)};
+      if (conf->ms_crc_data) {
+	cluster_msgr.set_crc_data();
+	client_msgr.set_crc_data();
+      }
+      if (conf->ms_crc_header) {
+	cluster_msgr.set_crc_header();
+	client_msgr.set_crc_header();
+      }
+      ceph::mon::Client monc{conf->name, client_msgr};
+      monc.build_initial_map().get();
+      monc.load_keyring().get();
+      client_msgr.start(&monc);
+      engine().at_exit([&monc] {
+        monc.stop();
+      });
+      monc.authenticate().get();
+      engine().at_exit([&monc] {
+        monc.stop();
+      });
+    test_monc().then([] {
       std::cout << "All tests succeeded" << std::endl;
     }).handle_exception([] (auto eptr) {
       std::cout << "Test failure" << std::endl;
