@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <seastar/core/gate.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/shared_future.hh>
 
@@ -36,6 +37,8 @@ using SocketConnectionRef = boost::intrusive_ptr<SocketConnection>;
 class SocketConnection : public Connection {
   SocketMessenger& messenger;
   std::optional<Socket> socket;
+  Dispatcher& dispatcher;
+  seastar::gate pending_dispatch;
 
   enum class state_t {
     none,
@@ -150,9 +153,19 @@ class SocketConnection : public Connection {
 
   seastar::future<> fault();
 
+  /// read a message from a connection that has completed its handshake
+  seastar::future<MessageRef> read_message();
+  seastar::future<> dispatch();
+
+  /// Only call when SocketConnection first construct
+  seastar::future<> start_connect();
+  /// Only call when SocketConnection first construct
+  seastar::future<> start_accept();
+
  public:
   SocketConnection(SocketMessenger& messenger,
-                   const entity_addr_t& my_addr);
+                   const entity_addr_t& my_addr,
+                   Dispatcher& dispatcher);
   ~SocketConnection();
 
   Messenger* get_messenger() const override;
@@ -170,16 +183,10 @@ class SocketConnection : public Connection {
   seastar::future<> close() override;
 
  public:
-  /// complete a handshake from the client's perspective
-  seastar::future<> start_connect(const entity_addr_t& peer_addr,
-                                  const entity_type_t& peer_type);
-
-  /// complete a handshake from the server's perspective
-  seastar::future<> start_accept(seastar::connected_socket&& socket,
-                                 const entity_addr_t& peer_addr);
-
-  /// read a message from a connection that has completed its handshake
-  seastar::future<MessageRef> read_message();
+  void connect(const entity_addr_t& peer_addr,
+	       const entity_type_t& peer_type);
+  void accept(seastar::connected_socket&& socket,
+	      const entity_addr_t& peer);
 
   /// the number of connections initiated in this session, increment when a
   /// new connection is established

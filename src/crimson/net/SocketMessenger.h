@@ -17,7 +17,6 @@
 #include <map>
 #include <optional>
 #include <set>
-#include <seastar/core/gate.hh>
 #include <seastar/core/reactor.hh>
 
 #include "msg/Policy.h"
@@ -36,12 +35,6 @@ class SocketMessenger final : public Messenger {
   std::set<SocketConnectionRef> accepting_conns;
   using Throttle = ceph::thread::Throttle;
   ceph::net::PolicySet<Throttle> policy_set;
-  seastar::gate pending_dispatch;
-
-  seastar::future<> dispatch(SocketConnectionRef conn);
-
-  seastar::future<> accept(seastar::connected_socket socket,
-                           seastar::socket_address paddr);
 
  public:
   SocketMessenger(const entity_name_t& myname);
