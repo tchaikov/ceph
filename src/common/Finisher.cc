@@ -29,11 +29,17 @@ void Finisher::stop()
 void Finisher::wait_for_empty()
 {
   std::unique_lock ul(finisher_lock);
-  while (!finisher_queue.empty() || finisher_running) {
-    ldout(cct, 10) << "wait_for_empty waiting" << dendl;
-    finisher_empty_wait = true;
-    finisher_empty_cond.wait(ul);
-  }
+  finisher_empty_cond.wait(ul, [this] {
+    if (finisher_queue.empty()) {
+      return true;
+    } else if (!finisher_running) {
+      return true;
+    } else {
+      ldout(cct, 10) << "wait_for_empty waiting" << dendl;
+      finisher_empty_wait = true;
+      return false;
+    }
+  });
   ldout(cct, 10) << "wait_for_empty empty" << dendl;
   finisher_empty_wait = false;
 }
