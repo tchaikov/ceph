@@ -29,12 +29,17 @@ class Messenger {
   uint32_t crc_flags = 0;
 
  public:
+  Messenger() = default;
   Messenger(const entity_name_t& name)
     : my_name(name)
   {}
   virtual ~Messenger() {}
 
   const entity_name_t& get_myname() const { return my_name; }
+  void set_myname(const entity_name_t& name) {
+    my_name = name;
+  }
+
   const entity_addr_t& get_myaddr() const { return my_addr; }
   void set_myaddr(const entity_addr_t& addr) {
     my_addr = addr;

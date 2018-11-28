@@ -44,6 +44,7 @@ class SocketMessenger final : public Messenger {
                            seastar::socket_address paddr);
 
  public:
+  SocketMessenger() = default;
   SocketMessenger(const entity_name_t& myname);
 
   void bind(const entity_addr_t& addr) override;
