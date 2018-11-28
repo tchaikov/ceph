@@ -44,8 +44,10 @@ class SocketMessenger final : public Messenger {
                            seastar::socket_address paddr);
 
  public:
+  SocketMessenger(const std::string& logic_name,
+		  uint32_t nonce);
   SocketMessenger(const entity_name_t& myname,
-                  const std::string& logic_name,
+		  const std::string& logic_name,
                   uint32_t nonce);
 
   void set_myaddr(const entity_addr_t& addr) override;

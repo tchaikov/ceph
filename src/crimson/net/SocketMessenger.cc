@@ -22,8 +22,13 @@
 
 using namespace ceph::net;
 
+SocketMessenger::SocketMessenger(const std::string& logic_name,
+                                 uint32_t nonce)
+  : logic_name{logic_name}, nonce{nonce}
+{}
+
 SocketMessenger::SocketMessenger(const entity_name_t& myname,
-                                 const std::string& logic_name,
+				 const std::string& logic_name,
                                  uint32_t nonce)
   : Messenger{myname}, logic_name{logic_name}, nonce{nonce}
 {}
