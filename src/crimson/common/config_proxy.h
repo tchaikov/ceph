@@ -66,7 +66,6 @@ class ConfigProxy : public seastar::peering_sharded_service<ConfigProxy>
       });
   }
 public:
-  ConfigProxy();
   ConfigProxy(const EntityName& name, std::string_view cluster);
   const ConfigValues* operator->() const noexcept {
     return values.get();
