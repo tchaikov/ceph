@@ -507,6 +507,7 @@ seastar::future<> Client::reopen_session(int rank)
 #warning fixme
     auto peer = monmap.get_addrs(rank).legacy_addr();
     logger().info("connecting to mon.{}", rank);
+    logger().info("which is {}", monmap.get_addrs(rank));
     auto conn = msgr.connect(peer, CEPH_ENTITY_TYPE_MON);
     auto& mc = pending_conns.emplace_back(conn, &keyring);
     return mc.authenticate(

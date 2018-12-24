@@ -49,6 +49,8 @@ void SocketMessenger::bind(const entity_addrvec_t& addrs)
   auto addr = addrs.legacy_addr();
 
   if (addr.get_family() != AF_INET) {
+    std::cout << "address family is " << addr.get_family() << std::endl;
+    std::cout << "address " << addr << std::endl;
     throw std::system_error(EAFNOSUPPORT, std::generic_category());
   }
 

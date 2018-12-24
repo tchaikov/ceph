@@ -11,7 +11,6 @@
 
 #include "common/ceph_argparse.h"
 #include "crimson/common/config_proxy.h"
-#include "crimson/mon/MonClient.h"
 #include "crimson/net/SocketMessenger.h"
 
 #include "osd.h"
@@ -45,13 +44,12 @@ int main(int argc, char* argv[])
   ceph::net::SocketMessenger cluster_msgr("cluster", getpid());
   // talk with mon/mgr
   ceph::net::SocketMessenger client_msgr("client", getpid());
-  ceph::mon::Client monc{client_msgr};
   seastar::sharded<OSD> osd;
 
   args.insert(begin(args), argv[0]);
   try {
     return app.run_deprecated(args.size(), const_cast<char**>(args.data()), [&] {
-        return seastar::async([&cluster_msgr, &client_msgr, &monc, &osd,
+        return seastar::async([&cluster_msgr, &client_msgr, &osd,
                                &init_params, &cluster, &conf_file_list,
                                &return_value] {
         ceph::common::sharded_conf().start(init_params.name, cluster).get();
@@ -69,8 +67,6 @@ int main(int argc, char* argv[])
             msgr.set_crc_header();
           }
         }
-
-        client_msgr.start(&monc).get();
 
         osd.start_single(std::stoi(conf->name.get_id()),
                          std::ref(cluster_msgr),

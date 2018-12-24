@@ -787,6 +787,7 @@ SocketConnection::start_connect(const entity_addr_t& _peer_addr,
   peer_addr = _peer_addr;
   peer_type = _peer_type;
   messenger.register_conn(this);
+  logger().error("connecting to {}, family is {}", _peer_addr, _peer_addr.get_family());
   logger().debug("{} trigger connecting, was {}", *this, static_cast<int>(state));
   state = state_t::connecting;
   seastar::with_gate(pending_dispatch, [this] {
