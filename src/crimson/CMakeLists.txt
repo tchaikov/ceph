@@ -133,5 +133,5 @@ target_link_libraries(crimson
   PUBLIC
     crimson-common
     crimson::cflags)
-
+add_subdirectory(os)
 add_subdirectory(osd)
