@@ -24,7 +24,7 @@ namespace ceph::net {
 
 class Messenger {
   entity_name_t my_name;
-  entity_addr_t my_addr;
+  entity_addrvec_t my_addrs;
   uint32_t global_seq = 0;
   uint32_t crc_flags = 0;
 
@@ -40,13 +40,14 @@ class Messenger {
     my_name = name;
   }
 
-  const entity_addr_t& get_myaddr() const { return my_addr; }
-  virtual void set_myaddr(const entity_addr_t& addr) {
-    my_addr = addr;
+  const entity_addrvec_t& get_myaddrs() const { return my_addrs; }
+  entity_addr_t get_myaddr() const { return my_addrs.front(); }
+  virtual void set_myaddrs(const entity_addrvec_t& addrs) {
+    my_addrs = addrs;
   }
 
   /// bind to the given address
-  virtual void bind(const entity_addr_t& addr) = 0;
+  virtual void bind(const entity_addrvec_t& addr) = 0;
 
   /// start the messenger
   virtual seastar::future<> start(Dispatcher *dispatcher) = 0;
