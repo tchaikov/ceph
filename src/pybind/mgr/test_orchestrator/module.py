@@ -192,14 +192,7 @@ class TestOrchestrator(MgrModule, orchestrator.Orchestrator):
         """
         There is no guarantee which devices are returned by get_inventory.
         """
-        try:
-            c_v_out = check_output(['ceph-volume', 'inventory', '--format', 'json'])
-        except OSError:
-            cmd = """
-            . /tmp/ceph-volume-virtualenv/bin/activate
-            ceph-volume inventory --format json
-            """
-            c_v_out = check_output(cmd, shell=True)
+        c_v_out = check_output(['ceph-volume', 'inventory', '--format', 'json'])
 
         for out in c_v_out.splitlines():
             if not out.startswith(b'-->') and not out.startswith(b' stderr'):
