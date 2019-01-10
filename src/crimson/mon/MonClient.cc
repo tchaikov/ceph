@@ -260,7 +260,6 @@ Client::Client(ceph::net::Messenger& messenger)
     msgr{messenger}
 {}
 
-Client::Client(Client&&) = default;
 Client::~Client() = default;
 
 seastar::future<> Client::start() {

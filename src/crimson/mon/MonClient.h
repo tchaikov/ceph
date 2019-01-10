@@ -66,7 +66,8 @@ class Client : public ceph::net::Dispatcher {
 
 public:
   Client(ceph::net::Messenger& messenger);
-  Client(Client&&);
+  Client(const Client&) = delete;
+  Client(Client&&) = delete;
   ~Client();
   seastar::future<> start();
   seastar::future<> stop();
