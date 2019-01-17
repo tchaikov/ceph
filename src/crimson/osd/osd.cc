@@ -267,10 +267,29 @@ seastar::future<> OSD::ms_dispatch(ceph::net::ConnectionRef conn, MessageRef m)
   }
 
   switch (m->get_type()) {
+  case MSG_COMMAND:
+  case MSG_MON_COMMAND:
+  case MSG_OSD_FORCE_RECOVERY:
+  case MSG_OSD_SCRUB:
+  case MSG_OSD_SCRUB2:
+  case MSG_OSD_PG_CREATE:
+  case MSG_OSD_PG_CREATE2:
+  case MSG_OSD_PG_QUERY:
+  case MSG_OSD_PG_NOTIFY:
+  case MSG_OSD_PG_INFO:
+  case MSG_OSD_PG_REMOVE:
+  case MSG_OSD_PG_LOG:
+  case MSG_OSD_PG_TRIM:
+  case MSG_OSD_BACKFILL_RESERVE:
+  case MSG_OSD_RECOVERY_RESERVE:
+  case CEPH_MSG_PING:
+    logger().info("ms_dispatch discarding {}", *m);
+    return seastar::now();
   case CEPH_MSG_OSD_MAP:
     return handle_osd_map(conn, boost::static_pointer_cast<MOSDMap>(m));
   default:
-    return seastar::now();
+    // ops targeting a certain PG
+    return handle_pg_op(conn, m);
   }
 }
 
@@ -553,4 +572,11 @@ seastar::future<> OSD::send_beacon()
 ghobject_t OSD::get_osdmap_pobject_name(epoch_t epoch) {
   string name = fmt::format("osdmap.{}", epoch);
   return ghobject_t(hobject_t(sobject_t(object_t(name), 0)));
+}
+
+seastar::future<> OSD::handle_pg_op(ceph::net::ConnectionRef conn,
+                                    Ref<Message> m)
+{
+  // see also OSD::ShardedOpWQ::_process()
+  return seastar::now();
 }

@@ -101,6 +101,8 @@ private:
 
   seastar::future<> handle_osd_map(ceph::net::ConnectionRef conn,
                                    Ref<MOSDMap> m);
+  seastar::future<> handle_pg_op(ceph::net::ConnectionRef conn,
+                                  Ref<Message> m);
   seastar::future<> committed_osd_maps(version_t first,
                                        version_t last,
                                        Ref<MOSDMap> m);
