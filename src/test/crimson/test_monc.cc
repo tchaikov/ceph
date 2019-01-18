@@ -40,7 +40,7 @@ static seastar::future<> test_monc()
     // auto&& msgr_fut =
     //   create_sharded<ceph::net::SocketMessenger>(entity_name_t::OSD(0), "monc", 0);
     // return msgr_fut.then([](ceph::net::Messenger& msgr) {
-    return create_sharded<ceph::net::SocketMessenger>(entity_name_t::OSD(0), "monc", 0).then([] (ceph::net::SocketMessenger& msgr) {
+    return create_sharded<ceph::net::SocketMessenger>(entity_name_t::OSD(0), "monc", 0).then([] (ceph::net::Messenger& msgr) {
       auto& conf = ceph::common::local_conf();
       if (conf->ms_crc_data) {
         msgr.set_crc_data();
