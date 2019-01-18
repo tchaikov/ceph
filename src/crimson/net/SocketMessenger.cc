@@ -100,7 +100,7 @@ SocketMessenger::connect(const entity_addr_t& peer_addr, const entity_type_t& pe
   return conn;
 }
 
-seastar::future<> SocketMessenger::shutdown()
+seastar::future<> SocketMessenger::stop()
 {
   if (listener) {
     listener->abort_accept();

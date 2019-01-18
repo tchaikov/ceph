@@ -54,7 +54,7 @@ class Messenger {
 
   /// stop listenening and wait for all connections to close. safe to destruct
   /// after this future becomes available
-  virtual seastar::future<> shutdown() = 0;
+  virtual seastar::future<> stop() = 0;
 
   uint32_t get_global_seq(uint32_t old=0) {
     if (old > global_seq) {

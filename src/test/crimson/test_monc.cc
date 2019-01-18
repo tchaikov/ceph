@@ -8,6 +8,18 @@
 using Config = ceph::common::ConfigProxy;
 using MonClient = ceph::mon::Client;
 
+template <typename T, typename... Args>
+seastar::future<std::reference_wrapper<T>> create_sharded(Args... args) {
+  auto sharded_obj = seastar::make_lw_shared<seastar::sharded<T>>();
+  return sharded_obj->start(args...).then([sharded_obj]() {
+    auto& ret = sharded_obj->local();
+    seastar::engine().at_exit([sharded_obj]() {
+      return sharded_obj->stop().finally([sharded_obj] {});
+    });
+    return std::ref(ret);
+  });
+}
+
 static seastar::future<> test_monc()
 {
   return ceph::common::sharded_conf().start(EntityName{}, string_view{"ceph"}).then([] {
@@ -25,8 +37,10 @@ static seastar::future<> test_monc()
   }).then([] {
     return ceph::common::sharded_perf_coll().start();
   }).then([] {
-    return seastar::do_with(ceph::net::SocketMessenger{entity_name_t::OSD(0), "monc", 0},
-                            [](ceph::net::Messenger& msgr) {
+    // auto&& msgr_fut =
+    //   create_sharded<ceph::net::SocketMessenger>(entity_name_t::OSD(0), "monc", 0);
+    // return msgr_fut.then([](ceph::net::Messenger& msgr) {
+    return create_sharded<ceph::net::SocketMessenger>(entity_name_t::OSD(0), "monc", 0).then([] (ceph::net::SocketMessenger& msgr) {
       auto& conf = ceph::common::local_conf();
       if (conf->ms_crc_data) {
         msgr.set_crc_data();
@@ -43,8 +57,6 @@ static seastar::future<> test_monc()
         }).then([&monc] {
           return monc.stop();
         });
-      }).finally([&msgr] {
-        return msgr.shutdown();
       });
     });
   }).finally([] {

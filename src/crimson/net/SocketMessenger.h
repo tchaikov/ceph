@@ -57,7 +57,7 @@ class SocketMessenger final : public Messenger {
   ConnectionRef connect(const entity_addr_t& peer_addr,
                         const entity_type_t& peer_type) override;
 
-  seastar::future<> shutdown() override;
+  seastar::future<> stop() override;
 
   void print(ostream& out) const override {
     out << get_myname()
