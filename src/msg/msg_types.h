@@ -17,6 +17,10 @@
 
 #include <sstream>
 
+// #include <string> 
+#include <sstream> 
+//#include <iostream>
+
 #include <netinet/in.h>
 
 #include "include/ceph_features.h"
@@ -175,12 +179,24 @@ WRITE_CLASS_ENCODER(ceph_sockaddr_storage)
 /*
  * encode sockaddr.ss_family as network byte order
  */
+static inline size_t get_sockaddr_length(int family) {
+    switch (family) {
+    case AF_INET:
+      return sizeof(struct sockaddr_in);
+    case AF_INET6:
+      return sizeof(struct sockaddr_in6);
+    }
+    return sizeof(struct sockaddr_storage);
+}
+
 static inline void encode(const sockaddr_storage& a, ceph::buffer::list& bl) {
 #if defined(__linux__)
   struct sockaddr_storage ss = a;
   ss.ss_family = htons(ss.ss_family);
   ceph::encode_raw(ss, bl);
 #elif defined(__FreeBSD__) || defined(__APPLE__)
+  // We do not copy ss_len into the buffer since the on-wire format 
+  // is compatible with the Linux sockaddr
   ceph_sockaddr_storage ss{};
   auto src = (unsigned char const *)&a;
   auto dst = (unsigned char *)&ss;
@@ -188,8 +204,9 @@ static inline void encode(const sockaddr_storage& a, ceph::buffer::list& bl) {
   ss.ss_family = a.ss_family;
   src += sizeof(a.ss_family);
   dst += sizeof(ss.ss_family);
-  const auto copy_size = std::min((unsigned char*)(&a + 1) - src,
-				  (unsigned char*)(&ss + 1) - dst);
+  // const auto copy_size = std::min((unsigned char*)(&a + 1) - src,
+  //				  (unsigned char*)(&ss + 1) - dst);
+  const auto copy_size = a.ss_len - sizeof(a.ss_family) - sizeof(a.ss_len);
   ::memcpy(dst, src, copy_size);
   encode(ss, bl);
 #else
@@ -209,13 +226,12 @@ static inline void decode(sockaddr_storage& a,
   decode(ss, bl);
   auto src = (unsigned char const *)&ss;
   auto dst = (unsigned char *)&a;
-  a.ss_len = 0;
-  dst += sizeof(a.ss_len);
   a.ss_family = ss.ss_family;
+  a.ss_len = get_sockaddr_length(a.ss_family);
   src += sizeof(ss.ss_family);
   dst += sizeof(a.ss_family);
-  auto const copy_size = std::min((unsigned char*)(&ss + 1) - src,
-				  (unsigned char*)(&a + 1) - dst);
+  dst += sizeof(a.ss_len);
+  const auto copy_size = a.ss_len - sizeof(a.ss_family) - sizeof(a.ss_len);
   ::memcpy(dst, src, copy_size);
 #else
   ceph_sockaddr_storage ss{};
@@ -268,6 +284,8 @@ struct entity_addr_t {
     memcpy(&u, &o.in_addr, sizeof(u));
 #if !defined(__FreeBSD__)
     u.sa.sa_family = ntohs(u.sa.sa_family);
+#else
+    u.sa.sa_len = get_sockaddr_len();
 #endif
   }
 
@@ -285,6 +303,9 @@ struct entity_addr_t {
   }
   void set_family(int f) {
     u.sa.sa_family = f;
+#if defined(__FreeBSD__)
+    u.sa.sa_len = get_sockaddr_len();
+#endif
   }
 
   bool is_ipv4() const {
@@ -310,13 +331,7 @@ struct entity_addr_t {
     return &u.sa;
   }
   size_t get_sockaddr_len() const {
-    switch (u.sa.sa_family) {
-    case AF_INET:
-      return sizeof(u.sin);
-    case AF_INET6:
-      return sizeof(u.sin6);
-    }
-    return sizeof(u);
+    return get_sockaddr_length(u.sa_family);
   }
   bool set_sockaddr(const struct sockaddr *sa)
   {
@@ -337,6 +352,9 @@ struct entity_addr_t {
     default:
       return false;
     }
+#if defined(__FreeBSD__)
+    u.sa.sa_len = get_sockaddr_len();
+#endif
     return true;
   }
 
@@ -351,6 +369,9 @@ struct entity_addr_t {
     u.sin.sin_family = AF_INET;
     unsigned char *ipq = (unsigned char*)&u.sin.sin_addr.s_addr;
     ipq[pos] = val;
+#if defined(__FreeBSD__)
+    u.sa.sa_len = get_sockaddr_len();
+#endif
   }
   void set_port(int port) {
     switch (u.sa.sa_family) {
@@ -383,6 +404,8 @@ struct entity_addr_t {
     a.in_addr = get_sockaddr_storage();
 #if !defined(__FreeBSD__)
     a.in_addr.ss_family = htons(a.in_addr.ss_family);
+#else
+    a.in_addr.ss_len = get_sockaddr_len();
 #endif
     return a;
   }
@@ -394,7 +417,7 @@ struct entity_addr_t {
       return false;
     if (is_blank_ip() || o.is_blank_ip())
       return true;
-    if (memcmp(&u, &o.u, sizeof(u)) == 0)
+    if (is_same_host(o))
       return true;
     return false;
   }
@@ -463,6 +486,10 @@ struct entity_addr_t {
   // Right now, these only deal with sockaddr_storage that have only family and content.
   // Apparently on BSD there is also an ss_len that we need to handle; this requires
   // broader study
+  // Currently ss_len is set on the decode in set_sockaddr() so it does not need to
+  // be encode to go over the line.
+  // But get_sockaddr_storage() does include ss_len, so it could be that line formats
+  // between Linux and BSD are not compatible
 
   void encode(ceph::buffer::list& bl, uint64_t features) const {
     using ceph::encode;
@@ -519,13 +546,13 @@ struct entity_addr_t {
     decode(elen, bl);
     if (elen) {
 #if defined(__FreeBSD__) || defined(__APPLE__)
-      u.sa.sa_len = 0;
       __le16 ss_family;
       if (elen < sizeof(ss_family)) {
 	throw buffer::malformed_input("elen smaller than family len");
       }
       decode(ss_family, bl);
       u.sa.sa_family = ss_family;
+      u.sa.sa_len = get_sockaddr_len();
       elen -= sizeof(ss_family);
       if (elen > get_sockaddr_len() - sizeof(u.sa.sa_family)) {
 	throw buffer::malformed_input("elen exceeds sockaddr len");
