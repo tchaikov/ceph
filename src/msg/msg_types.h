@@ -17,10 +17,6 @@
 
 #include <sstream>
 
-// #include <string> 
-#include <sstream> 
-//#include <iostream>
-
 #include <netinet/in.h>
 
 #include "include/ceph_features.h"
@@ -201,11 +197,9 @@ static inline void encode(const sockaddr_storage& a, ceph::buffer::list& bl) {
   auto src = (unsigned char const *)&a;
   auto dst = (unsigned char *)&ss;
   src += sizeof(a.ss_len);
-  ss.ss_family = a.ss_family;
   src += sizeof(a.ss_family);
+  ss.ss_family = a.ss_family;
   dst += sizeof(ss.ss_family);
-  // const auto copy_size = std::min((unsigned char*)(&a + 1) - src,
-  //				  (unsigned char*)(&ss + 1) - dst);
   const auto copy_size = a.ss_len - sizeof(a.ss_family) - sizeof(a.ss_len);
   ::memcpy(dst, src, copy_size);
   encode(ss, bl);
@@ -331,7 +325,7 @@ struct entity_addr_t {
     return &u.sa;
   }
   size_t get_sockaddr_len() const {
-    return get_sockaddr_length(u.sa_family);
+    return get_sockaddr_length(u.sa.sa_family);
   }
   bool set_sockaddr(const struct sockaddr *sa)
   {
@@ -483,14 +477,12 @@ struct entity_addr_t {
     }
   }
 
-  // Right now, these only deal with sockaddr_storage that have only family and content.
-  // Apparently on BSD there is also an ss_len that we need to handle; this requires
-  // broader study
-  // Currently ss_len is set on the decode in set_sockaddr() so it does not need to
-  // be encode to go over the line.
-  // But get_sockaddr_storage() does include ss_len, so it could be that line formats
-  // between Linux and BSD are not compatible
-
+  // There is a difference between the Linux and BSD sockaddr:
+  // BSD has an extra sa_len, specifying the length of the sockaddr
+  // in the ip v4/v6 variation
+  // The wire format here includes length generated from get_sockaddr_len
+  // which can be different on Linux and BSD because of sa_len.
+  // So also need to compensate elen for that.
   void encode(ceph::buffer::list& bl, uint64_t features) const {
     using ceph::encode;
     if ((features & CEPH_FEATURE_MSG_ADDR2) == 0) {
@@ -516,17 +508,23 @@ struct entity_addr_t {
     }
     encode(nonce, bl);
     __u32 elen = get_sockaddr_len();
+
+#if (__FreeBSD__) || defined(__APPLE__)
+    // Compensate for sa_len in struct sockaddr
+    elen -= sizeof(u.sa.sa_len);
     encode(elen, bl);
     if (elen) {
-#if (__FreeBSD__) || defined(__APPLE__)
+      // encode sa_family and sa_data seperate
       __le16 ss_family = u.sa.sa_family;
       encode(ss_family, bl);
-      bl.append(u.sa.sa_data,
-		elen - sizeof(u.sa.sa_len) - sizeof(u.sa.sa_family));
-#else
-      bl.append((char*)get_sockaddr(), elen);
-#endif
+      bl.append(u.sa.sa_data, elen - sizeof(u.sa.sa_family));
     }
+#else
+    encode(elen, bl);
+    if (elen) {
+      bl.append((char*)get_sockaddr(), elen);
+    }
+#endif
     ENCODE_FINISH(bl);
   }
   void decode(ceph::buffer::list::const_iterator& bl) {
@@ -547,28 +545,23 @@ struct entity_addr_t {
     if (elen) {
 #if defined(__FreeBSD__) || defined(__APPLE__)
       __le16 ss_family;
-      if (elen < sizeof(ss_family)) {
-	throw buffer::malformed_input("elen smaller than family len");
-      }
+      auto const fam_len = sizeof(ss_family);
       decode(ss_family, bl);
       u.sa.sa_family = ss_family;
+      // ignore the decoded length, but set the length detemined by sa_family
       u.sa.sa_len = get_sockaddr_len();
-      elen -= sizeof(ss_family);
-      if (elen > get_sockaddr_len() - sizeof(u.sa.sa_family)) {
-	throw buffer::malformed_input("elen exceeds sockaddr len");
-      }
-      bl.copy(elen, u.sa.sa_data);
 #else
-      if (elen < sizeof(u.sa.sa_family)) {
+      auto const fam_len = sizeof(u.sa.sa_family);
+      bl.copy(fam_len, (char*)&u.sa.sa_family);
+#endif
+      if (elen < fam_len) {
 	throw ceph::buffer::malformed_input("elen smaller than family len");
       }
-      bl.copy(sizeof(u.sa.sa_family), (char*)&u.sa.sa_family);
-      if (elen > get_sockaddr_len()) {
+      elen -= fam_len;
+      if (elen > get_sockaddr_len() - fam_len) {
 	throw ceph::buffer::malformed_input("elen exceeds sockaddr len");
       }
-      elen -= sizeof(u.sa.sa_family);
       bl.copy(elen, u.sa.sa_data);
-#endif
     }
     DECODE_FINISH(bl);
   }
