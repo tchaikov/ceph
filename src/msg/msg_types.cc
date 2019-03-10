@@ -129,13 +129,13 @@ bool entity_addr_t::parse(const char *s, const char **end, int default_type)
   if (inet_pton(AF_INET, buf4, &a4)) {
     u.sin.sin_addr.s_addr = a4.s_addr;
     u.sa.sa_family = AF_INET;
-#if defined(__FreeBSD__)
+#if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
     u.sa.sa_len = sizeof(u.sin);
 #endif
     p = start + strlen(buf4);
   } else if (inet_pton(AF_INET6, buf6, &a6)) {
     u.sa.sa_family = AF_INET6;
-#if defined(__FreeBSD__)
+#if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
     u.sa.sa_len = sizeof(u.sin6);
 #endif
     memcpy(&u.sin6.sin6_addr, &a6, sizeof(a6));

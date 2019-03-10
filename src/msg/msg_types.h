@@ -182,7 +182,7 @@ static inline size_t get_sockaddr_length(int family) {
     case AF_INET6:
       return sizeof(struct sockaddr_in6);
     }
-    return sizeof(struct sockaddr_storage);
+    return 0;
 }
 
 static inline void encode(const sockaddr_storage& a, ceph::buffer::list& bl) {
@@ -190,7 +190,7 @@ static inline void encode(const sockaddr_storage& a, ceph::buffer::list& bl) {
   struct sockaddr_storage ss = a;
   ss.ss_family = htons(ss.ss_family);
   ceph::encode_raw(ss, bl);
-#elif defined(__FreeBSD__) || defined(__APPLE__)
+#elif defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
   // We do not copy ss_len into the buffer since the on-wire format 
   // is compatible with the Linux sockaddr
   ceph_sockaddr_storage ss{};
@@ -200,7 +200,7 @@ static inline void encode(const sockaddr_storage& a, ceph::buffer::list& bl) {
   src += sizeof(a.ss_family);
   ss.ss_family = a.ss_family;
   dst += sizeof(ss.ss_family);
-  const auto copy_size = a.ss_len - sizeof(a.ss_family) - sizeof(a.ss_len);
+  const auto copy_size = sizeof(a) - sizeof(a.ss_family) - sizeof(a.ss_len);
   ::memcpy(dst, src, copy_size);
   encode(ss, bl);
 #else
@@ -215,7 +215,7 @@ static inline void decode(sockaddr_storage& a,
 #if defined(__linux__)
   ceph::decode_raw(a, bl);
   a.ss_family = ntohs(a.ss_family);
-#elif defined(__FreeBSD__) || defined(__APPLE__)
+#elif defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
   ceph_sockaddr_storage ss{};
   decode(ss, bl);
   auto src = (unsigned char const *)&ss;
@@ -225,7 +225,7 @@ static inline void decode(sockaddr_storage& a,
   src += sizeof(ss.ss_family);
   dst += sizeof(a.ss_family);
   dst += sizeof(a.ss_len);
-  const auto copy_size = a.ss_len - sizeof(a.ss_family) - sizeof(a.ss_len);
+  const auto copy_size = sizeof(a) - sizeof(a.ss_family) - sizeof(a.ss_len);
   ::memcpy(dst, src, copy_size);
 #else
   ceph_sockaddr_storage ss{};
@@ -278,7 +278,8 @@ struct entity_addr_t {
     memcpy(&u, &o.in_addr, sizeof(u));
 #if !defined(__FreeBSD__)
     u.sa.sa_family = ntohs(u.sa.sa_family);
-#else
+#endif
+#if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
     u.sa.sa_len = get_sockaddr_len();
 #endif
   }
@@ -297,7 +298,7 @@ struct entity_addr_t {
   }
   void set_family(int f) {
     u.sa.sa_family = f;
-#if defined(__FreeBSD__)
+#if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
     u.sa.sa_len = get_sockaddr_len();
 #endif
   }
@@ -346,7 +347,7 @@ struct entity_addr_t {
     default:
       return false;
     }
-#if defined(__FreeBSD__)
+#if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
     u.sa.sa_len = get_sockaddr_len();
 #endif
     return true;
@@ -363,7 +364,7 @@ struct entity_addr_t {
     u.sin.sin_family = AF_INET;
     unsigned char *ipq = (unsigned char*)&u.sin.sin_addr.s_addr;
     ipq[pos] = val;
-#if defined(__FreeBSD__)
+#if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
     u.sa.sa_len = get_sockaddr_len();
 #endif
   }
@@ -398,7 +399,8 @@ struct entity_addr_t {
     a.in_addr = get_sockaddr_storage();
 #if !defined(__FreeBSD__)
     a.in_addr.ss_family = htons(a.in_addr.ss_family);
-#else
+#endif
+#if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
     a.in_addr.ss_len = get_sockaddr_len();
 #endif
     return a;
@@ -509,7 +511,7 @@ struct entity_addr_t {
     encode(nonce, bl);
     __u32 elen = get_sockaddr_len();
 
-#if (__FreeBSD__) || defined(__APPLE__)
+#if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
     // Compensate for sa_len in struct sockaddr
     elen -= sizeof(u.sa.sa_len);
     encode(elen, bl);
@@ -543,7 +545,7 @@ struct entity_addr_t {
     __u32 elen;
     decode(elen, bl);
     if (elen) {
-#if defined(__FreeBSD__) || defined(__APPLE__)
+#if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
       __le16 ss_family;
       auto const fam_len = sizeof(ss_family);
       decode(ss_family, bl);
