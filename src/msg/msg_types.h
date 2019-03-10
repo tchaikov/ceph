@@ -286,7 +286,7 @@ struct entity_addr_t {
     nonce = o.nonce;
     memcpy(&u, &o.in_addr, sizeof(u));
 #if !defined(__FreeBSD__)
-    u.sa.sa_family = ntohs(u.sa.sa_family);
+    set_family(ntohs(get_family()));
 #endif
 #if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
     u.sa.sa_len = get_sockaddr_sa_len(get_family());
@@ -313,10 +313,10 @@ struct entity_addr_t {
   }
 
   bool is_ipv4() const {
-    return u.sa.sa_family == AF_INET;
+    return get_family() == AF_INET;
   }
   bool is_ipv6() const {
-    return u.sa.sa_family == AF_INET6;
+    return get_family() == AF_INET6;
   }
 
   sockaddr_in &in4_addr() {
@@ -335,7 +335,7 @@ struct entity_addr_t {
     return &u.sa;
   }
   size_t get_sockaddr_len() const {
-    return get_sockaddr_size(u.sa.sa_family);
+    return get_sockaddr_size(get_family());
   }
   bool set_sockaddr(const struct sockaddr *sa)
   {
@@ -378,7 +378,7 @@ struct entity_addr_t {
 #endif
   }
   void set_port(int port) {
-    switch (u.sa.sa_family) {
+    switch (get_family()) {
     case AF_INET:
       u.sin.sin_port = htons(port);
       break;
@@ -390,7 +390,7 @@ struct entity_addr_t {
     }
   }
   int get_port() const {
-    switch (u.sa.sa_family) {
+    switch (get_family()) {
     case AF_INET:
       return ntohs(u.sin.sin_port);
       break;
@@ -429,11 +429,11 @@ struct entity_addr_t {
   }
 
   bool is_same_host(const entity_addr_t &o) const {
-    if (u.sa.sa_family != o.u.sa.sa_family)
+    if (get_family() != o.get_family())
       return false;
-    if (u.sa.sa_family == AF_INET)
+    if (get_family() == AF_INET)
       return u.sin.sin_addr.s_addr == o.u.sin.sin_addr.s_addr;
-    if (u.sa.sa_family == AF_INET6)
+    if (get_family() == AF_INET6)
       return memcmp(u.sin6.sin6_addr.s6_addr,
 		    o.u.sin6.sin6_addr.s6_addr,
 		    sizeof(u.sin6.sin6_addr.s6_addr)) == 0;
@@ -441,7 +441,7 @@ struct entity_addr_t {
   }
 
   bool is_blank_ip() const {
-    switch (u.sa.sa_family) {
+    switch (get_family()) {
     case AF_INET:
       return u.sin.sin_addr.s_addr == INADDR_ANY;
     case AF_INET6:
@@ -452,7 +452,7 @@ struct entity_addr_t {
   }
 
   bool is_ip() const {
-    switch (u.sa.sa_family) {
+    switch (get_family()) {
     case AF_INET:
     case AF_INET6:
       return true;
@@ -527,7 +527,7 @@ struct entity_addr_t {
     encode(elen, bl);
     if (elen) {
       // encode sa_family and sa_data seperate
-      __le16 ss_family = u.sa.sa_family;
+      __le16 ss_family = get_family();
       encode(ss_family, bl);
       ceph_assert(elen - sizeof(u.sa.sa_family) < SOCK_MAXADDRLEN);
       bl.append(u.sa.sa_data, elen - sizeof(u.sa.sa_family));
@@ -560,7 +560,7 @@ struct entity_addr_t {
       __le16 ss_family;
       auto const fam_len = sizeof(ss_family);
       decode(ss_family, bl);
-      u.sa.sa_family = ss_family;
+      set_family(ss_family);
       // ignore the decoded length, but set the length detemined by sa_family
       u.sa.sa_len = get_sockaddr_sa_len(get_family());
 #else
