@@ -32,6 +32,7 @@ if(WITH_BLUESTORE)
     bluestore/FreelistManager.cc
     bluestore/StupidAllocator.cc
     bluestore/BitmapAllocator.cc
+    bluestore/io_uring.cc
   )
 endif(WITH_BLUESTORE)
 
@@ -150,3 +151,28 @@ endif(WITH_PMEM)
 if(WITH_LTTNG AND WITH_EVENTTRACE)
   add_dependencies(os eventtrace_tp)
 endif()
+
+if(WITH_LIBURING)
+  include(ExternalProject)
+  ExternalProject_Add(liburing_ext
+    DOWNLOAD_DIR ${CMAKE_BINARY_DIR}/src/
+    GIT_REPOSITORY http://git.kernel.dk/liburing
+    GIT_TAG "f3b78a78240e2cf8826291501f9ee3f2112e7dfe"
+    SOURCE_DIR ${CMAKE_BINARY_DIR}/src/liburing
+    CONFIGURE_COMMAND ""
+    BUILD_COMMAND $(MAKE)
+    BUILD_IN_SOURCE 1
+    INSTALL_COMMAND "true")
+
+  ExternalProject_Add_Step(liburing_ext forcebuild
+    DEPENDEES configure
+    DEPENDERS build
+    COMMAND "true"
+    ALWAYS 1)
+  add_library(liburing STATIC IMPORTED GLOBAL)
+  add_dependencies(liburing liburing_ext)
+  set_target_properties(liburing PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/src/liburing/src/liburing.a")
+  target_link_libraries(os liburing)
+  target_include_directories(os SYSTEM PRIVATE "${CMAKE_BINARY_DIR}/src/liburing/src/")
+endif(WITH_LIBURING)

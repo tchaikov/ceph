@@ -268,6 +268,13 @@ if(WITH_BLUESTORE)
   endif()
 endif()
 
+option(WITH_LIBURING "Build with liburing library support" OFF)
+if(WITH_LIBURING)
+  # Turn off liburing if libaio is disabled
+  set(WITH_LIBURING ${HAVE_LIBAIO})
+endif()
+set(HAVE_LIBURING ${WITH_LIBURING})
+
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "i386|i686|amd64|x86_64|AMD64|aarch64")
   option(WITH_SPDK "Enable SPDK" ON)
 else()
