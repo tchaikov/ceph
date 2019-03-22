@@ -172,10 +172,7 @@ struct ceph_sockaddr_storage {
 } __attribute__ ((__packed__));
 WRITE_CLASS_ENCODER(ceph_sockaddr_storage)
 
-/*
- * encode sockaddr.ss_family as network byte order
- */
-static inline size_t get_sockaddr_length(int family) {
+static inline size_t get_sockaddr_sa_len(int family) {
     switch (family) {
     case AF_INET:
       return sizeof(struct sockaddr_in);
@@ -184,7 +181,19 @@ static inline size_t get_sockaddr_length(int family) {
     }
     return 0;
 }
+static inline size_t get_sockaddr_size(int family) {
+    switch (family) {
+    case AF_INET:
+      return sizeof(struct sockaddr_in);
+    case AF_INET6:
+      return sizeof(struct sockaddr_in6);
+    }
+    return sizeof(struct ceph_sockaddr_storage);
+}
 
+/*
+ * encode sockaddr.ss_family as network byte order
+ */
 static inline void encode(const sockaddr_storage& a, ceph::buffer::list& bl) {
 #if defined(__linux__)
   struct sockaddr_storage ss = a;
@@ -221,7 +230,7 @@ static inline void decode(sockaddr_storage& a,
   auto src = (unsigned char const *)&ss;
   auto dst = (unsigned char *)&a;
   a.ss_family = ss.ss_family;
-  a.ss_len = get_sockaddr_length(a.ss_family);
+  a.ss_len = get_sockaddr_sa_len(a.ss_family);
   src += sizeof(ss.ss_family);
   dst += sizeof(a.ss_family);
   dst += sizeof(a.ss_len);
@@ -280,7 +289,7 @@ struct entity_addr_t {
     u.sa.sa_family = ntohs(u.sa.sa_family);
 #endif
 #if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
-    u.sa.sa_len = get_sockaddr_len();
+    u.sa.sa_len = get_sockaddr_sa_len(get_family());
 #endif
   }
 
@@ -299,7 +308,7 @@ struct entity_addr_t {
   void set_family(int f) {
     u.sa.sa_family = f;
 #if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
-    u.sa.sa_len = get_sockaddr_len();
+    u.sa.sa_len = get_sockaddr_sa_len(f);
 #endif
   }
 
@@ -326,7 +335,7 @@ struct entity_addr_t {
     return &u.sa;
   }
   size_t get_sockaddr_len() const {
-    return get_sockaddr_length(u.sa.sa_family);
+    return get_sockaddr_size(u.sa.sa_family);
   }
   bool set_sockaddr(const struct sockaddr *sa)
   {
@@ -348,7 +357,7 @@ struct entity_addr_t {
       return false;
     }
 #if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
-    u.sa.sa_len = get_sockaddr_len();
+    u.sa.sa_len = get_sockaddr_sa_len(get_family());
 #endif
     return true;
   }
@@ -365,7 +374,7 @@ struct entity_addr_t {
     unsigned char *ipq = (unsigned char*)&u.sin.sin_addr.s_addr;
     ipq[pos] = val;
 #if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
-    u.sa.sa_len = get_sockaddr_len();
+    u.sa.sa_len = get_sockaddr_sa_len(get_family());
 #endif
   }
   void set_port(int port) {
@@ -401,7 +410,7 @@ struct entity_addr_t {
     a.in_addr.ss_family = htons(a.in_addr.ss_family);
 #endif
 #if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
-    a.in_addr.ss_len = get_sockaddr_len();
+    a.in_addr.ss_len = get_sockaddr_sa_len(get_family());
 #endif
     return a;
   }
@@ -413,7 +422,8 @@ struct entity_addr_t {
       return false;
     if (is_blank_ip() || o.is_blank_ip())
       return true;
-    if (is_same_host(o))
+    // if (is_same_host(o))
+    if (memcmp(&u, &o.u, sizeof(u)) == 0)
       return true;
     return false;
   }
@@ -482,7 +492,7 @@ struct entity_addr_t {
   // There is a difference between the Linux and BSD sockaddr:
   // BSD has an extra sa_len, specifying the length of the sockaddr
   // in the ip v4/v6 variation
-  // The wire format here includes length generated from get_sockaddr_len
+  // The wire format here includes length generated from get_sockaddr_sa_len
   // which can be different on Linux and BSD because of sa_len.
   // So also need to compensate elen for that.
   void encode(ceph::buffer::list& bl, uint64_t features) const {
@@ -509,7 +519,7 @@ struct entity_addr_t {
       encode(t, bl);
     }
     encode(nonce, bl);
-    __u32 elen = get_sockaddr_len();
+    __u32 elen = get_sockaddr_size(get_family());
 
 #if defined(HAVE_STRUCT_SOCKADDR_SA_LEN)
     // Compensate for sa_len in struct sockaddr
@@ -519,6 +529,7 @@ struct entity_addr_t {
       // encode sa_family and sa_data seperate
       __le16 ss_family = u.sa.sa_family;
       encode(ss_family, bl);
+      ceph_assert(elen - sizeof(u.sa.sa_family) < SOCK_MAXADDRLEN);
       bl.append(u.sa.sa_data, elen - sizeof(u.sa.sa_family));
     }
 #else
@@ -551,7 +562,7 @@ struct entity_addr_t {
       decode(ss_family, bl);
       u.sa.sa_family = ss_family;
       // ignore the decoded length, but set the length detemined by sa_family
-      u.sa.sa_len = get_sockaddr_len();
+      u.sa.sa_len = get_sockaddr_sa_len(get_family());
 #else
       auto const fam_len = sizeof(u.sa.sa_family);
       bl.copy(fam_len, (char*)&u.sa.sa_family);
@@ -560,7 +571,7 @@ struct entity_addr_t {
 	throw ceph::buffer::malformed_input("elen smaller than family len");
       }
       elen -= fam_len;
-      if (elen > get_sockaddr_len() - fam_len) {
+      if (elen > get_sockaddr_size(get_family()) - fam_len) {
 	throw ceph::buffer::malformed_input("elen exceeds sockaddr len");
       }
       bl.copy(elen, u.sa.sa_data);
