@@ -296,11 +296,6 @@ seastar::future<> Heartbeat::handle_you_died()
   return seastar::now();
 }
 
-AuthAuthorizer* Heartbeat::ms_get_authorizer(peer_type_t peer) const
-{
-  return monc.get_authorizer(peer);
-}
-
 seastar::future<> Heartbeat::send_heartbeats()
 {
   using peers_item_t = typename peers_map_t::value_type;
