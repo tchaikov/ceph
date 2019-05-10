@@ -73,7 +73,14 @@ seastar::future<> Protocol::send(MessageRef msg)
 {
   if (write_state != write_state_t::drop) {
     conn.out_q.push_back(std::move(msg));
-    write_event();
+    if (write_dispatching) {
+      // already dispatching
+      return seastar::now();
+    }
+    write_dispatching = true;
+      return seastar::repeat([this] {
+        return do_write_dispatch_sweep();
+      });
   }
   return seastar::now();
 }

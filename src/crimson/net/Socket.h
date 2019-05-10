@@ -37,7 +37,7 @@ class Socket
       in(socket.input()),
       // the default buffer size 8192 is too small that may impact our write
       // performance. see seastar::net::connected_socket::output()
-      out(socket.output(65536)) {}
+      out(socket.output()) {}
 
   Socket(Socket&& o) = delete;
 
