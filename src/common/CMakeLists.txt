@@ -185,3 +185,5 @@ if(WITH_LIBCEPHFS OR WITH_KRBD)
     secret.c)
   add_library(parse_secret_objs OBJECT ${parse_secret_srcs})
 endif()
+
+add_executable(ini-parser ini_parser.cc)
