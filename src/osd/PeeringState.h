@@ -1529,6 +1529,13 @@ public:
     int new_up_primary,
     int new_acting_primary);
 
+  std::tuple<set<pg_shard_t>, pg_shard_t, set<pg_shard_t>, pg_shard_t>
+  init_primary_up_acting_new(
+    const vector<int> &newup,
+    const vector<int> &newacting,
+    int new_up_primary,
+    int new_acting_primary);
+
   /// Set initial role
   void set_role(int r) {
     role = r;

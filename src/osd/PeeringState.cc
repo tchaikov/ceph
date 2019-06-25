@@ -792,6 +792,54 @@ void PeeringState::init_primary_up_acting(
   }
   ceph_assert(up_primary.osd == new_up_primary);
   ceph_assert(primary.osd == new_acting_primary);
+
+  auto [new_actingset, new_primary, new_upset, new_up_primary] =
+    init_primary_up_acting_new(newup,
+			       newacting,
+			       new_up_primary,
+			       new_acting_primary);
+  if (new_actingset == actingset &&
+      new_primary == primary &&
+      new_upset == upset &&
+      new_up_primary = up_primary) {
+    return;
+  }
+  psdout(-1) << new_actingset << "::" << actingset << dendl;
+  psdout(-1) << new_primary << "::" << primary << dendl;
+  psdout(-1) << new_upset << "::" << upset << dendl;
+  psdout(-1) << new_up_primary << "::" << up_primary << dendl;
+}
+
+tuple<set<pg_shard_t>, pg_shard_t, set<pg_shard_t> pg_shard_t>
+PeeringState::init_primary_up_acting_new(
+  const vector<int> &new_up,
+  const vector<int> &new_acting,
+  int new_up_primary,
+  int new_acting_primary)
+{
+  auto collect_pg_shards =
+    [is_erasure=pool.info.is_erasure()](const std::vector<int>& osds,
+					int osd_primary) {
+      int8_t index = 0;
+      set<pg_shard_t> collected;
+      pg_shard_t pg_primary;
+      for (auto osd : osds) {
+        if (osd != CRUSH_ITEM_NONE) {
+          pg_shard_t pg_shard{
+            osd, is_erasure ? shard_id_t{index} : shard_id_t::NO_SHARD};
+          if (osd == osd_primary) {
+            pg_primary = pg_shard;
+          }
+          collected.insert(pg_shard);
+        }
+        index++;
+      }
+      return std::make_pair(collected, pg_primary);
+    };
+
+  auto [new_actingset, new_primary] = collect_pg_shards(new_acting, new_acting_primary);
+  auto [new_upset, new_up_primary] = collect_pg_shards(new_up, new_up_primary);
+  return make_tuple(new_actingset, new_primary, new_upset, new_up_primary)
 }
 
 void PeeringState::clear_recovery_state()
