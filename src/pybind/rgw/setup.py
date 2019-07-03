@@ -129,7 +129,7 @@ def check_sanity():
         compiler.link_executable(
             objects=link_objects,
             output_progname=os.path.join(tmp_dir, 'rgw_dummy'),
-            libraries=['rgw', 'rados'],
+            libraries=['rgw', 'rados', 'ceph-common'],
             output_dir=tmp_dir,
         )
 
@@ -202,7 +202,7 @@ setup(
                 [source],
                 include_dirs=flags['cflags']['I'],
                 library_dirs=flags['ldflags']['L'],
-                libraries=['rados', 'rgw'] + flags['ldflags']['l'],
+                libraries=['rados', 'rgw', 'ceph-common'] + flags['ldflags']['l'],
                 extra_compile_args=flags['cflags']['extras'] + flags['ldflags']['extras'],
             )
         ],

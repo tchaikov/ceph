@@ -127,7 +127,7 @@ def check_sanity():
         compiler.link_executable(
             objects=link_objects,
             output_progname=os.path.join(tmp_dir, 'rbd_dummy'),
-            libraries=['rbd', 'rados'],
+            libraries=['rbd', 'rados', 'ceph-common'],
             output_dir=tmp_dir,
         )
 
@@ -201,7 +201,7 @@ setup(
                 [source],
                 include_dirs=flags['cflags']['I'],
                 library_dirs=flags['ldflags']['L'],
-                libraries=['rbd', 'rados'] + flags['ldflags']['l'],
+                libraries=['rbd', 'rados', 'ceph-common'] + flags['ldflags']['l'],
                 extra_compile_args=flags['cflags']['extras'] + flags['ldflags']['extras'],
             )
         ],
