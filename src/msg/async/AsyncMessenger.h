@@ -18,7 +18,6 @@
 #define CEPH_ASYNCMESSENGER_H
 
 #include <map>
-#include <mutex>
 
 #include "include/types.h"
 #include "include/xlist.h"
@@ -26,7 +25,7 @@
 #include "include/unordered_map.h"
 #include "include/unordered_set.h"
 
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 #include "common/Cond.h"
 #include "common/Thread.h"
 
@@ -233,7 +232,7 @@ private:
   std::string ms_type;
 
   /// overall lock used for AsyncMessenger data structures
-  Mutex lock;
+  ceph::mutex lock = ceph::make_mutex("AsyncMessenger::lock");
   // AsyncMessenger stuff
   /// approximately unique ID set by the Constructor for use in entity_addr_t
   uint64_t nonce;
@@ -294,7 +293,7 @@ private:
    * deleted for AsyncConnection. "_lookup_conn" must ensure not return a
    * AsyncConnection in this set.
    */
-  Mutex deleted_lock;
+  ceph::mutex deleted_lock = ceph::make_mutex("AsyncMessenger::deleted_lock");
   set<AsyncConnectionRef> deleted_conns;
 
   EventCallbackRef reap_handler;
@@ -302,20 +301,20 @@ private:
   /// internal cluster protocol version, if any, for talking to entities of the same type.
   int cluster_protocol;
 
-  Cond  stop_cond;
+  ceph::condition_variable  stop_cond;
   bool stopped;
 
   /* You must hold this->lock for the duration of use! */
   const auto& _lookup_conn(const entity_addrvec_t& k) {
     static const AsyncConnectionRef nullref;
-    ceph_assert(lock.is_locked());
+    ceph_assert(ceph_mutex_is_locked(lock));
     auto p = conns.find(k);
     if (p == conns.end()) {
       return nullref;
     }
 
     // lazy delete, see "deleted_conns"
-    Mutex::Locker l(deleted_lock);
+    std::lock_guard l{deleted_lock};
     if (deleted_conns.erase(p->second)) {
       conns.erase(p);
       return nullref;
@@ -325,7 +324,7 @@ private:
   }
 
   void _init_local_connection() {
-    ceph_assert(lock.is_locked());
+    ceph_assert(ceph_mutex_is_locked(lock));
     local_connection->peer_addrs = *my_addrs;
     local_connection->peer_type = my_name.type();
     local_connection->set_features(CEPH_FEATURES_ALL);
@@ -347,7 +346,7 @@ public:
    * This wraps _lookup_conn.
    */
   AsyncConnectionRef lookup_conn(const entity_addrvec_t& k) {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     return _lookup_conn(k); /* make new ref! */
   }
 
@@ -392,7 +391,7 @@ public:
    * is used for delivering messages back to ourself.
    */
   void init_local_connection() {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
     local_connection->is_loopback = true;
     _init_local_connection();
   }
@@ -403,7 +402,7 @@ public:
    * See "deleted_conns"
    */
   void unregister_conn(const AsyncConnectionRef& conn) {
-    Mutex::Locker l(deleted_lock);
+    std::lock_guard l{deleted_lock};
     conn->get_perf_counter()->dec(l_msgr_active_connections);
     deleted_conns.emplace(std::move(conn));
 
