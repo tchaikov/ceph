@@ -18,7 +18,7 @@
 #include <atomic>
 
 #include "common/Cond.h"
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 #include "common/snap_types.h"
 #include "common/zipkin_trace.h"
 #include "include/types.h"
@@ -41,9 +41,10 @@ struct librados::IoCtxImpl {
   uint32_t notify_timeout;
   object_locator_t oloc;
 
-  Mutex aio_write_list_lock;
+  ceph::mutex aio_write_list_lock =
+    ceph::make_mutex("librados::IoCtxImpl::aio_write_list_lock");
   ceph_tid_t aio_write_seq;
-  Cond aio_write_cond;
+  ceph::condition_variable aio_write_cond;
   xlist<AioCompletionImpl*> aio_write_list;
   map<ceph_tid_t, std::list<AioCompletionImpl*> > aio_write_waiters;
 
