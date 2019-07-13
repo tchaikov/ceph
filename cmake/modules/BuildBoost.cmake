@@ -147,8 +147,8 @@ function(do_build_boost version)
     message(STATUS "boost will be downloaded...")
     # NOTE: If you change this version number make sure the package is available
     # at the three URLs below (may involve uploading to download.ceph.com)
-    set(boost_version 1.67.0)
-    set(boost_sha256 2684c972994ee57fc5632e03bf044746f6eb45d4920c343937a465fd67a5adba)
+    set(boost_version 1.70.0)
+    set(boost_sha256 430ae8354789de4fd19ee52f3b1f739e1fba576f0aded0897c3c2bc00fb38778)
     string(REPLACE "." "_" boost_version_underscore ${boost_version} )
     set(boost_url 
       https://dl.bintray.com/boostorg/release/${boost_version}/source/boost_${boost_version_underscore}.tar.bz2)
