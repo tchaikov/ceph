@@ -257,9 +257,7 @@ public:
   void on_change(ObjectStore::Transaction &t) final {
     // Not needed yet
   }
-  void on_activate(interval_set<snapid_t> to_trim) final {
-    // Not needed yet (will be needed for IO unblocking)
-  }
+  void on_activate(interval_set<snapid_t> to_trim) final;
   void on_activate_complete() final;
   void on_new_interval() final {
     // Not needed yet
@@ -416,6 +414,9 @@ public:
   void handle_initialize(PeeringCtx &rctx);
   seastar::future<> handle_op(ceph::net::Connection* conn,
 			      Ref<MOSDOp> m);
+  void handle_rep_op_reply(ceph::net::Connection* conn,
+			   const MOSDRepOpReply& m);
+
   void print(std::ostream& os) const;
 
 private:
@@ -430,6 +431,10 @@ private:
   seastar::future<ceph::bufferlist> do_pgnls(ceph::bufferlist& indata,
 					     const std::string& nspace,
 					     uint64_t limit);
+  seastar::future<> submit_transaction(boost::local_shared_ptr<ObjectState>&& os,
+				       ceph::os::Transaction&& txn,
+				       const MOSDOp& req);
+  eversion_t projected_last_update;
 
 private:
   OSDMapGate osdmap_gate;
