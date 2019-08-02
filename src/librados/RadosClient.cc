@@ -940,7 +940,7 @@ int librados::RadosClient::pg_command(pg_t pgid, vector<string>& cmd,
   ceph_tid_t tid;
 
   {
-    std::lock_guard l{mylock};
+    std::lock_guard l{lock};
     objecter->pg_command(pgid, cmd, inbl, &tid, poutbl, prs,
 			 new C_SafeCond(mylock, cond, &done, &ret));
   }
