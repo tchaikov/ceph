@@ -2413,7 +2413,7 @@ void Client::handle_client_reply(const MConstRef<MClientReply>& reply)
         ldout(cct, 20) << "handle_client_reply awaiting kickback on tid "
 		       << tid << " " << &cond << dendl;
       }
-      return request->dispatch_cond;
+      return !request->dispatch_cond;
     });
     l.release();
   }
