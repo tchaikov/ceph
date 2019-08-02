@@ -32,23 +32,23 @@ class RadosClient;
 
 struct librados::IoCtxImpl {
   std::atomic<uint64_t> ref_cnt = { 0 };
-  RadosClient *client;
-  int64_t poolid;
+  RadosClient *client = nullptr;
+  int64_t poolid = 0;
   snapid_t snap_seq;
   ::SnapContext snapc;
-  uint64_t assert_ver;
-  version_t last_objver;
-  uint32_t notify_timeout;
+  uint64_t assert_ver = 0;
+  version_t last_objver = 0;
+  uint32_t notify_timeout = 30;
   object_locator_t oloc;
 
   ceph::mutex aio_write_list_lock =
     ceph::make_mutex("librados::IoCtxImpl::aio_write_list_lock");
-  ceph_tid_t aio_write_seq;
+  ceph_tid_t aio_write_seq = 0;
   ceph::condition_variable aio_write_cond;
   xlist<AioCompletionImpl*> aio_write_list;
   map<ceph_tid_t, std::list<AioCompletionImpl*> > aio_write_waiters;
 
-  Objecter *objecter;
+  Objecter *objecter = nullptr;
 
   IoCtxImpl();
   IoCtxImpl(RadosClient *c, Objecter *objecter,

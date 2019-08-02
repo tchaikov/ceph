@@ -223,17 +223,11 @@ struct C_aio_selfmanaged_snap_create_Complete : public C_aio_selfmanaged_snap_op
 } // anonymous namespace
 } // namespace librados
 
-librados::IoCtxImpl::IoCtxImpl() :
-  ref_cnt(0), client(NULL), poolid(0), assert_ver(0), last_objver(0),
-  notify_timeout(30),
-  aio_write_seq(0), objecter(NULL)
-{
-}
+librados::IoCtxImpl::IoCtxImpl() = default;
 
 librados::IoCtxImpl::IoCtxImpl(RadosClient *c, Objecter *objecter,
 			       int64_t poolid, snapid_t s)
-  : ref_cnt(0), client(c), poolid(poolid), snap_seq(s),
-    assert_ver(0), last_objver(0),
+  : client(c), poolid(poolid), snap_seq(s),
     notify_timeout(c->cct->_conf->client_notify_timeout),
     oloc(poolid),
     aio_write_seq(0), objecter(objecter)
