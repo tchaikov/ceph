@@ -9428,7 +9428,7 @@ int Client::_preadv_pwritev(int fd, const struct iovec *iov, unsigned iovcnt, in
 }
 
 int64_t Client::_write(Fh *f, int64_t offset, uint64_t size, const char *buf,
-		       const struct iovec *iov, int iovcnt)
+	                const struct iovec *iov, int iovcnt)
 {
   uint64_t fpos = 0;
 
