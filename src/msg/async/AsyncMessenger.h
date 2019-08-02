@@ -239,7 +239,7 @@ private:
 
   /// true, specifying we haven't learned our addr; set false when we find it.
   // maybe this should be protected by the lock?
-  bool need_addr;
+  bool need_addr = true;
 
   /**
    * set to bind addresses if bind was called before NetworkStack was ready to
@@ -261,9 +261,9 @@ private:
    *  false; set to true if the AsyncMessenger bound to a specific address;
    *  and set false again by Accepter::stop().
    */
-  bool did_bind;
+  bool did_bind = false;
   /// counter for the global seq our connection protocol uses
-  __u32 global_seq;
+  __u32 global_seq = 0;
   /// lock to protect the global_seq
   ceph::spinlock global_seq_lock;
 
@@ -299,10 +299,10 @@ private:
   EventCallbackRef reap_handler;
 
   /// internal cluster protocol version, if any, for talking to entities of the same type.
-  int cluster_protocol;
+  int cluster_protocol = 0;
 
   ceph::condition_variable  stop_cond;
-  bool stopped;
+  bool stopped = true;
 
   /* You must hold this->lock for the duration of use! */
   const auto& _lookup_conn(const entity_addrvec_t& k) {

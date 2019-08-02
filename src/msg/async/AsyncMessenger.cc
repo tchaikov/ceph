@@ -278,9 +278,7 @@ AsyncMessenger::AsyncMessenger(CephContext *cct, entity_name_t name,
                                const std::string &type, string mname, uint64_t _nonce)
   : SimplePolicyMessenger(cct, name,mname, _nonce),
     dispatch_queue(cct, this, mname),
-    nonce(_nonce), need_addr(true), did_bind(false),
-    global_seq(0),
-    cluster_protocol(0), stopped(true)
+    nonce(_nonce)
 {
   std::string transport_type = "posix";
   if (type.find("rdma") != std::string::npos)
