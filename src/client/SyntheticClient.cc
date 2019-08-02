@@ -2391,7 +2391,7 @@ int SyntheticClient::object_rw(int nobj, int osize, int wrpc,
     {
       std::unique_lock locker{lock};
       cond.wait(locker, [&unack, this] {
-        if (unack > 0) {
+	if (unack > 0) {
 	  dout(20) << "waiting for " << unack << " unack" << dendl;
 	}
 	return unack <= 0;
