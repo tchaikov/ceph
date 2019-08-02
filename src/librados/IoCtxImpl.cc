@@ -387,8 +387,10 @@ int librados::IoCtxImpl::selfmanaged_snap_create(uint64_t *psnapid)
   if (reply < 0) {
     delete onfinish;
   } else {
-    std::unique_lock l{mylock};
-    cond.wait(l, [&done] { return done; });
+    {
+      std::unique_lock l{mylock};
+      cond.wait(l, [&done] { return done; });
+    }
     if (reply == 0)
       *psnapid = snapid;
   }

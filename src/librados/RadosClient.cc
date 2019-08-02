@@ -585,7 +585,7 @@ int librados::RadosClient::wait_for_osdmap()
         if (timeout == timeout.zero()) {
           cond.wait(l);
         } else {
-          if (auto r = cond.wait_for(l, timeout); r == std::cv_status::timeout) {
+          if (cond.wait_for(l, timeout) == std::cv_status::timeout) {
             lderr(cct) << "timed out waiting for first osdmap from monitors"
                        << dendl;
             return -ETIMEDOUT;
