@@ -8934,7 +8934,7 @@ void Client::lock_fh_pos(Fh *f)
     ldout(cct, 10) << __func__ << " BLOCKING on " << f << dendl;
     std::unique_lock l{client_lock, std::adopt_lock};
     cond.wait(l, [f, me=&cond] {
-      return f->pos_locked && f->pos_waiters.front() == me;
+      return !f->pos_locked && f->pos_waiters.front() == me;
     });
     l.release();
     ldout(cct, 10) << __func__ << " UNBLOCKING on " << f << dendl;
