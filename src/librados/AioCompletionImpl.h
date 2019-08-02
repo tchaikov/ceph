@@ -25,35 +25,26 @@ class IoCtxImpl;
 struct librados::AioCompletionImpl {
   ceph::mutex lock = ceph::make_mutex("AioCompletionImpl lock", false);
   ceph::condition_variable cond;
-  int ref, rval;
-  bool released;
-  bool complete;
-  version_t objver;
-  ceph_tid_t tid;
+  int ref = 1, rval = 0;
+  bool released = false;
+  bool complete = false;
+  version_t objver = 0;
+  ceph_tid_t tid = 0;
 
-  rados_callback_t callback_complete, callback_safe;
-  void *callback_complete_arg, *callback_safe_arg;
+  rados_callback_t callback_complete = nullptr, callback_safe = nullptr;
+  void *callback_complete_arg = nullptr, *callback_safe_arg = nullptr;
 
   // for read
-  bool is_read;
+  bool is_read = false;
   bufferlist bl;
-  bufferlist *blp;
-  char *out_buf;
+  bufferlist *blp = nullptr;
+  char *out_buf = nullptr;
 
-  IoCtxImpl *io;
-  ceph_tid_t aio_write_seq;
+  IoCtxImpl *io = nullptr;
+  ceph_tid_t aio_write_seq = 0;
   xlist<AioCompletionImpl*>::item aio_write_list_item;
 
-  AioCompletionImpl() : ref(1), rval(0), released(false),
-			complete(false),
-			objver(0),
-                        tid(0),
-			callback_complete(0),
-			callback_safe(0),
-			callback_complete_arg(0),
-			callback_safe_arg(0),
-			is_read(false), blp(nullptr), out_buf(nullptr),
-			io(NULL), aio_write_seq(0), aio_write_list_item(this) { }
+  AioCompletionImpl() : aio_write_list_item(this) { }
 
   int set_complete_callback(void *cb_arg, rados_callback_t cb) {
     std::scoped_lock l{lock};
