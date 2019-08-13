@@ -9,6 +9,8 @@ overrides:
     index_pool_pg_size: 64
 tasks:
 - cbt:
+    repo: 'https://github.com/tchaikov/cbt.git'
+    branch: 'wip-cosbench-a-tale-of-two-users'
     benchmarks:
       cosbench:
         obj_size: [64KB]

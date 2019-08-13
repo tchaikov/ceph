@@ -5,6 +5,8 @@ meta:
 
 tasks:
 - cbt:
+    repo: 'https://github.com/tchaikov/cbt.git'
+    branch: 'wip-cosbench-a-tale-of-two-users'
     benchmarks:
       librbdfio:
         op_size: [4096]
