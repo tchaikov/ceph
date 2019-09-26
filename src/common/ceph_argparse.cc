@@ -241,7 +241,7 @@ bool parse_ip_port_vec(const char *s, vector<entity_addrvec_t>& vec, int type)
 
 // The defaults for CephInitParameters
 CephInitParameters::CephInitParameters(uint32_t module_type_)
-  : module_type(module_type_)
+  : module_type(module_type_), no_config_file("false")
 {
   name.set(module_type, "admin");
 }
@@ -503,6 +503,9 @@ CephInitParameters ceph_argparse_early_args
     }
     else if (ceph_argparse_witharg(args, i, &val, "--conf", "-c", (char*)NULL)) {
       *conf_file_list = val;
+    }
+    else if (ceph_argparse_flag(args, i, "--no-config-file", (char*)NULL)) {
+      iparams.no_config_file = "true";
     }
     else if (ceph_argparse_witharg(args, i, &val, "--cluster", (char*)NULL)) {
       *cluster = val;
