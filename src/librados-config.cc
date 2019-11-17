@@ -21,10 +21,11 @@
 
 void usage()
 {
-  cout << "usage: librados-config [option]\n"
-       << "where options are:\n"
-       << "  --version                    library version\n"
-       << "  --vernum                     library version code\n";
+  cout << R"(usage: librados-config [option]"
+where options are:
+  --version                    library version
+  --vernum                     library version code
+)";
 }
 
 void usage_exit()
