@@ -37,7 +37,7 @@ public:
 
   uint32_t module_type;
   EntityName name;
-  std::string no_config_file;
+  bool no_config_file = false;
 };
 
 /////////////////////// Functions ///////////////////////
