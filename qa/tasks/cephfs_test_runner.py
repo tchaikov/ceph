@@ -46,7 +46,8 @@ class DecoratingLoader(loader.TestLoader):
                     module = __import__('.'.join(parts_copy))
                     log.error("imported '{0}'".format(parts_copy))
                     break
-                except ImportError:
+                except ImportError as e:
+                    log.error("failed to import '{0}': '{1}'".format(parts_copy, e))
                     del parts_copy[-1]
                     if not parts_copy:
                         raise
