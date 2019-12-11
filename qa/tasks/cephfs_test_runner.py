@@ -1,6 +1,7 @@
 import contextlib
 import logging
 import os
+import types
 import unittest
 from unittest import suite, loader, case
 from teuthology.task import interactive
@@ -28,8 +29,58 @@ class DecoratingLoader(loader.TestLoader):
         self._apply_params(testCaseClass)
         return super(DecoratingLoader, self).loadTestsFromTestCase(testCaseClass)
 
+    def _loadTestsFromName(self, name, module=None):
+        """Return a suite of all test cases given a string specifier.
+
+        The name may resolve either to a module, a test case class, a
+        test method within a test case class, or a callable object which
+        returns a TestCase or TestSuite instance.
+
+        The method optionally resolves the names relative to a given module.
+        """
+        parts = name.split('.')
+        if module is None:
+            parts_copy = parts[:]
+            while parts_copy:
+                try:
+                    module = __import__('.'.join(parts_copy))
+                    log.error("imported '{0}'".format(parts_copy))
+                    break
+                except ImportError:
+                    del parts_copy[-1]
+                    if not parts_copy:
+                        raise
+            parts = parts[1:]
+        obj = module
+        for part in parts:
+            parent, obj = obj, getattr(obj, part)
+
+        if isinstance(obj, types.ModuleType):
+            return self.loadTestsFromModule(obj)
+        elif isinstance(obj, type) and issubclass(obj, case.TestCase):
+            return self.loadTestsFromTestCase(obj)
+        elif (isinstance(obj, types.UnboundMethodType) and
+              isinstance(parent, type) and
+              issubclass(parent, case.TestCase)):
+            name = parts[-1]
+            inst = parent(name)
+            return self.suiteClass([inst])
+        elif isinstance(obj, suite.TestSuite):
+            return obj
+        elif hasattr(obj, '__call__'):
+            test = obj()
+            if isinstance(test, suite.TestSuite):
+                return test
+            elif isinstance(test, case.TestCase):
+                return self.suiteClass([test])
+            else:
+                raise TypeError("calling %s returned %s, not a test" %
+                                (obj, test))
+        else:
+            raise TypeError("don't know how to make test from: %s" % obj)
+
     def loadTestsFromName(self, name, module=None):
-        result = super(DecoratingLoader, self).loadTestsFromName(name, module)
+        result = self._loadTestsFromName(name, module)
 
         # Special case for when we were called with the name of a method, we get
         # a suite with one TestCase
