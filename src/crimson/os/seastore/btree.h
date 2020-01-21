@@ -7,6 +7,28 @@ using physical_block_id_t uint32_t;
 class Block {
 };
 
+class BaseNode;
+
+class BlockRef {
+public:
+  logical_block_id_t get_id() const {
+    return id;
+  }
+  template<class Node>
+  const Node& get_node() const {
+    return static_cast<const Node&>(*node);
+  }
+  template<class Node>
+  Node& get_node() {
+    return static_cast<Node&>(*node);
+  }
+private:
+  seastar::future<BaseNode*> load() {
+    return BlockCache::local_cache().load(id);
+  }
+  logical_block_id_t id;
+};
+
 enum class NodeOwner : uint8_t {
   ONODE,
   LBA,
@@ -57,26 +79,6 @@ public:
   std::array<Key, NrNodeValue> keys;
 };
 
-class BlockRef {
-public:
-  logical_block_id_t get_id() const {
-    return id;
-  }
-  template<class Node>
-  const Node& get_node() const {
-    return static_cast<const Node&>(*node);
-  }
-  template<class Node>
-  Node& get_node() {
-    return static_cast<Node&>(*node);
-  }
-private:
-  seastar::future<BaseNode*> load() {
-    return BlockCache::local_cache().load(id);
-  }
-  logical_block_id_t id;
-};
-
 template<class Key, class Value, size_t TargetNodeSize>
 class InternalNode : public BaseNode<TargetNodeSize,
 				     sizeof(Key) + sizeof(Value)> {
@@ -116,8 +118,11 @@ public:
                                                                        where);
           } else {
             auto inter = static_cast<InternalNode*>(node);
-            node = inter->get_block(where).load();
-            return seastar::make_ready_future<std::optional<cursor_t>>();
+            return inter->get_block(where).load().then([&node](auto child) {
+              node = child;
+            }).then([] {
+              return seastar::make_ready_future<std::optional<cursor_t>>();
+            });
           }
         });
       });
