@@ -749,7 +749,13 @@ Usage:
 
         e2 = self.remote('selftest', 'remote_from_orchestrator_cli_self_test', "OrchestratorError")
         try:
-            orchestrator.raise_if_exception(e2)
+            if c.exception is not None:
+                try:
+                    e = copy.deepcopy(c.exception)
+                except (KeyError, AttributeError) as e:
+                    self.log.error('self_test: {}'.format(e))
+                    raise Exception('{}: {}'.format(type(c.exception), c.exception))
+                raise e
             assert False
         except orchestrator.OrchestratorError as e:
             assert e.args == ('hello', 'world')
