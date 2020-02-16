@@ -63,6 +63,8 @@ void usage()
   cout << "   --dump <format>         displays the map in plain text when <format> is 'plain', 'json' if specified format is not supported" << std::endl;
   cout << "   --tree                  displays a tree of the map" << std::endl;
   cout << "   --test-crush [--range-first <first> --range-last <last>] map pgs to acting osds" << std::endl;
+  cout << "   --adjust-crush-weight <osdid:weight>[,<osdid:weight>,<...>] change <osdid> CRUSH <weight> (but do not persist)" << std::endl;
+  cout << "   --crush-adjust-save     saves adjust-crush-weight to CRUSHmap" << std::endl;
   exit(1);
 }
 
@@ -130,7 +132,8 @@ int main(int argc, const char **argv)
   int pgp_bits = 6;
   bool clobber = false;
   bool modified = false;
-  std::string export_crush, import_crush, test_map_pg, test_map_object;
+  std::string export_crush, import_crush, test_map_pg, test_map_object, adjust_crush_weight;
+  bool crush_adjust_save = false;
   bool test_crush = false;
   int range_first = -1;
   int range_last = -1;
@@ -253,6 +256,10 @@ int main(int argc, const char **argv)
         cerr << err.str() << std::endl;
         exit(EXIT_FAILURE);
       }
+    } else if (ceph_argparse_witharg(args, i, &val, err, "--adjust-crush-weight", (char*)NULL)) {
+      adjust_crush_weight = val;
+    } else if (ceph_argparse_flag(args, i, "--crush-adjust-save", (char*)NULL)) {
+      crush_adjust_save = true;
     } else {
       ++i;
     }
@@ -375,6 +382,35 @@ int main(int argc, const char **argv)
     osdmap.set_weight(id, CEPH_OSD_IN);
   }
 
+  if (!adjust_crush_weight.empty()) {
+    std::string osds_delimiter = ",";
+    size_t pos = 0;
+    while (1) {
+      pos = adjust_crush_weight.find(osds_delimiter);
+
+      std::string osd_to_adjust = adjust_crush_weight.substr(0,pos);
+      std::string osd_to_weight_delimiter = ":";
+
+      size_t internal_pos = osd_to_adjust.find(osd_to_weight_delimiter);
+      int osd_id = std::stoi(osd_to_adjust.substr(0, internal_pos));
+      float new_weight = std::stof(osd_to_adjust.substr(internal_pos + 1, osd_to_adjust.length()));
+
+      osdmap.crush->adjust_item_weightf(g_ceph_context, osd_id, new_weight);
+      adjust_crush_weight.erase(0, pos + osds_delimiter.length());
+      std::cout << "Adjusted osd." << osd_id << " CRUSH weight to " << new_weight << std::endl;
+
+      if (pos == std::string::npos)
+        break;
+    }
+
+    if (crush_adjust_save) {
+      OSDMap::Incremental inc;
+      inc.fsid = osdmap.get_fsid();
+      inc.epoch = osdmap.get_epoch()+1;
+      osdmap.apply_incremental(inc);
+      modified = true;
+    }
+  }
 
   if (clear_temp) {
     cout << "clearing pg/primary temp" << std::endl;
@@ -752,7 +788,7 @@ skip_upmap:
       export_crush.empty() && import_crush.empty() && 
       test_map_pg.empty() && test_map_object.empty() &&
       !test_map_pgs && !test_map_pgs_dump && !test_map_pgs_dump_all &&
-      !upmap && !upmap_cleanup) {
+      adjust_crush_weight.empty() && !upmap && !upmap_cleanup) {
     cerr << me << ": no action specified?" << std::endl;
     usage();
   }
