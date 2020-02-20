@@ -328,11 +328,27 @@ class LocalRemote(object):
     # Wrapper to keep the interface exactly same as that of
     # teuthology.remote.run.
     def run(self, **kwargs):
-        return self.cmdrunner(**kwargs)
+        # ignored for now
+        for unsupported_arg in ('logger', 'name', 'label', 'timeout'):
+            kwargs.pop(unsupported_arg, None)
+        args = kwargs.pop('args', None)
+        stdin = kwargs.pop('stdin', None)
+        stdout = kwargs.pop('stdout', None)
+        stderr = kwargs.pop('stderr', None)
+        check_status = kwargs.pop('check_status', True)
+        wait = kwargs.pop('wait', True)
+        cwd = kwargs.pop('cwd', None)
+        env = kwargs.pop('env', None)
+        omit_sudo = kwargs.pop('omit_sudo', False)
+        if args is None:
+            raise TypeError(
+                "LocalRemote.run() missing required keyword argument 'args'")
+        elif kwargs:
+            kv = kwargs.popitem()
+            raise TypeError(
+                "LocalRemote.run() got an unexpected keyword argument '{}'".format(
+                    kv[0]))
 
-    def cmdrunner(self, args, check_status=True, wait=True, stdout=None,
-                  stderr=None, cwd=None, stdin=None, logger=None, label=None,
-                  env=None, timeout=None, omit_sudo=False):
         args = self._perform_checks_and_return_list_of_args(args, omit_sudo)
 
         # We have to use shell=True if any run.Raw was present, e.g. &&
