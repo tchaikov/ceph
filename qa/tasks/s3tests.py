@@ -247,13 +247,13 @@ def configure(ctx, config):
     for client, properties in config['clients'].items():
         with open(boto_src, 'rb') as f:
             (remote,) = ctx.cluster.only(client).remotes.keys()
-            conf = f.read().format(
+            conf = six.ensure_str(f.read()).format(
                 idle_timeout=config.get('idle_timeout', 30)
                 )
             teuthology.write_file(
                 remote=remote,
                 path='{tdir}/boto.cfg'.format(tdir=testdir),
-                data=conf,
+                data=six.ensure_binary(conf),
                 )
 
     try:
