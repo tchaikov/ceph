@@ -49,7 +49,7 @@ from .services.sso import SSO_COMMANDS, \
                           handle_sso_command
 from .services.exception import dashboard_exception_handler
 from .settings import options_command_list, options_schema_list, \
-                      handle_option_command
+                      handle_option_command, Settings
 
 from .plugins import PLUGIN_MANAGER
 from .plugins import feature_toggles, debug  # noqa # pylint: disable=unused-import
@@ -294,6 +294,9 @@ class Module(MgrModule, CherryPyConfig):
     def get_frontend_path(cls):
         current_dir = os.path.dirname(os.path.abspath(__file__))
         return os.path.join(current_dir, 'frontend/dist')
+
+    def get_option(self, opt_name):
+        return getattr(Settings, opt_name)
 
     def serve(self):
         AuthManager.initialize()
