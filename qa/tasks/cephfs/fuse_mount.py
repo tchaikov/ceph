@@ -186,14 +186,9 @@ class FuseMount(CephFSMount):
                 '--',
                 self.mountpoint,
             ],
-<<<<<<< HEAD
             cwd=self.test_dir,
-            stdout=StringIO(),
-            stderr=StringIO(),
-=======
             stdout=BytesIO(),
             stderr=BytesIO(),
->>>>>>> 22266a485d35ceb2092cb5410e90c0f6ac296b4c
             wait=False,
             timeout=(15*60)
         )
