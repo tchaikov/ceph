@@ -426,10 +426,10 @@ def call(command,  # type: List[str]
         **kwargs
     )
     # get current p.stdout flags, add O_NONBLOCK
-    stdout_flags = fcntl.fcntl(process.stdout, fcntl.F_GETFL)
-    stderr_flags = fcntl.fcntl(process.stderr, fcntl.F_GETFL)
-    fcntl.fcntl(process.stdout, fcntl.F_SETFL, stdout_flags | os.O_NONBLOCK)
-    fcntl.fcntl(process.stderr, fcntl.F_SETFL, stderr_flags | os.O_NONBLOCK)
+    stdout_flags = fcntl.fcntl(process.stdout.fileno(), fcntl.F_GETFL)
+    stderr_flags = fcntl.fcntl(process.stderr.fileno(), fcntl.F_GETFL)
+    fcntl.fcntl(process.stdout.fileno(), fcntl.F_SETFL, stdout_flags | os.O_NONBLOCK)
+    fcntl.fcntl(process.stderr.fileno(), fcntl.F_SETFL, stderr_flags | os.O_NONBLOCK)
 
     out = ''
     err = ''
