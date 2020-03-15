@@ -227,7 +227,7 @@ Deploying OSDs
 To add OSDs to the cluster, you have two options:
 
 #. You need to know the device name for the block device (hard disk or
-SSD) that will be used.  Then,::
+   SSD) that will be used.  Then,::
 
      # ceph orch osd create *<host>*:*<path-to-device>*
 
