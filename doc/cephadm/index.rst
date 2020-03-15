@@ -131,7 +131,7 @@ Adding hosts to the cluster
 For each new host you'd like to add to the cluster, you need to do two things:
 
 #. Install the cluster's public SSH key in the new host's root user's
-   ``authorized_keys`` file.  For example,::
+   ``authorized_keys`` file.  For example::
 
      [monitor 1] # cat ceph.pub | ssh root@*newhost* tee -a /root/.ssh/authorized_keys
 
@@ -167,7 +167,7 @@ There are several ways to add additional monitors:
 
     # ceph orch apply mon *<number-of-monitors>*
 
-  For example, if you have 5 or more hosts added to the cluster,::
+  For example, if you have 5 or more hosts added to the cluster::
 
     # ceph orch apply mon 5
 
@@ -176,7 +176,7 @@ There are several ways to add additional monitors:
 
     # ceph orch apply mon *<host1,host2,host3,...>*
 
-  For example,::
+  For example::
 
     # ceph orch apply mon host1,host2,host3
 
@@ -185,7 +185,7 @@ There are several ways to add additional monitors:
 
     # ceph orch host label add *<hostname>* mon
 
-  To view the current hosts and labels,::
+  To view the current hosts and labels::
 
     # ceph orch host ls
 
@@ -210,13 +210,13 @@ There are several ways to add additional monitors:
   and control where it is placed.  This is the only supported method
   if you did not specify the CIDR monitor network above.
 
-  To deploy additional monitors,::
+  To deploy additional monitors::
 
     # ceph orch daemon add mon *<host1:ip-or-network1> [<host1:ip-or-network-2>...]*
 
   For example, to deploy a second monitor on ``newhost1`` using an IP
   address ``10.1.2.123`` and a third monitor on ``newhost2`` in
-  network ``10.1.2.0/24``,::
+  network ``10.1.2.0/24``::
 
     # ceph orch daemon add mon newhost1:10.1.2.123
     # ceph orch daemon add mon newhost2:10.1.2.0/24
@@ -227,11 +227,11 @@ Deploying OSDs
 To add OSDs to the cluster, you have two options:
 
 #. You need to know the device name for the block device (hard disk or
-   SSD) that will be used.  Then,::
+   SSD) that will be used.  Then::
 
      # ceph orch osd create *<host>*:*<path-to-device>*
 
-   For example, to deploy an OSD on host *newhost*'s SSD,::
+   For example, to deploy an OSD on host *newhost*'s SSD::
 
      # ceph orch osd create newhost:/dev/disk/by-id/ata-WDC_WDS200T2B0A-00SM50_182294800028
 
@@ -249,7 +249,7 @@ Deploying manager daemons
 =========================
 
 It is a good idea to have at least one backup manager daemon.  To
-deploy one or more new manager daemons,::
+deploy one or more new manager daemons::
 
   # ceph orch apply mgr *<new-num-mgrs>* [*<host1>* ...]
 
@@ -261,7 +261,7 @@ These are created automatically if the newer ``ceph fs volume``
 interface is used to create a new file system.  For more information,
 see :ref:`fs-volumes-and-subvolumes`.
 
-To deploy metadata servers,::
+To deploy metadata servers::
 
   # ceph orch apply mds *<fs-name>* *<num-daemons>* [*<host1>* ...]
 
@@ -271,7 +271,7 @@ Deploying RGWs
 Cephadm deploys radosgw as a collection of daemons that manage a
 particular *realm* and *zone*.  (For more information about realms and
 zones, see :ref:`multisite`.)  To deploy a set of radosgw daemons for
-a particular realm and zone,::
+a particular realm and zone::
 
   # ceph orch apply rgw *<realm-name>* *<zone-name>* *<num-daemons>* [*<host1>* ...]
 
