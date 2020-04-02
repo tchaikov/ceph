@@ -175,6 +175,18 @@ if(COMPILER_SUPPORTS_DIAGNOSTICS_COLOR)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fdiagnostics-color=${DIAGNOSTICS_COLOR}")
 endif()
 
+CMAKE_DEPENDENT_OPTION(ENABLE_STATIC_ANALYZER "build with static analyzer enabled" OFF
+  "CMAKE_COMPILER_IS_GNUCC" OFF)
+if(ENABLE_STATIC_ANALYZER)
+  CHECK_C_COMPILER_FLAG("-fanalyzer" COMPILER_SUPPORTS_ANALYZER)
+  if(NOT COMPILER_SUPPORTS_ANALYZER)
+    message(SEND_ERROR "${CMAKE_C_COMPILER} does not support '-fanalyzer'")
+  endif()
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fanalyzer")
+  # assuming that the CXX compiler is of the same version of the C compiler
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fanalyzer")
+endif()
+
 set(EXTRALIBS ${CMAKE_DL_LIBS})
 if(HAVE_POSIX_TIMERS)
   list(APPEND EXTRALIBS ${RT_LIBRARY})
