@@ -315,11 +315,11 @@ TEST_F(btree_lba_manager_test, force_split_merge)
 	decref_mapping(t, addresses[i]);
       }
       logger().debug("submitting transaction");
-      if (i % 10 == 0) {
+      if (i % 7 == 0) {
 	submit_test_transaction(std::move(t));
 	t = create_transaction();
       }
-      if (i % 50 == 0) {
+      if (i % 13 == 0) {
 	check_mappings();
 	check_mappings(t);
       }
