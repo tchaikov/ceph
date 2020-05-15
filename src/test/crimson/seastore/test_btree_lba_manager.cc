@@ -291,7 +291,7 @@ TEST_F(btree_lba_manager_test, force_split)
 TEST_F(btree_lba_manager_test, force_split_merge)
 {
   run_async([this] {
-    for (unsigned i = 0; i < 40; ++i) {
+    for (unsigned i = 0; i < 80; ++i) {
       auto t = create_transaction();
       logger().debug("opened transaction");
       for (unsigned j = 0; j < 5; ++j) {
@@ -321,6 +321,7 @@ TEST_F(btree_lba_manager_test, force_split_merge)
       }
       if (i % 50 == 0) {
 	check_mappings();
+	check_mappings(t);
       }
     }
     submit_test_transaction(std::move(t));

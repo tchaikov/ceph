@@ -189,7 +189,9 @@ struct LBAInternalNode : LBANode, LBANodeIterHelper<LBAInternalNode> {
   }
 
   uint16_t get_size() const {
-    return *reinterpret_cast<const ceph_le16*>(get_ptr(SIZE_OFFSET));
+    auto ret = *reinterpret_cast<const ceph_le16*>(get_ptr(SIZE_OFFSET));
+    ceph_assert(ret <= CAPACITY);
+    return ret;
   }
 
   void set_size(uint16_t size) {
@@ -438,7 +440,9 @@ struct LBALeafNode : LBANode, LBANodeIterHelper<LBALeafNode> {
   }
 
   uint16_t get_size() const {
-    return *reinterpret_cast<const ceph_le16*>(get_ptr(SIZE_OFFSET));
+    auto ret = *reinterpret_cast<const ceph_le16*>(get_ptr(SIZE_OFFSET));
+    ceph_assert(ret <= CAPACITY);
+    return ret;
   }
 
   void set_size(uint16_t size) {

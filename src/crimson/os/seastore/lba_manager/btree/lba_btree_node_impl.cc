@@ -249,7 +249,7 @@ LBAInternalNode::merge_entry(
     "LBAInternalNode: merge_entry: {}, {}",
     *this,
     *entry);
-  auto is_left = iter == end();
+  auto is_left = (iter + 1) == end();
   auto donor_iter = is_left ? iter - 1 : iter + 1;
   return get_lba_btree_extent(
     c,
