@@ -7,6 +7,16 @@ target_link_libraries(
   ${CMAKE_DL_LIBS}
   crimson-seastore)
 
+add_executable(unittest_lba_btree_node
+  test_lba_btree_node.cc
+  ../gtest_seastar.cc)
+add_ceph_unittest(unittest_lba_btree_node)
+target_link_libraries(
+  unittest_lba_btree_node
+  ${CMAKE_DL_LIBS}
+  crimson-seastore
+  GTest::Main)
+
 add_executable(unittest_btree_lba_manager
   test_btree_lba_manager.cc
   ../gtest_seastar.cc)
