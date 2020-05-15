@@ -107,10 +107,6 @@ LBAInternalNode::mutate_mapping_ret LBAInternalNode::mutate_mapping(
     if (extent->at_min_capacity()) {
       auto mut_this = cache.duplicate_for_write(
 	t, this)->cast<LBAInternalNode>();
-      logger().debug(
-	"LBAInternalNode: about to merge entry: {}, {}",
-	*mut_this,
-	*this);
       return mut_this->merge_entry(
 	cache,
 	t,
@@ -140,7 +136,7 @@ LBAInternalNode::find_hole_ret LBAInternalNode::find_hole(
   extent_len_t len)
 {
   logger().debug(
-    "LBAInternalNode::find_hole min={} max={}, len={}, *this={}",
+    "LBAInternalNode::find_hole min={}, max={}, len={}, *this={}",
     min, max, len, *this);
   return seastar::do_with(
     bound(min, max),
@@ -209,7 +205,9 @@ LBAInternalNode::split_entry(
   ceph_assert(!at_max_capacity());
   auto [left, right, pivot] = entry->make_split_children(c, t);
 
-  journal_split(iter, left->get_paddr(), pivot, right->get_paddr());
+  journal_remove(iter->get_lb());
+  journal_insert(iter->get_lb(), left->get_paddr());
+  journal_insert(pivot, right->get_paddr());
 
   copy_from_local(iter + 1, iter, end());
   iter->set_val(maybe_generate_relative(left->get_paddr()));
@@ -231,18 +229,15 @@ LBAInternalNode::split_entry(
   );
 }
 
-void LBAInternalNode::journal_split(
-  internal_iterator_t to_split,
-  paddr_t new_left,
-  laddr_t new_pivot,
-  paddr_t new_right) {
-  // TODO
+void LBAInternalNode::journal_remove(
+  laddr_t to_remove)
+{
 }
 
-void LBAInternalNode::journal_full_merge(
-  internal_iterator_t left,
-  paddr_t new_right) {
-  // TODO
+void LBAInternalNode::journal_insert(
+  laddr_t to_insert,
+  paddr_t val)
+{
 }
 
 LBAInternalNode::merge_ret
@@ -273,9 +268,12 @@ LBAInternalNode::merge_entry(
 	c,
 	t,
 	r);
-      journal_full_merge(liter, replacement->get_paddr());
-      liter->set_val(maybe_generate_relative(replacement->get_paddr()));
 
+      journal_remove(riter->get_lb());
+      journal_remove(liter->get_lb());
+      journal_insert(liter->get_lb(), replacement->get_paddr());
+
+      liter->set_val(maybe_generate_relative(replacement->get_paddr()));
       copy_from_local(riter, riter + 1, end());
       set_size(get_size() - 1);
 
@@ -295,7 +293,22 @@ LBAInternalNode::merge_entry(
 	  riter->get_lb(),
 	  !is_left);
 
-      return split_ertr::make_ready_future<LBANodeRef>();
+      journal_remove(liter->get_lb());
+      journal_remove(riter->get_lb());
+      journal_insert(liter->get_lb(), replacement_l->get_paddr());
+      journal_insert(pivot, replacement_r->get_paddr());
+
+      liter->set_val(
+	maybe_generate_relative(replacement_l->get_paddr()));
+      riter->set_lb(pivot);
+      riter->set_val(
+	maybe_generate_relative(replacement_r->get_paddr()));
+
+      c.retire_extent(t, l);
+      c.retire_extent(t, r);
+      return split_ertr::make_ready_future<LBANodeRef>(
+	addr >= pivot ? replacement_r : replacement_l
+      );
     }
   });
 }

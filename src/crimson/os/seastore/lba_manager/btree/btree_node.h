@@ -276,12 +276,12 @@ do_make_balanced(
     replacement_left->copy_from_foreign(
       replacement_left->end(),
       right.begin(),
-      right.iter_idx(left.get_size() - pivot_idx));
+      right.iter_idx(pivot_idx - left.get_size()));
     replacement_left->set_size(pivot_idx);
 
     replacement_right->copy_from_foreign(
       replacement_right->end(),
-      right.iter_idx(left.get_size() - pivot_idx),
+      right.iter_idx(pivot_idx - left.get_size()),
       right.end());
     replacement_right->set_size(total - pivot_idx);
   }

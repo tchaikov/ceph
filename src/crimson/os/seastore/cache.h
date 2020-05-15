@@ -50,7 +50,7 @@ class Transaction {
   }
 
   void add_to_retired_set(CachedExtentRef ref) {
-    if (retired_set.count(ref->get_paddr()) == 0) {
+    if (!ref->is_initial_pending() && retired_set.count(ref->get_paddr()) == 0) {
       retired_set.insert(ref);
     }
   }
