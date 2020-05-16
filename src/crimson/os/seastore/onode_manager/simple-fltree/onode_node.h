@@ -652,8 +652,8 @@ struct node_t {
     unsigned n, uint16_t bytes,
     Mover& mover);
   template<int RightN, class Mover>
-  delta_t acquire_right(node_t<BlockSize, RightN, NodeType>& right,
-                        unsigned whoami, Mover& mover);
+  void acquire_right(node_t<BlockSize, RightN, NodeType>& right,
+                     unsigned whoami, Mover& mover);
   // transfer n elements at the front of given node to me
   template<int RightN, class Mover>
   void grab_from_right(node_t<BlockSize, RightN, NodeType>& right,
@@ -794,7 +794,7 @@ class EntryMover<parent_t, from_t, to_t,
 {
 public:
   EntryMover(const parent_t& parent, from_t& src, to_t& dst, unsigned from_slot)
-    : src{src}, dst{dst}, ref_oid{parent->get_oid_at(from_slot, {})}
+    : src{src}, dst{dst}, ref_oid{parent.get_oid_at(from_slot, {})}
   {}
   void move_from(unsigned src_first, unsigned dst_first, unsigned n)
   {

@@ -30,6 +30,7 @@ add_library(crimson-seastore STATIC
   extentmap_manager.cc
   extentmap_manager/btree/extentmap_btree_node_impl.cc
   extentmap_manager/btree/btree_extentmap_manager.cc
+  onode_manager/simple-fltree/onode_tree.cc
   seastore.cc
   ../../../test/crimson/seastore/test_block.cc
 	)
