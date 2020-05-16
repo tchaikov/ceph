@@ -1,6 +1,6 @@
 include(AddCephTest)
 
-set(UNITTEST_LIBS GMock::Main GMock::GMock GTest::GTest ${CMAKE_THREAD_LIBS_INIT} 
+set(UNITTEST_LIBS GMock::GMock GTest::GTest ${CMAKE_THREAD_LIBS_INIT} 
     ${GSSAPI_LIBRARIES} ${OPENLDAP_LIBRARIES} ${CMAKE_DL_LIBS})
 
 add_library(unit-main OBJECT unit.cc)
@@ -410,7 +410,7 @@ add_executable(ceph_test_stress_watch
   )
 target_link_libraries(ceph_test_stress_watch
   librados
-  ${UNITTEST_LIBS}
+  GTest::Main
   radostest-cxx
   ${EXTRALIBS}
   ${BLKID_LIBRARIES}

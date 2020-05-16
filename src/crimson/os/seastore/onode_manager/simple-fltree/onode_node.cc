@@ -367,11 +367,10 @@ void node_t<BlockSize, N, NodeType>::grab_from_left(node_t<BlockSize, LeftN, Nod
 
 template<size_t BlockSize, int N, ntype_t NodeType>
 template<int RightN, class Mover>
-delta_t node_t<BlockSize, N, NodeType>::acquire_right(node_t<BlockSize, RightN, NodeType>& right,
+void node_t<BlockSize, N, NodeType>::acquire_right(node_t<BlockSize, RightN, NodeType>& right,
                                                       unsigned whoami, Mover& mover)
 {
   mover.move_from(0, count, right.count);
-  return mover.to_delta();
 }
 
 template<size_t BlockSize, int N, ntype_t NodeType>

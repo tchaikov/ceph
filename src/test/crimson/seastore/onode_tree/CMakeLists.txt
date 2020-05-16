@@ -6,3 +6,12 @@ target_link_libraries(test-seastore-onode-tree-node
   GTest::Main
   crimson-os
   crimson-common)
+
+add_executable(unittest-seastore-onode-tree-tree
+  test_tree.cc)
+add_ceph_test(unittest-seastore-onode-tree-tree
+  unittest-seastore-onode-tree-tree)
+target_link_libraries(
+  unittest-seastore-onode-tree-tree
+  crimson-seastore
+  crimson::gtest)
