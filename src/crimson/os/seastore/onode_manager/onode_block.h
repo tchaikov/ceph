@@ -3,18 +3,23 @@
 
 #include <cstdint>
 
-#include "crimson/os/seastore/cached_extent.h"
+#include "crimson/os/seastore/transaction_manager.h"
 #include "onode_delta.h"
 
 namespace crimson::os::seastore {
 
 // TODO s/CachedExtent/LogicalCachedExtent/
-struct OnodeBlock final : CachedExtent {
+struct OnodeBlock final : LogicalCachedExtent {
   constexpr static segment_off_t SIZE = 4<<10;
   using Ref = TCachedExtentRef<OnodeBlock>;
 
   template <typename... T>
-  OnodeBlock(T&&... t) : CachedExtent(std::forward<T>(t)...) {}
+  OnodeBlock(T&&... t) : LogicalCachedExtent(std::forward<T>(t)...) {}
+
+  OnodeBlock(OnodeBlock&& block) noexcept
+    : LogicalCachedExtent{std::move(block)},
+      delta{std::move(block.delta)}
+  {}
 
   CachedExtentRef duplicate_for_write() final {
     return this;

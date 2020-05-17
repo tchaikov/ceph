@@ -67,7 +67,7 @@ private:
 
 WRITE_CLASS_ENCODER(Onode)
 
-bool operator==(const Onode& lhs, const Onode& rhs) {
+inline bool operator==(const Onode& lhs, const Onode& rhs) {
   return lhs.get() == rhs.get();
 }
 

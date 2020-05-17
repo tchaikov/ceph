@@ -18,92 +18,53 @@ namespace {
   }
 }
 
-// struct onode_tree_test_t : public seastar_test_suite_t {
-//   segment_manager::EphemeralSegmentManager
-//     segment_manager{segment_manager::DEFAULT_TEST_EPHEMERAL};
-//   Cache cache{segment_manager};
-//   paddr_t current{0, 0};
+struct onode_tree_test_t : public seastar_test_suite_t {
+  segment_manager::EphemeralSegmentManager
+    segment_manager{segment_manager::DEFAULT_TEST_EPHEMERAL};
+  Journal journal{segment_manager};
+  Cache cache{segment_manager};
+  LBAManagerRef
+    lba_manager{lba_manager::create_lba_manager(segment_manager, cache)};
+  TransactionManager tm{segment_manager, journal, cache, *lba_manager};
 
-//   onode_tree_test_t() = default;
+  onode_tree_test_t() = default;
 
-//   seastar::future<std::optional<paddr_t>>
-//   submit_transaction(TransactionRef t)
-//   {
-//     auto record = cache.try_construct_record(*t);
-//     if (!record) {
-//       return seastar::make_ready_future<std::optional<paddr_t>>(
-//         std::nullopt);
-//     }
+  seastar::future<> set_up_fut() final {
+    return segment_manager.init().safe_then([this] {
+      return tm.mkfs();
+    }).safe_then([this] {
+      return tm.mount();
+    }).handle_error(
+      crimson::ct_error::all_same_way([] {
+        ASSERT_FALSE("Unable to mount");
+      })
+    );
+  }
 
-//     bufferlist bl;
-//     for (auto &&block : record->extents) {
-//       bl.append(block.bl);
-//     }
+  seastar::future<> tear_down_fut() final {
+    return tm.close().handle_error(crimson::ct_error::all_same_way([] {
+      ASSERT_FALSE("Unable to close");
+    }));
+  }
+};
 
-//     ceph_assert((segment_off_t)bl.length() <
-//                 segment_manager.get_segment_size());
-//     if (current.offset + (segment_off_t)bl.length() >
-//         segment_manager.get_segment_size())
-//       current = paddr_t{current.segment + 1, 0};
-
-//     auto prev = current;
-//     current.offset += bl.length();
-//     return segment_manager.segment_write(
-//       prev,
-//       std::move(bl),
-//       true
-//     ).safe_then(
-//       [this, prev, t=std::move(t)] {
-//         cache.complete_commit(*t, prev);
-//         return seastar::make_ready_future<std::optional<paddr_t>>(prev);
-//       },
-//       crimson::ct_error::all_same_way([](auto e) {
-//                                         ASSERT_FALSE("failed to submit");
-//       })
-//     );
-//   }
-
-//   auto get_transaction() {
-//     return TransactionRef(new Transaction);
-//   }
-
-//   seastar::future<> set_up_fut() final {
-//     return segment_manager.init().safe_then([this] {
-//       return seastar::do_with(TransactionRef(new Transaction()),
-//         [this](auto &transaction) {
-// 	      return cache.mkfs(*transaction).safe_then([this, &transaction] {
-// 	        return submit_transaction(std::move(transaction)).then([](auto p) {
-//               ASSERT_TRUE(p);
-// 	        });
-// 	      });
-// 	    });
-//     }).handle_error(crimson::ct_error::all_same_way([](auto e) {
-//       ASSERT_FALSE("failed to submit");
-//     }));
-//   }
-
-//   seastar::future<> tear_down_fut() final {
-//     return seastar::now();
-//   }
-// };
-
-// TEST_F(onode_tree_test_t, insert_single_leaf)
-// {
-//   run_async([this] {
-//     Btree btree;
-//     {
-//       // add an onode
-//       auto t = get_transaction();
-//       btree.insert(oid, onode, txn);
-//       auto ret = submit_transaction(std::move(t)).get0();
-//       ASSERT_TRUE(ret);
-//     }
-//     {
-//       // read it back
-//       auto t = get_transaction();
-//       btree.find(oid).then([](OnodeRef found) {
-//         ASSERT_TRUE(found);
-//       });
-//     }
-//   });
-// }
+TEST_F(onode_tree_test_t, insert_single_leaf)
+{
+  run_async([this] {
+    Btree btree{tm};
+    ghobject_t oid{hobject_t{object_t{"saturn"}, "", 0, 0, 0, "solar"}};
+    // add an onode
+    auto onode = OnodeRef{new Onode{"hello"}};
+    seastar::do_with(tm.create_transaction(),
+      [&](auto& txn) {
+      return btree.insert(oid, onode, *txn);
+    }).unsafe_get();
+      // read it back
+    auto found = seastar::do_with(tm.create_transaction(),
+      [&](auto& txn) {
+      return btree.find(oid, *txn);
+    }).unsafe_get0();
+    ASSERT_TRUE(found);
+    ASSERT_EQ(*onode, *found);
+  });
+}

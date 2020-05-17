@@ -1,7 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
 // vim: ts=8 sw=2 smarttab
 
-#include "btree.h"
+#include "onode_tree.h"
 
 #include <seastar/core/temporary_buffer.hh>
 
@@ -56,83 +56,92 @@ private:
   }
 };
 
-void Btree::insert(const ghobject_t& oid, OnodeRef onode_ref,
-                   TransactionRef txn)
+Btree::insert_ertr::future<>
+Btree::insert(const ghobject_t& oid, OnodeRef onode,
+              Transaction& txn)
 {
-  seastar::temporary_buffer<char> buffer{onode_ref->size()};
-  onode_ref->encode(buffer.get_write(), buffer.size());
-  auto onode = reinterpret_cast<const onode_t*>(buffer.get());
+  return std::visit([&](auto&& r) {
+    // using T = std::decay_t<decltype(r)>;
+      return insert_ertr::make_ready_future<>();
+    // if constexpr (std::is_same_v<T, std::monostate>) {
+    //   return LeafNode<BlockSize, 0>::create(tm, txn).safe_then(
+    //     [oid=oid, onode=std::move(onode), &txn, this](auto&& leaf) {
+    //     return leaf.insert(oid, onode, 0, txn).then([&leaf, this](auto&& promoted) mutable {
+    //       assert(!promoted);
+    //       root = std::move(leaf);
+    //       return insert_ertr::make_ready_future<>();
+    //     });
+    //   });
+    // } else {
+      // return r.insert(oid, std::move(onode), 0, txn).then([&r, &txn, this](auto& maybe_split) {
+      //   if (!maybe_split) {
+      //     return seastar::make_ready_future();
+      //   }
+      //   assert(maybe_split.change == maybe_split.created);
+      //   // split at root node, let's create a new root indexing these nodes
+      //   auto left_node = std::move(r);
+      //   laddr_t left_addr = root_addr;
+      //   return InnerNode<BlockSize, 0>::create(txn).then(
+      //     [left_node=std::move(r), left_addr=root_addr,
+      //      split_oid=maybe_split.oid, split_child=maybe_split.addr,
+      //      &txn, this](auto&& new_root) {
+      //     return new_root.insert_at(0, left_node.first_oid(), left_addr, 0, txn).then(
+      //       [split_oid, split_child, &new_root, &txn, this](auto&& promoted_left) {
+      //       assert(!promoted_left);
+      //       return new_root.insert_at(1, split_oid, split_child, 0, txn).then(
+      //         [&new_root, this](auto&& promoted_right) {
+      //         assert(!promoted_right);
+      //         this->root = std::move(new_root);
+      //       });
+      //     });
+      //   });
+      // });
+    // }
+  }, root);
+}
 
+Btree::remove_ret Btree::remove(const ghobject_t& oid,
+                                Transaction& txn)
+{
+  return std::visit([&](auto&& r) {
+    // using T = std::decay_t<decltype(r)>;
+    return remove_ertr::make_ready_future<>();
+    // if constexpr (std::is_same_v<T, std::monostate>) {
+    //   return remove_ertr::make_ready_future<>();
+    // } else {
+    //   // root node does not have a parent, so my location is 0
+    //   InnerNode<BlockSize, 0>* dne = nullptr;
+    //   return r.remove(oid, dne, 0U, txn).safe_then([](update_t&& update) {
+    //     // root node does not have siblings, and it does not remove itself
+    //     assert(update.change == update.change_t::none);
+    //     return remove_ertr::make_ready_future<>();
+    //   });
+    // }
+  }, root);
+}
+
+Btree::find_ret
+Btree::find(const ghobject_t& oid, Transaction& txn) const
+{
   return std::visit([&](auto&& r) {
     using T = std::decay_t<decltype(r)>;
     if constexpr (std::is_same_v<T, std::monostate>) {
-      auto extent = tm.alloc_extent<OnodeBlock>(*txn,
-                                                L_ADDR_MIN, /* hint */
-                                                BLOCK_SIZE);
-      std::tie(root_addr, root) = LeafNode<BLOCK_SIZE, 0>::create(extent);
-      [[maybe_unused]] auto promoted =
-        std::get<1>(root).insert(oid, *onode, 0);
-      assert(!promoted);
+      return find_ertr::make_ready_future<OnodeRef>();
     } else {
-      auto maybe_split = r.insert(oid, *onode, 0);
-      if (maybe_split) {
-        assert(maybe_split.change == maybe_split.created);
-        // split at root node, let's create a new root indexing these nodes
-        auto left_node = std::move(r);
-        laddr_t left_addr = root_addr;
-        std::tie(root_addr, root) = InnerNode<BLOCK_SIZE, 0>::create();
-        [[maybe_unused]] auto promoted_left =
-          std::get<2>(root).insert_at(0, left_node.first_oid(), left_addr, 0);
-        assert(!promoted_left);
-        [[maybe_unused]] auto promoted_right =
-          std::get<2>(root).insert_at(1, maybe_split.oid, maybe_split.addr, 0);
-        assert(!promoted_right);
-      }
+      return r.find(oid, txn);
     }
   }, root);
 }
 
-void Btree::remove(const ghobject_t& oid)
+Btree::dump_ret Btree::dump(std::ostream& os, Transaction& txn) const
 {
-  std::visit([&](auto&& r) {
-    using T = std::decay_t<decltype(r)>;
-    if constexpr (std::is_same_v<T, std::monostate>) {
-      return;
-    } else {
-      // root node does not have a parent, so my location is 0
-      InnerNode<BLOCK_SIZE, 0>* dne = nullptr;
-      [[maybe_unused]] update_t update = r.remove(oid, dne, 0U);
-      // root node does not have siblings, and it does not remove itself
-      assert(update.change == update.change_t::none);
-    }
-  }, root);
-}
-
-OnodeRef Btree::find(const ghobject_t& oid) const
-{
-  auto onode = std::visit([&](auto&& r) -> const onode_t* {
-    using T = std::decay_t<decltype(r)>;
-    if constexpr (std::is_same_v<T, std::monostate>) {
-      return nullptr;
-    } else {
-      return r.find(oid);
-    }
-  }, root);
-  if (onode) {
-    return onode->decode();
-  } else {
-    return nullptr;
-  }
-}
-
-void Btree::dump(std::ostream& os) const
-{
-  std::visit([&](auto&& r) {
+  return std::visit([&](auto&& r) {
     using T = std::decay_t<decltype(r)>;
     if constexpr (std::is_same_v<T, std::monostate>) {
       os << "[]";
+      return dump_ertr::make_ready_future<>();
     } else {
-      r.dump(os, root_addr);
+      return r.dump(os, root_addr, txn);
     }
   }, root);
 }

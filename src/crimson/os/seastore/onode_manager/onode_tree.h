@@ -1,14 +1,19 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
+#include <boost/range/irange.hpp>
+
 #include "crimson/os/seastore/cache.h"
 #include "crimson/os/seastore/cached_extent.h"
 #include "crimson/os/seastore/onode_manager/onode_block.h"
 #include "crimson/os/seastore/onode_manager/onode_node.h"
+#include "crimson/os/seastore/transaction_manager.h"
 
 using crimson::os::seastore::OnodeBlock;
 using crimson::os::seastore::TCachedExtentRef;
-using crimson::os::seastore::TransactionRef;
+using crimson::os::seastore::TransactionManager;
+using crimson::os::seastore::Transaction;
+using crimson::os::seastore::L_ADDR_MIN;
 
 // insertion/removal/resize
 //
@@ -64,7 +69,6 @@ public:
   using my_node_t = node_t<BlockSize, N, NodeType>;
   using key1_t = typename my_node_t::key_t;
   using key2_t = typename my_node_t::partial_key_t;
-  using item_t = typename my_node_t::item_t;
   using const_item_t = typename my_node_t::const_item_t;
 
   uint16_t count() const {
@@ -125,35 +129,58 @@ public:
   //          where child is also of Node<0>
   // insert an element
   // @return the changed boundary that the parent should be aware of
-  update_t insert_at(unsigned slot,
-                     const ghobject_t& oid,
-                     const item_t& item,
-                     unsigned whoami)
-  {
+  seastar::future<update_t> _insert_at(unsigned slot,
+				       const ghobject_t& oid,
+				       const_item_t item,
+				       unsigned whoami,
+				       Transaction& txn) {
     if (me->is_overflow(oid, item)) {
-      return split_with(oid, whoami, slot,
-        [&](auto& node, unsigned n) { node.insert_at(n, oid, item); });
+      return split_with(oid, whoami, slot, txn,
+	[&](auto& node, unsigned n) { node.insert_at(n, oid, item); });
     } else {
       me->insert_at(slot, oid, item);
-      return {};
+      return seastar::make_ready_future<update_t>();
+    }
+  }
+
+  template<class Item>
+  seastar::future<update_t> insert_at(unsigned slot,
+				      const ghobject_t& oid,
+				      Item item,
+				      unsigned whoami,
+				      Transaction& txn)
+  {
+    if constexpr (std::is_same_v<Item, laddr_t>) {
+      return _insert_at(slot, oid, item, whoami, txn);
+    } else {
+      seastar::temporary_buffer<char> buf{item->size()};
+      item->encode(buf.get_write(), buf.size());
+      auto onode = reinterpret_cast<const onode_t*>(buf.get());
+      return _insert_at(slot, oid, *onode, whoami, txn);
     }
   }
 
   template<class DoWith>
-  update_t split_with(const ghobject_t& oid, unsigned whoami, unsigned slot, DoWith&& do_with)
+  seastar::future<update_t>
+  split_with(const ghobject_t& oid, unsigned whoami, unsigned slot,
+	     Transaction& txn, DoWith&& do_with)
   {
     // TODO: SplitByLikeness
     //       SplitBySize
-    uint16_t split_at = me->count / 2;
-    auto [addr, new_node] = create();
-    // move [split_at, count) to new_node
-    new_node.me->move_from(*me, split_at, 0, me->count - split_at);
-    if (slot <= split_at) {
-      std::invoke(std::forward<DoWith>(do_with), *me, slot);
-    } else {
-      std::invoke(std::forward<DoWith>(do_with), *new_node.me, slot - split_at);
-    }
-    return update_t::make_created(whoami + 1, new_node.me->update_oid_with_slot(0, oid), addr);
+    return create(txn).safe_then([do_with=std::forward<DoWith>(do_with),
+				  oid, whoami, slot, this](auto& new_node) {
+      // move [split_at, count) to new_node
+      uint16_t split_at = me->count / 2;
+      new_node.me->move_from(*me, split_at, 0, me->count - split_at);
+      if (slot <= split_at) {
+        std::invoke(std::move(do_with), *me, slot);
+      } else {
+        std::invoke(std::move(do_with), *new_node.me, slot - split_at);
+      }
+      return update_t::make_created(whoami + 1,
+				    new_node.me->update_oid_with_slot(0, oid),
+				    new_node.addr());
+    });
   }
 
   ghobject_t first_oid() const {
@@ -163,37 +190,40 @@ public:
   template<int UpN>
   update_t grab_or_merge_left(const InnerNode<BlockSize, UpN>& parent,
                               unsigned whoami,
-                              uint16_t min_grab, uint16_t max_grab)
+                              uint16_t min_grab, uint16_t max_grab,
+			      Transaction& txn)
   {
     if (whoami == 0) {
       return {};
     }
-    auto v = parent.load_child(whoami - 1);
-    return std::visit([&](auto& left) -> update_t {
-      auto [n, bytes] = left.get().calc_grab_back(min_grab, max_grab);
-      if (n == 0) {
-        return {};
-      } else if (n == left.count()) {
-        if (left.get().node_type != me->node_type) {
-          assert(0);
+    return parent.load_child(whoami - 1, txn).safe_then(
+      [&parent, whoami, min_grab, max_grab, this](auto& v) {
+      return std::visit([&](auto& left) -> update_t {
+        auto [n, bytes] = left.get().calc_grab_back(min_grab, max_grab);
+        if (n == 0) {
           return {};
+        } else if (n == left.count()) {
+          if (left.get().node_type != me->node_type) {
+            assert(0);
+            return {};
+          }
+          auto mover = make_mover(parent.get(), *me, left.get(), whoami);
+          left.get().acquire_right(*me, whoami - 1, mover);
+          return update_t::make_removed(whoami + 1);
+        } else {
+          auto mover = make_mover(parent.get(), left.get(), *me, whoami - 1);
+          me->grab_from_left(left.get(), n, bytes, mover);
+          return update_t::make_update(whoami, first_oid());
         }
-        auto mover = make_mover(parent.get(), *me, left.get(), whoami);
-        left.get().acquire_right(*me, whoami - 1, mover);
-        return update_t::make_removed(whoami + 1);
-      } else {
-        auto mover = make_mover(parent.get(), left.get(), *me, whoami - 1);
-        me->grab_from_left(left.get(), n, bytes, mover);
-        return update_t::make_update(whoami, first_oid());
-      }
-    }, v);
+      }, v);
+    });
   }
 
   template<int UpN>
   update_t grab_or_merge_right(const InnerNode<BlockSize, UpN>& parent,
                                unsigned whoami,
                                uint16_t min_grab, uint16_t max_grab,
-			       TransactionRef txn)
+			       Transaction& txn)
   {
     if (whoami + 1 == parent.count()) {
       return {};
@@ -278,52 +308,74 @@ public:
     }, v);
   }
 
+  using remove_ertr = TransactionManager::read_extent_ertr;
+  using remove_ret = remove_ertr::future<update_t>;
   template<int UpN>
-  update_t remove_from(unsigned slot,
-                       InnerNode<BlockSize, UpN>* parent,
-                       unsigned whoami)
+  remove_ret remove_from(unsigned slot,
+			 InnerNode<BlockSize, UpN>* parent,
+			 unsigned whoami,
+			 Transaction& txn)
   {
     me->remove_from(slot);
     if (!parent) {
       // we can live with an empty root node
-      return {};
+      return remove_ertr::make_ready_future<update_t>();
     }
     if (count() == 0) {
-      return update_t::make_removed(whoami);
+      return remove_ertr::make_ready_future<update_t>(update_t::make_removed(whoami));
     } else if (me->is_underflow(me->used_space())) {
       const auto [min_grab, max_grab] = me->bytes_to_grab(me->used_space());
       // rebalance
       if (auto result = grab_or_merge_left(*parent, whoami,
-                                           min_grab, max_grab); result) {
-        return result;
+					   min_grab, max_grab); result) {
+        return remove_ertr::make_ready_future<update_t>(result);
       } else if (auto result = grab_or_merge_right(*parent, whoami,
-                                                   min_grab, max_grab); result) {
-        return result;
+						   min_grab, max_grab); result) {
+        return remove_ertr::make_ready_future<update_t>(result);
       } else {
         // yes, we leave this node underfull, because if we steal elements
         // from its siblings could lead to less optimum distribution of
         // indexed entries
-        return {};
+	return remove_ertr::make_ready_future<update_t>();
       }
     } else {
-      return {};
+      return remove_ertr::make_ready_future<update_t>();
     }
   }
 
-  // use LBA manager
-  static std::pair<laddr_t, BaseNode> create() {
-    auto buffer = new unsigned char[BlockSize];
-    auto node = new (buffer) my_node_t;
-    return {reinterpret_cast<laddr_t>(buffer), BaseNode{node}};
+  using create_ertr = TransactionManager::alloc_extent_ertr;
+  using create_ret = create_ertr::future<BaseNode>;
+  create_ret create(Transaction& txn) {
+    return tm->alloc_extent<OnodeBlock>(txn, L_ADDR_MIN, BlockSize).safe_then(
+      [this](auto&& extent) {
+      return create_ertr::make_ready_future<BaseNode>(&tm, std::move(extent));
+    });
   }
 
-  void destroy(TransactionRef txn) {
-    txn->add_to_retired_set(extent);
+  using read_block_ertr = TransactionManager::read_extent_ertr;
+  using read_block_ret = read_block_ertr::future<OnodeBlock::Ref>;
+  read_block_ret load_block(unsigned slot, Transaction& txn) const {
+    laddr_t addr = this->item_at(slot);
+    return tm->read_extents<OnodeBlock>(txn, addr, BlockSize).safe_then(
+      [](auto&& extents) {
+      assert(extents.size() == 1);
+      [[maybe_unused]] auto [laddr, e] = extents.front();
+      return read_block_ertr::make_ready_future<OnodeBlock::Ref>(std::move(e));
+    });
   }
 
-  BaseNode(TCachedExtentRef<OnodeBlock>&& extent)
-    : extent{std::move(extent)},
-      me{reinterpret_cast<my_node_t*>(extent->get_bptr().c_str())}
+  laddr_t addr() const {
+    return extent->get_laddr();
+  }
+
+  void destroy(Transaction& txn) {
+    txn.add_to_retired_set(extent);
+  }
+
+  BaseNode(TransactionManager* tm, OnodeBlock::Ref&& extent)
+    : tm{tm},
+      extent{std::move(extent)},
+      me{reinterpret_cast<my_node_t*>(this->extent->get_bptr().c_str())}
   {}
 
   my_node_t& get() {
@@ -334,10 +386,35 @@ public:
     return *me;
   }
 
-protected:
+  BaseNode(BaseNode&& node) noexcept
+    : tm{node.tm},
+      extent{std::move(extent)},
+      me{me}
+  {
+    node.tm = nullptr;
+    node.extent.reset();
+    node.me = nullptr;
+  }
+  BaseNode& operator=(BaseNode&& node) noexcept {
+    assert(!tm);
+    assert(!extent);
+    assert(!me);
+
+    std::swap(tm, node.tm);
+    std::swap(extent, node.extent);
+    std::swap(me, node.me);
+  }
   friend class LeafNode<BlockSize, N>;
   friend class InnerNode<BlockSize, N>;
 
+  // otherwise we need to pass tm to all calls which might
+  // - load a node, as it reads an extent: inner node does this if the call
+  //     needs to descend down to a leaf node, and it always does.
+  // - create a node, as it allocates a new extent
+  //     if the mutation increases the size of a node and potentially causes
+  //     node split
+  // store a pointer so we can move
+  TransactionManager* tm = nullptr;
   TCachedExtentRef<OnodeBlock> extent;
   my_node_t* me;
 };
@@ -347,62 +424,80 @@ class LeafNode : private BaseNode<BlockSize, N, ntype_t::leaf> {
 public:
   using base_t = BaseNode<BlockSize, N, ntype_t::leaf>;
   using typename base_t::my_node_t;
-  using typename base_t::item_t;
   using base_t::count;
   using base_t::get;
   using base_t::insert_at;
   using base_t::remove_from;
   using base_t::first_oid;
 
-  const onode_t* find(const ghobject_t& oid) const {
+  using find_ertr = TransactionManager::read_extent_ertr;
+  using find_ret = find_ertr::future<OnodeRef>;
+  find_ret find(const ghobject_t& oid, Transaction&) const {
     auto [slot, found] = this->me->lower_bound(oid);
     if (found) {
-      return &this->item_at(slot);
+      return find_ertr::make_ready_future<OnodeRef>(this->item_at(slot).decode());
     } else {
-      return nullptr;
+      return find_ertr::make_ready_future<OnodeRef>();
     }
   }
 
-  update_t insert(const ghobject_t& oid,
-                  const onode_t& onode,
-                  unsigned whoami)
+  seastar::future<update_t> insert(const ghobject_t& oid,
+				   OnodeRef onode,
+				   unsigned whoami,
+				   Transaction& txn)
   {
     auto [slot, found] = this->me->lower_bound(oid);
     assert(!found);
-    return insert_at(slot, oid, onode, whoami);
+    return insert_at(slot, oid, onode, whoami, txn);
   }
 
+  using remove_ertr = TransactionManager::read_extent_ertr;
+  using remove_ret = remove_ertr::future<update_t>;
   template<int UpN>
-  update_t remove(const ghobject_t& oid,
-                  InnerNode<BlockSize, UpN>* parent,
-                  unsigned whoami)
+  remove_ret remove(const ghobject_t& oid,
+		    InnerNode<BlockSize, UpN>* parent,
+		    unsigned whoami,
+		    Transaction& txn)
   {
     auto [slot, found] = this->me->lower_bound(oid);
     if (found) {
-      return base_t::remove_from(slot, parent, whoami);
+      return base_t::remove_from(slot, parent, whoami, txn);
     } else {
-      return {};
+      return remove_ertr::make_ready_future<update_t>();
     }
   }
 
-  static std::pair<laddr_t, LeafNode> create() {
-    static_assert(N == 0);
-    auto [addr, node] = base_t::create();
-    return {addr, LeafNode{node.me}};
-  }
-
-  // for InnerNode::load_child()
-  LeafNode(unsigned char* p)
-    : base_t{reinterpret_cast<my_node_t*>(p)}
-  {}
-
-  void dump(std::ostream& os, laddr_t addr) const {
+  using dump_ertr = TransactionManager::read_extent_ertr;
+  using dump_ret = find_ertr::future<>;
+  dump_ret dump(std::ostream& os, laddr_t addr, Transaction&) const {
     os << "Node<" << N << ", leaf> "
        << "@ " << std::hex << addr << std::dec << " "
        << std::setprecision(4)
        << (float(this->me->used_space()) / this->me->capacity())
        << std::setprecision(6) << "\n";
     this->me->dump(os);
+    return dump_ertr::make_ready_future<>();
+  }
+
+  using create_ertr = TransactionManager::alloc_extent_ertr;
+  static create_ertr::future<LeafNode>
+  create(TransactionManager& tm, Transaction& txn) {
+    static_assert(N == 0);
+    return tm.alloc_extent<OnodeBlock>(txn, L_ADDR_MIN, BlockSize).safe_then([&tm](auto&& extent) {
+      return create_ertr::make_ready_future<LeafNode>(&tm, extent);
+    });
+  }
+  // for InnerNode::load_child()
+  LeafNode(TransactionManager* tm, OnodeBlock::Ref extent)
+    : base_t{tm, std::move(extent)}
+  {}
+
+  LeafNode(LeafNode&& node) noexcept
+    : base_t{std::move(node)}
+  {}
+  LeafNode& operator=(LeafNode&& node) {
+    base_t::operator=(std::move(node));
+    return *this;
   }
 private:
   // for LeafNode::create()
@@ -416,7 +511,6 @@ class InnerNode : private BaseNode<BlockSize, N, ntype_t::inner> {
 public:
   using base_t = BaseNode<BlockSize, N, ntype_t::inner>;
   using typename base_t::my_node_t;
-  using item_t = typename base_t::item_t;
   using base_t::count;
   using base_t::get;
   using base_t::insert_at;
@@ -433,59 +527,74 @@ public:
       return {slot ? --slot : 0, false};
     }
   }
-  const onode_t* find(const ghobject_t& oid) const {
+
+  using find_ertr = TransactionManager::read_extent_ertr;
+  using find_ret = find_ertr::future<OnodeRef>;
+  find_ret find(const ghobject_t& oid, Transaction& txn) const {
     [[maybe_unused]] auto [slot, found] = lower_bound(oid);
-    auto v = load_child(slot);
-    return std::visit([&](auto& child) {
-      return child.find(oid);
-    }, v);
+    return load_child(slot, txn).safe_then([oid, &txn](auto& v) {
+      return std::visit([&](auto& child) {
+        return child.find(oid, txn);
+      }, v);
+    });
   }
 
+  using insert_ertr = TransactionManager::read_extent_ertr;
+  using insert_ret = find_ertr::future<update_t>;
   // insert() in InnerNode is different than BaseNode::insert_at()
-  update_t insert(const ghobject_t& oid,
-                  const onode_t& onode,
-                  unsigned whoami)
+  seastar::future<update_t> insert(const ghobject_t& oid,
+				   OnodeRef onode,
+				   unsigned whoami,
+				   Transaction& txn)
   {
     auto [slot, found] = lower_bound(oid);
     assert(!found);
-    auto v = load_child(slot);
-    return std::visit([&](auto& child) -> update_t {
-      auto maybe_promote = child.insert(oid, onode, slot);
-      if (maybe_promote) {
-        return this->insert_at(maybe_promote.slot,
-                               maybe_promote.oid,
-                               maybe_promote.addr,
-                               whoami);
-      } else {
-        return {};
-      }
-    }, v);
+    return load_child(slot, txn).then([=](auto&& v) {
+      return std::visit([&](auto& child) -> update_t {
+        return child.insert(oid, onode, slot, txn).then([whoami, this](auto&& maybe_promote) {
+          if (maybe_promote) {
+            return this->insert_at(maybe_promote.slot,
+                                   maybe_promote.oid,
+                                   maybe_promote.addr,
+                                   whoami);
+          } else {
+            return insert_ertr::make_ready_future<>();
+          }
+       }, v);
+     });
+   });
   }
 
   // @param location the slot in which this inner node is in,
   //        0 if this is a root node.
+  using remove_ertr = TransactionManager::read_extent_ertr;
+  using remove_ret = remove_ertr::future<update_t>;
   template<int UpN>
-  update_t remove(const ghobject_t& oid,
-                  InnerNode<BlockSize, UpN>* parent,
-                  unsigned whoami) {
+  remove_ret remove(const ghobject_t& oid,
+		    InnerNode<BlockSize, UpN>* parent,
+		    unsigned whoami,
+		    Transaction& txn) {
     [[maybe_unused]] auto [slot, found] = lower_bound(oid);
-    auto v = load_child(slot);
-    return std::visit([&](auto& child) -> update_t {
-      // descend down to my child
-      update_t result = child.remove(oid, this, slot);
-      // update my own slots, and propagate any intersting changes back to my
-      // parent
-      switch (result.change) {
-      case result.change_t::updated:
-        return update_key_at(result.slot, parent, whoami, result.oid);
-      case result.change_t::removed:
-        return base_t::remove_from(result.slot, parent, whoami);
-      case result.change_t::none:
-        return {};
-      default:
-        assert(0);
-      }
-    }, v);
+    return load_child(slot, txn).safe_then([slot, oid, whoami, parent, &txn, this](auto&& v) {
+      return std::visit([&](auto& child) {
+        // descend down to my child
+	return child.remove(oid, this, slot, txn).safe_then(
+          [parent, whoami, &txn, this](update_t& result) {
+          // update my own slots, and propagate any intersting changes back to my
+          // parent
+          switch (result.change) {
+          case result.change_t::updated:
+            return update_key_at(result.slot, parent, whoami, result.oid);
+          case result.change_t::removed:
+            return base_t::remove_from(result.slot, parent, whoami, txn);
+          case result.change_t::none:
+            return remove_ertr::make_ready_future<update_t>();
+          default:
+            assert(0);
+          }
+        });
+      }, v);
+    });
   }
 
   // TODO: updating the key of a child addr could enlarge the node, or the
@@ -540,68 +649,77 @@ public:
     }
   }
 
-  // helper to create a node
-  template<int ThisN, int MaxN>
-  static child_node_t load_node_at(int n, bool is_leaf, TCachedExtentRef<OnodeBlock> extent)
-  {
-    static_assert(ThisN < MaxN);
-    if (n == ThisN) {
-      if (is_leaf) {
-        return LeafNode<BlockSize, ThisN>(extent);
-      } else {
-        return InnerNode<BlockSize, ThisN>(extent);
-      }
-    } else if constexpr (ThisN + 1 < MaxN) {
-      return load_node_at<ThisN + 1, MaxN>(n, is_leaf, extent);
-    } else {
-      // bad tag
-      throw std::logic_error(fmt::format("bad node level={}, leaf={}", n, is_leaf));
-    }
-  }
-
-  seastar::future<child_node_t> load_child(unsigned slot, TransactionRef txn) const {
-    static_assert(N < 4);
-    laddr_t addr = this->item_at(slot);
-    // the L of child nodes can only be L, L.., 3
-    return txn.read_extents<OnodeBlock>(*txn,
-                                        addr,
-                                        BlockSize).then([](auto& extents) {
-      assert(extents.size() == 1);
-      auto child_ext = extents.front();
-      auto p = reinterpret_cast<unsigned char*>(child_ext.get_bptr().c_str());
-      tag_t tag(*p);
-      return seastar::make_ready_future<child_node_t>(
-        load_node_at<N, 4>(tag.layout(), tag.is_leaf(), p));
-    });
-  }
-  // TODO: use LBA manager
-  static unsigned char* load_block(uint64_t addr) {
-    static_assert(sizeof(void*) == sizeof(uint64_t));
-    return reinterpret_cast<unsigned char*>(addr);
-  }
-  static std::pair<laddr_t, InnerNode> create() {
-    static_assert(N == 0);
-    auto [addr, node] = base_t::create();
-    return {addr, InnerNode{node.me}};
-  }
-  // for InnerNode::create()
-  InnerNode(unsigned char* p)
-    : base_t{reinterpret_cast<my_node_t*>(p)}
-  {}
-
-  void dump(std::ostream& os, laddr_t addr) const {
+  using dump_ertr = TransactionManager::read_extent_ertr;
+  using dump_ret = find_ertr::future<>;
+  dump_ret dump(std::ostream& os, laddr_t addr, Transaction& txn) const {
     os << "Node<" << N << ", inner> "
        << "@ " << std::hex << addr << std::dec << " "
        << std::setprecision(4)
        << (float(this->me->used_space()) / this->me->capacity())
        << std::setprecision(6) << "\n";
     this->me->dump(os);
-    for (uint16_t slot = 0; slot < this->me->count; slot++) {
-      auto v = load_child(slot);
-      std::visit([&](auto& child) {
-        child.dump(os, this->item_at(slot));
-      }, v);
+    auto slots = boost::irange((uint16_t)0, this->me->count);
+    return crimson::do_for_each(slots, [&](auto slot) {			 
+      return load_child(slot, txn).safe_then([&os, &txn, slot, this](auto&& v) {
+        return std::visit([&](auto& child) {
+          return child.dump(os, this->item_at(slot), txn);
+        }, v);
+      });
+    });
+  }
+
+  // helper to create a node
+  template<int ThisN, int MaxN>
+  static child_node_t load_node_at(int n, bool is_leaf,
+				   TransactionManager* tm,
+				   OnodeBlock::Ref extent)
+  {
+    static_assert(ThisN < MaxN);
+    if (n == ThisN) {
+      if (is_leaf) {
+        return LeafNode<BlockSize, ThisN>(tm, std::move(extent));
+      } else {
+        return InnerNode<BlockSize, ThisN>(tm, std::move(extent));
+      }
+    } else if constexpr (ThisN + 1 < MaxN) {
+      return load_node_at<ThisN + 1, MaxN>(n, is_leaf, tm, std::move(extent));
+    } else {
+      // bad tag
+      throw std::logic_error(fmt::format("bad node level={}, leaf={}", n, is_leaf));
     }
+  }
+
+  using load_node_ertr = TransactionManager::read_extent_ertr;
+  using load_node_ret = load_node_ertr::future<child_node_t>;
+  load_node_ret load_child(unsigned slot, Transaction& txn) const {
+    static_assert(N < 4);
+    return this->load_block(slot, txn).safe_then([this](OnodeBlock::Ref block) {
+    // the L of child nodes can only be L, L.., 3
+      auto p = reinterpret_cast<uint8_t*>(block->get_bptr().c_str());
+      tag_t tag{*p};
+      return load_node_ertr::make_ready_future<child_node_t>(
+	load_node_at<N, 4>(tag.layout(), tag.is_leaf(), this->tm, std::move(block)));
+    });
+  }
+
+  using create_ertr = TransactionManager::alloc_extent_ertr;
+  using create_ret = create_ertr::future<InnerNode>;
+  static create_ret create(TransactionManager& tm, Transaction& txn) {
+    static_assert(N == 0);
+    return tm.alloc_extent<OnodeBlock>(txn, L_ADDR_MIN, BlockSize).safe_then([&tm](auto&& extent) {
+      return create_ertr::make_ready_future<InnerNode>(&tm, std::move(extent));
+    });
+  }
+  // for InnerNode::create()
+  InnerNode(TransactionManager* tm, OnodeBlock::Ref&& extent)
+    : base_t{tm, std::move(extent)}
+  {}
+  InnerNode(InnerNode&& node) noexcept
+    : base_t{std::move(node)}
+  {}
+  InnerNode& operator=(InnerNode&& node) {
+    base_t::operator=(std::move(node));
+    return *this;
   }
 
 private:
@@ -629,10 +747,23 @@ public:
 class Btree
 {
 public:
-  void insert(const ghobject_t& oid, OnodeRef onode);
-  void remove(const ghobject_t& oid);
-  OnodeRef find(const ghobject_t& oid) const;
-  void dump(std::ostream& os) const;
+  Btree(TransactionManager& tm)
+    : tm{tm}
+  {}
+  using insert_ertr = TransactionManager::alloc_extent_ertr;
+  insert_ertr::future<> insert(const ghobject_t& oid, OnodeRef onode, Transaction& txn);
+
+  using remove_ertr = TransactionManager::read_extent_ertr;
+  using remove_ret = remove_ertr::future<>;
+  remove_ret remove(const ghobject_t& oid, Transaction& txn);
+
+  using find_ertr = TransactionManager::read_extent_ertr;
+  using find_ret = find_ertr::future<OnodeRef>;
+  find_ret find(const ghobject_t& oid, Transaction& txn) const;
+
+  using dump_ertr = TransactionManager::read_extent_ertr;
+  using dump_ret = find_ertr::future<>;
+  dump_ret dump(std::ostream& os, Transaction& txn) const;
 
 private:
   template<class Node>
