@@ -1,3 +1,4 @@
+interactive-on-error: true
 overrides:
   ceph:
     conf:
