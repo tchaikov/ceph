@@ -68,7 +68,7 @@ echo "Compile rocksdb"
 if [ -e rocksdb ]; then
 	rm -fr rocksdb
 fi
-git clone https://github.com/facebook/rocksdb.git --depth 1
+git clone https://github.com/tchaikov/rocksdb.git --depth 1
 
 # compile code
 cd rocksdb
