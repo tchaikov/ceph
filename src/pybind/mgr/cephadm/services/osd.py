@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class OSDService(CephadmService):
-    def create(self, drive_group: DriveGroupSpec) -> str:
+    def create_from_spec(self, drive_group: DriveGroupSpec) -> str:
         logger.debug(f"Processing DriveGroup {drive_group}")
         ret = []
         drive_group.osd_id_claims = self.find_destroyed_osds()

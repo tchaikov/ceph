@@ -3,7 +3,7 @@ import os
 from typing import List, Any, Tuple, Dict
 
 from orchestrator import DaemonDescription
-from cephadm.services.cephadmservice import CephadmService
+from cephadm.services.cephadmservice import CephadmService, CephadmDaemonSpec
 from mgr_util import verify_tls, ServerConfigException, create_self_signed_cert
 
 logger = logging.getLogger(__name__)
@@ -11,8 +11,9 @@ logger = logging.getLogger(__name__)
 class GrafanaService(CephadmService):
     DEFAULT_SERVICE_PORT = 3000
 
-    def create(self, daemon_id, host):
-        # type: (str, str) -> str
+    def create(self, daemon_spec: CephadmDaemonSpec):
+        daemon_id, host = daemon_spec.daemon_id, daemon_spec.host
+
         return self.mgr._create_daemon('grafana', daemon_id, host)
 
     def generate_config(self):
@@ -75,7 +76,9 @@ class GrafanaService(CephadmService):
 class AlertmanagerService(CephadmService):
     DEFAULT_SERVICE_PORT = 9093
 
-    def create(self, daemon_id, host) -> str:
+    def create(self, daemon_spec: CephadmDaemonSpec):
+        daemon_id, host = daemon_spec.daemon_id, daemon_spec.host
+
         return self.mgr._create_daemon('alertmanager', daemon_id, host)
 
     def generate_config(self):
@@ -142,7 +145,9 @@ class AlertmanagerService(CephadmService):
 class PrometheusService(CephadmService):
     DEFAULT_SERVICE_PORT = 9095
 
-    def create(self, daemon_id, host) -> str:
+    def create(self, daemon_spec: CephadmDaemonSpec):
+        daemon_id, host = daemon_spec.daemon_id, daemon_spec.host
+
         return self.mgr._create_daemon('prometheus', daemon_id, host)
 
     def generate_config(self):
@@ -228,7 +233,9 @@ class PrometheusService(CephadmService):
         )
 
 class NodeExporterService(CephadmService):
-    def create(self, daemon_id, host) -> str:
+    def create(self, daemon_spec: CephadmDaemonSpec):
+        daemon_id, host = daemon_spec.daemon_id, daemon_spec.host
+
         return self.mgr._create_daemon('node-exporter', daemon_id, host)
 
     def generate_config(self) -> Tuple[Dict[str, Any], List[str]]:
