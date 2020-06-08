@@ -12,12 +12,9 @@ class GrafanaService(CephadmService):
     DEFAULT_SERVICE_PORT = 3000
 
     def create(self, daemon_spec: CephadmDaemonSpec):
-        daemon_id, host = daemon_spec.daemon_id, daemon_spec.host
+        return self.mgr._create_daemon(daemon_spec)
 
-        return self.mgr._create_daemon('grafana', daemon_id, host)
-
-    def generate_config(self):
-        # type: () -> Tuple[Dict[str, Any], List[str]]
+    def generate_config(self, daemon_spec: CephadmDaemonSpec) -> Tuple[Dict[str, Any], List[str]]:
         deps = []  # type: List[str]
 
         prom_services = []  # type: List[str]
@@ -77,12 +74,9 @@ class AlertmanagerService(CephadmService):
     DEFAULT_SERVICE_PORT = 9093
 
     def create(self, daemon_spec: CephadmDaemonSpec):
-        daemon_id, host = daemon_spec.daemon_id, daemon_spec.host
+        return self.mgr._create_daemon(daemon_spec)
 
-        return self.mgr._create_daemon('alertmanager', daemon_id, host)
-
-    def generate_config(self):
-        # type: () -> Tuple[Dict[str, Any], List[str]]
+    def generate_config(self, daemon_spec: CephadmDaemonSpec) -> Tuple[Dict[str, Any], List[str]]:
         deps = [] # type: List[str]
 
         # dashboard(s)
@@ -146,12 +140,9 @@ class PrometheusService(CephadmService):
     DEFAULT_SERVICE_PORT = 9095
 
     def create(self, daemon_spec: CephadmDaemonSpec):
-        daemon_id, host = daemon_spec.daemon_id, daemon_spec.host
+        return self.mgr._create_daemon(daemon_spec)
 
-        return self.mgr._create_daemon('prometheus', daemon_id, host)
-
-    def generate_config(self):
-        # type: () -> Tuple[Dict[str, Any], List[str]]
+    def generate_config(self, daemon_spec: CephadmDaemonSpec) -> Tuple[Dict[str, Any], List[str]]:
         deps = []  # type: List[str]
 
         # scrape mgrs
@@ -234,9 +225,7 @@ class PrometheusService(CephadmService):
 
 class NodeExporterService(CephadmService):
     def create(self, daemon_spec: CephadmDaemonSpec):
-        daemon_id, host = daemon_spec.daemon_id, daemon_spec.host
+        return self.mgr._create_daemon(daemon_spec)
 
-        return self.mgr._create_daemon('node-exporter', daemon_id, host)
-
-    def generate_config(self) -> Tuple[Dict[str, Any], List[str]]:
+    def generate_config(self, daemon_spec: CephadmDaemonSpec) -> Tuple[Dict[str, Any], List[str]]:
         return {}, []
