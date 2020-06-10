@@ -4658,7 +4658,7 @@ std::vector<Option> get_global_options() {
     Option("bluestore_avl_alloc_bf_threshold", Option::TYPE_UINT, Option::LEVEL_DEV)
     .set_default(131072)
     .set_description("Sets threshold at which shrinking max free chunk size triggers enabling best-fit mode.")
-    .set_long_description("AVL allocator works in two modes: near-fit and best-fit. By default it tries to fit new block near last allocated block of similar size. This method is very fast. If memory gets fragmented AVL switches to best-fit mode, in which it tries to find exact match for requested allocation. This method is considerably slower. When largest free block is smaller then 'bluestore_avl_alloc_bf_threshold' mode is best-fit.")
+    .set_long_description("AVL allocator works in two modes: near-fit and best-fit. By default, it uses near-fit mode, in which it tries to fit a new block near last allocated block of similar size. This method is very fast. If memory gets fragmented AVL allocator switches to best-fit mode, in which it tries to find exact match for requested allocation. This method is considerably slower. When largest free block is smaller than 'bluestore_avl_alloc_bf_threshold', best-fit mode is used.")
     .add_see_also("bluestore_avl_alloc_bf_free_pct"),
 
     Option("bluestore_avl_alloc_bf_free_pct", Option::TYPE_UINT, Option::LEVEL_DEV)
