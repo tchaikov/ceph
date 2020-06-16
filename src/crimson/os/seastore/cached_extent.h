@@ -313,6 +313,11 @@ protected:
     return new T(std::move(ptr));
   }
 
+  /// Sets last_committed_crc
+  void set_last_committed_crc(uint32_t crc) {
+    last_committed_crc = crc;
+  }
+
   void set_paddr(paddr_t offset) { poffset = offset; }
 
   /**

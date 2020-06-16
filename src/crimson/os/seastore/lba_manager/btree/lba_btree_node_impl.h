@@ -180,7 +180,7 @@ struct LBAInternalNode
     delta_buffer_t buffer;
     buffer.copy_in(bl.front().c_str(), bl.front().length());
     buffer.replay(*this);
-    last_committed_crc = get_crc32c();
+    set_last_committed_crc(get_crc32c());
     resolve_relative_addrs(delta_base);
   }
 
@@ -393,7 +393,7 @@ struct LBALeafNode
     delta_buffer_t buffer;
     buffer.copy_in(bl.front().c_str(), bl.front().length());
     buffer.replay(*this);
-    last_committed_crc = get_crc32c();
+    set_last_committed_crc(get_crc32c());
     resolve_relative_addrs(delta_base);
   }
 
