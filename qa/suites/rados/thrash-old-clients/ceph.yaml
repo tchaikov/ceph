@@ -1,2 +1,3 @@
+verify_ceph_hash: false
 tasks:
 - cephadm:
