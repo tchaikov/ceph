@@ -111,7 +111,6 @@ class CBT(Task):
             self.first_mon.run(args=install_cmd + cosbench_depends)
             testdir = misc.get_testdir(self.ctx)
             cosbench_version = '0.4.2.c3'
-            cosbench_location = 'https://github.com/intel-cloud/cosbench/releases/download/v0.4.2.c3/0.4.2.c3.zip'
             os_version = misc.get_system_type(self.first_mon, False, True)
 
             # additional requirements for bionic
@@ -119,26 +118,24 @@ class CBT(Task):
                 self.first_mon.run(
                     args=['sudo', 'apt-get', '-y', 'purge', 'openjdk-11*'])
                 # use our own version of cosbench
-                cosbench_version = 'cosbench-0.4.2.c3.1'
                 # contains additional parameter "-N" to nc
-                cosbench_location = 'http://drop.ceph.com/qa/cosbench-0.4.2.c3.1.zip'
-                cosbench_dir = os.path.join(testdir, cosbench_version)
-                self.ctx.cluster.run(args=['mkdir', '-p', '-m0755', '--', cosbench_dir])
+                fname = 'cosbench-0.4.2.c3.1.zip'
+                cosbench_location = f'http://drop.ceph.com/qa/{fname}'
                 self.first_mon.run(
                     args=[
                         'cd', testdir, run.Raw('&&'),
-                        'wget',
-                        cosbench_location, run.Raw('&&'),
-                        'unzip', '{name}.zip'.format(name=cosbench_version), '-d', cosbench_version
+                        'wget', cosbench_location, run.Raw('&&'),
+                        'unzip', '-q', fname
                     ]
                 )
             else:
+                fname = '0.4.2.c3.zip'
+                cosbench_location = f'https://github.com/intel-cloud/cosbench/releases/download/v0.4.2.c3/{fname}'
                 self.first_mon.run(
                     args=[
                         'cd', testdir, run.Raw('&&'),
-                        'wget',
-                        cosbench_location, run.Raw('&&'),
-                        'unzip', '{name}.zip'.format(name=cosbench_version)
+                        'wget', cosbench_location, run.Raw('&&'),
+                        'unzip', '-q', fname
                     ]
                 )
             self.first_mon.run(
