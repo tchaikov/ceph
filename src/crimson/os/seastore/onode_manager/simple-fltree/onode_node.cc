@@ -103,15 +103,14 @@ constexpr uint16_t node_t<BlockSize, N, NodeType>::min_size()
 }
 
 template<size_t BlockSize, int N, ntype_t NodeType>
-constexpr std::pair<int16_t, int16_t>
+std::pair<int16_t, int16_t>
 node_t<BlockSize, N, NodeType>::bytes_to_add(uint16_t size)
 {
-  assert(size < min_size());
   return {min_size() - size, capacity() - size};
 }
 
 template<size_t BlockSize, int N, ntype_t NodeType>
-constexpr std::pair<int16_t, int16_t>
+std::pair<int16_t, int16_t>
 node_t<BlockSize, N, NodeType>::bytes_to_remove(uint16_t size)
 {
   assert(size > capacity());

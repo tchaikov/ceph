@@ -602,13 +602,13 @@ struct node_t {
   // with specified size
   // @param size the overflowed size
   // @return <minimum bytes to grab, maximum bytes to grab>
-  static constexpr std::pair<int16_t, int16_t> bytes_to_remove(uint16_t size);
+  static std::pair<int16_t, int16_t> bytes_to_remove(uint16_t size);
 
   // calculate the allowable bounds on bytes to add to an underflow node
   // with specified size
   // @param size the underflowed size
   // @return <minimum bytes to push, maximum bytes to push>
-  static constexpr std::pair<int16_t, int16_t> bytes_to_add(uint16_t size);
+  static std::pair<int16_t, int16_t> bytes_to_add(uint16_t size);
 
   size_state_t size_state(uint16_t size) const;
   bool is_underflow(uint16_t size) const;
