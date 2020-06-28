@@ -272,7 +272,8 @@ public:
     }
     return parent.template load_sibling<NodeType>(whoami - 1, txn).safe_then(
       [&parent, whoami, slot, new_size, do_with=std::move(do_with), this](auto&& v) {
-      return read_ertr::make_ready_future<update_t>(std::visit([&](auto& left) -> update_t {
+      return read_ertr::make_ready_future<update_t>(std::visit([&](auto& left)
+							       -> update_t {
         // TODO: downgrade / upgrade elements when moving them across nodes of
         // different layouts
         if constexpr (this->Layout != left.Layout) {
@@ -283,20 +284,17 @@ public:
         if (n == 0) {
           return {};
         }
-	return {};
-        // assert(n <= me->count);
-        // auto mover = make_mover(parent.get(), *me, left, whoami);
-        // me->push_to_left(left.get(), n, bytes, mover);
-        // left.mutate(mover.to_delta());
-        // mutate(mover.from_delta());
-        // if (slot < n) {
-        //   std::invoke(std::forward<DoWith>(do_with),
-        //               left.get(), left.count() - (n - slot));
-        // } else {
-        //   std::invoke(std::forward<DoWith>(do_with),
-        //               *me, slot - n);
-        // }
-    	// return {update_t::change_t::updated, whoami, first_oid()};
+        assert(n <= me->count);
+        auto mover = make_mover(parent.get(), *me, left, whoami);
+        me->push_to_left(left.get(), n, bytes, mover);
+        left.mutate(mover.to_delta());
+        mutate(mover.from_delta());
+        if (slot < n) {
+          do_with(left, left.count() - (n - slot));
+        } else {
+	  do_with(*this, slot - n);
+        }
+    	return {update_t::change_t::updated, whoami, first_oid()};
       }, v));
     });
   }

@@ -703,19 +703,7 @@ template<class parent_t,
          class from_t,
          class to_t,
          typename=void>
-class EntryMover {
-public:
-  // a "trap" mover
-  EntryMover(const parent_t&, from_t&, to_t& dst, unsigned) {
-    assert(0);
-  }
-  void move_from(unsigned, unsigned, unsigned) {
-    assert(0);
-  }
-  delta_t get_delta() {
-    return delta_t::nop();
-  }
-};
+class EntryMover;
 
 // lower the layout, for instance, from L0 to L1, no reference oid is used
 template<class parent_t,
