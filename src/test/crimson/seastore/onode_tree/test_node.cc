@@ -205,3 +205,14 @@ TEST(OnodeNode, remove_basic)
     ASSERT_FALSE(found);
   }
 }
+
+TEST(OnodeNode, move_inner)
+{
+  static constexpr size_t BLOCK_SIZE = 512;
+  char buf[BLOCK_SIZE];
+  using inner_node_t = node_t<BLOCK_SIZE, 0, ntype_t::inner>;
+  inner_node_t node_0, node_1;
+  
+  ghobject_t oid{hobject_t{object_t{"saturn"}, "", 0, 0, 0, "solar"}};
+  
+}

@@ -712,7 +712,7 @@ template<class parent_t,
 class EntryMover<parent_t,
                  from_t,
                  to_t,
-                 std::enable_if_t<from_t::node_n < to_t::node_n>>
+                 std::enable_if_t<(from_t::node_n < to_t::node_n)>>
 {
 public:
   EntryMover(const parent_t&, from_t& src, to_t& dst, unsigned)
