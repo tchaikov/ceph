@@ -212,7 +212,13 @@ TEST(OnodeNode, move_inner)
   char buf[BLOCK_SIZE];
   using inner_node_t = node_t<BLOCK_SIZE, 0, ntype_t::inner>;
   inner_node_t node_0, node_1;
-  
-  ghobject_t oid{hobject_t{object_t{"saturn"}, "", 0, 0, 0, "solar"}};
+
+  for (int slot = 0; slot < 5; slot++) {
+    const std::string nspace{"solar"};
+    laddr_t addr = 0x3400 + i;
+    ghobject_t oid{hobject_t{object_t{fmt::format("object-{}", slot)},
+			     "", 0, 0, 0, nspace}};
+    node_0.insert_at(slot, oid, addr);
+  }
   
 }
