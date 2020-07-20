@@ -12,6 +12,10 @@ add_library(crimson-seastore STATIC
   lba_manager/btree/lba_btree_node_impl.cc
   lba_manager/btree/btree_range_pin.cc
   onode.cc
+  extentmap_manager.cc
+  extentmap_manager/btree/extentmap_btree_node_impl.cc
+  extentmap_manager/btree/btree_extentmap_manager.cc
+  # onode_manager/simple-fltree/onode_tree.cc
   onode_manager/simple-fltree/onode_block.cc
   onode_manager/simple-fltree/onode_delta.cc
   onode_manager/simple-fltree/onode_manager.cc
