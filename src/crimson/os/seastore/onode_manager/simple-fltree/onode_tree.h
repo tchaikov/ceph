@@ -409,14 +409,12 @@ public:
     auto ext = tm->get_mutable_extent(txn, extent);
     return {tm, std::move(ext->cast<OnodeBlock>())};
   }
-  my_node_t& get() {
+  my_node_t* get() {
+    return me;
+  }
+  const my_node_t* get() const {
     return *me;
   }
-
-  const my_node_t& get() const {
-    return *me;
-  }
-
   BaseNode(BaseNode&& node) noexcept
     : tm{node.tm},
       extent{std::move(node.extent)},

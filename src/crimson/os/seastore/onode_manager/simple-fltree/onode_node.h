@@ -715,7 +715,7 @@ class EntryMover<parent_t,
                  std::enable_if_t<(from_t::node_n < to_t::node_n)>>
 {
 public:
-  EntryMover(const parent_t&, from_t& src, to_t& dst, unsigned)
+  EntryMover(const parent_t*, from_t& src, to_t& dst, unsigned)
     : src{src}, dst{dst}
   {}
   void move_from(unsigned src_first, unsigned dst_first, unsigned n)
@@ -781,9 +781,13 @@ class EntryMover<parent_t, from_t, to_t,
                  std::enable_if_t<(from_t::node_n > to_t::node_n)>>
 {
 public:
-  EntryMover(const parent_t& parent, from_t& src, to_t& dst, unsigned from_slot)
+  EntryMover(const parent_t* parent, from_t& src, to_t& dst, unsigned from_slot)
     : src{src}, dst{dst}, ref_oid{parent.get_oid_at(from_slot, {})}
-  {}
+  {
+    // if we are moving elements from a node without parent, that node have to
+    // be a N_0 node
+    assert(parent);
+  }
   void move_from(unsigned src_first, unsigned dst_first, unsigned n)
   {
     ceph::bufferptr keys_buf{n * sizeof(to_t::key_prefix_t)};
@@ -861,7 +865,7 @@ template<class parent_t,
 class EntryMover<parent_t, child_t, child_t>
 {
 public:
-  EntryMover(const parent_t&, child_t& src, child_t& dst, unsigned)
+  EntryMover(const parent_t*, child_t& src, child_t& dst, unsigned)
     : src{src}, dst{dst}
   {}
 
@@ -925,6 +929,6 @@ private:
 
 template<class parent_t, class from_t, class to_t>
 EntryMover<parent_t, from_t, to_t>
-make_mover(const parent_t& parent, from_t& src, to_t& dst, unsigned from_slot) {
+make_mover(const parent_t* parent, from_t& src, to_t& dst, unsigned from_slot) {
   return EntryMover<parent_t, from_t, to_t>(parent, src, dst, from_slot);
 }
