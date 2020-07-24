@@ -220,5 +220,5 @@ TEST(OnodeNode, move_inner)
 			     "", 0, 0, 0, nspace}};
     node_0.insert_at(slot, oid, addr);
   }
-  
+  auto mover = make_mover()
 }
