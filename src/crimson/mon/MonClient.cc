@@ -965,9 +965,14 @@ seastar::future<> Client::reopen_session(int rank)
         return mon_addrs.msgr2_addr();
       }
     }();
+      logger().warn(
+        "mon.{} ({}) does have some addr compatible with me ({})",
+	rank, monmap.get_addrs(rank), msgr.get_myaddr());
     if (peer == entity_addr_t{}) {
       // crimson msgr only uses the first bound addr
-      logger().warn("mon.{} does not have an addr compatible with me", rank);
+      logger().warn(
+        "mon.{} ({}) does not have any addr compatible with me ({})",
+	rank, monmap.get_addrs(rank), msgr.get_myaddr());
       return seastar::now();
     }
     logger().info("connecting to mon.{}", rank);

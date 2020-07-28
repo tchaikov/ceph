@@ -111,10 +111,15 @@ seastar::future<> Client::reconnect()
         return mgr_addrs.msgr2_addr();
       }
     }();
+      logger().warn(
+        "mgr.{} ({}) does have some addr compatible with me ({})",
+	mgrmap.get_active_name(), mgrmap.get_active_addrs(), msgr.get_myaddr());
     if (peer == entity_addr_t{}) {
       // crimson msgr only uses the first bound addr
-      logger().error("mgr.{} does not have an addr compatible with me",
-                     mgrmap.get_active_name());
+      logger().error("mgr.{} ({}) does not have any addr compatible with me ({})",
+                     mgrmap.get_active_name(),
+		     mgrmap.get_active_addrs(),
+		     msgr.get_myaddr());
       return;
     }
     conn = msgr.connect(peer, CEPH_ENTITY_TYPE_MGR);
