@@ -4,11 +4,13 @@ tasks:
 - rgw: [client.0]
 - ragweed:
     client.0:
-      default-branch: ceph-master
+      ragweed_repo: https://github.com/tchaikov/ragweed.git
+      force-branch: ceph-mario
       rgw_server: client.0
       stages: prepare
 - ragweed:
     client.0:
+      branch: ceph-dne
       default-branch: ceph-master
       rgw_server: client.0
       stages: check
