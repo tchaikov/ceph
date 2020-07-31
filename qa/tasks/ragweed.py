@@ -63,7 +63,7 @@ def download(ctx, config):
             log.info("Using branch '%s' for ragweed", branch)
             try:
                 ctx.cluster.only(client).sh(
-                    args=f'git clone -b {branch} {ragweed_repo} {testdir}/ragweed')
+                    script=f'git clone -b {branch} {ragweed_repo} {testdir}/ragweed')
                 break
             except Exception as e:
                 exc = e
