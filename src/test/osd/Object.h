@@ -8,6 +8,8 @@
 #include <stack>
 #include <random>
 
+#include <boost/range/adaptor/reversed.hpp>
+
 #ifndef OBJECT_H
 #define OBJECT_H
 
@@ -314,13 +316,9 @@ public:
 
 class ObjectDesc {
 public:
-  ObjectDesc()
-    : exists(false), dirty(false),
-      version(0) {}
-  ObjectDesc(const ContDesc &init, ContentsGenerator *cont_gen)
-    : exists(false), dirty(false),
-      version(0) {
-    layers.push_front(std::pair<std::shared_ptr<ContentsGenerator>, ContDesc>(std::shared_ptr<ContentsGenerator>(cont_gen), init));
+  ObjectDesc() = default;
+  ObjectDesc(const ContDesc &init, ContentsGenerator *cont_gen) {
+    layers.emplace_back(cont_gen, init);
   }
 
   class iterator {
@@ -342,7 +340,10 @@ public:
 	const ContDesc &_cont,
 	std::shared_ptr<ContentsGenerator> _gen,
 	ContentsGenerator::iterator _iter)
-	: size(_gen->get_length(_cont)), cont(_cont), gen(_gen), iter(_iter) {
+	: size(_gen->get_length(_cont)),
+	  cont(_cont),
+	  gen(_gen),
+	  iter(_iter) {
 	gen->get_ranges(cont, ranges);
       }
 
@@ -383,10 +384,10 @@ public:
 
     explicit iterator(ObjectDesc &obj) :
       pos(0),
-      size(obj.layers.begin()->first->get_length(obj.layers.begin()->second)),
+      size(obj.most_recent_gen()->get_length(obj.most_recent())),
       cur_valid_till(0) {
-      for (auto &&i : obj.layers) {
-	layers.push_back({i.second, i.first, i.first->get_iterator(i.second)});
+      for (auto &[gen, desc] : boost::adaptors::reverse(obj.layers)) {
+	layers.emplace_back(desc, gen, gen->get_iterator(desc));
       }
       current = layers.begin();
 
@@ -522,18 +523,20 @@ public:
 		    bufferlist &to_check);
   const ContDesc &most_recent();
   ContentsGenerator *most_recent_gen() {
-    return layers.begin()->first.get();
+    return layers.back().first.get();
   }
   std::map<std::string, ContDesc> attrs; // Both omap and xattrs
   bufferlist header;
-  bool exists;
-  bool dirty;
+  bool exists = false;
+  bool dirty = false;
 
-  uint64_t version;
+  uint64_t version = 0;
   std::string redirect_target;
   std::map<uint64_t, ChunkDesc> chunk_info;
+
 private:
-  std::list<std::pair<std::shared_ptr<ContentsGenerator>, ContDesc> > layers;
+  // contents ordered in chronological order
+  std::vector<std::pair<std::shared_ptr<ContentsGenerator>, ContDesc> > layers;
 };
 
 #endif
