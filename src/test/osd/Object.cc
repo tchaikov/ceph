@@ -117,12 +117,11 @@ void ObjectDesc::iterator::adjust_stack() {
 }
 
 const ContDesc &ObjectDesc::most_recent() {
-  return layers.begin()->second;
+  return layers.back().second;
 }
 
 void ObjectDesc::update(ContentsGenerator *gen, const ContDesc &next) {
-  layers.push_front(std::pair<std::shared_ptr<ContentsGenerator>, ContDesc>(std::shared_ptr<ContentsGenerator>(gen), next));
-  return;
+  layers.emplace_back(gen, next);
 }
 
 bool ObjectDesc::check(bufferlist &to_check) {
@@ -133,7 +132,7 @@ bool ObjectDesc::check(bufferlist &to_check) {
     return false;
   }
 
-  uint64_t size = layers.begin()->first->get_length(layers.begin()->second);
+  uint64_t size = most_recent_gen()->get_length(most_recent());
   if (to_check.length() < size) {
     std::cout << "only read " << to_check.length()
 	      << " out of size " << size << std::endl;
@@ -188,7 +187,7 @@ bool ObjectDesc::check_sparse(const std::map<uint64_t, uint64_t>& extents,
 
   // final hole
   bufferlist bl;
-  uint64_t size = layers.begin()->first->get_length(layers.begin()->second);
+  uint64_t size = most_recent_gen()->get_length(most_recent());
   bl.append_zero(size - pos);
   uint64_t error_at;
   if (!objiter.check_bl_advance(bl, &error_at)) {
