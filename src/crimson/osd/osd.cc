@@ -1026,7 +1026,11 @@ seastar::future<> OSD::committed_osd_maps(version_t first,
                               boost::make_counting_iterator(last + 1),
                               [this](epoch_t cur) {
     return get_map(cur).then([this](cached_map_t&& o) {
-      osdmap = std::move(o);
+      auto old_map = std::exchange(osdmap, std::move(o));
+      if (old_map->is_noup(whoami) != osdmap->is_noup(whoami)) {
+        logger().info("committed_osd_maps: NOUP flag changed in {}",
+                      osdmap->get_epoch());
+      }
       shard_services.update_map(osdmap);
       if (up_epoch == 0 &&
           osdmap->is_up(whoami) &&
