@@ -649,7 +649,7 @@ protected:
 
   eversion_t dirty_to;         ///< must clear/writeout all keys <= dirty_to
   eversion_t dirty_from;       ///< must clear/writeout all keys >= dirty_from
-  eversion_t writeout_from;    ///< must writout keys >= writeout_from
+  eversion_t writeout_from;    ///< must writeout keys >= writeout_from
   std::set<eversion_t> trimmed;     ///< must clear keys in trimmed
   eversion_t dirty_to_dups;    ///< must clear/writeout all dups <= dirty_to_dups
   eversion_t dirty_from_dups;  ///< must clear/writeout all dups >= dirty_from_dups
