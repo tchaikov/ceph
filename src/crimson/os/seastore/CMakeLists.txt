@@ -20,7 +20,7 @@ add_library(crimson-seastore STATIC
   onode_manager/simple-fltree/onode_delta.cc
   onode_manager/simple-fltree/onode_manager.cc
   onode_manager/simple-fltree/onode_node.cc
-  onode_manager/simple-fltree/onode_tree.cc
+  # onode_manager/simple-fltree/onode_tree.cc
   seastore.cc
   ../../../test/crimson/seastore/test_block.cc
 	)
