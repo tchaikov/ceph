@@ -14,6 +14,7 @@ set_target_properties(crimson::cflags PROPERTIES
 set(crimson_common_srcs
   common/assert.cc
   common/buffer_io.cc
+  common/backtrace.cc
   common/config_proxy.cc
   common/formatter.cc
   common/perf_counters_collection.cc
