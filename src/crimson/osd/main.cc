@@ -7,6 +7,7 @@
 #include <iostream>
 #include <random>
 
+#include <seastar/apps/lib/stop_signal.hh>
 #include <seastar/core/app-template.hh>
 #include <seastar/core/print.hh>
 #include <seastar/core/thread.hh>
@@ -148,6 +149,7 @@ int main(int argc, char* argv[])
       [&, &ceph_args=ceph_args] {
       auto& config = app.configuration();
       return seastar::async([&] {
+	seastar_apps_lib::stop_signal stop_signal;
 	if (config.count("debug")) {
 	    seastar::global_logger_registry().set_all_loggers_level(
 	      seastar::log_level::debug
@@ -213,6 +215,8 @@ int main(int argc, char* argv[])
         } else {
           osd.invoke_on(0, &crimson::osd::OSD::start).get();
         }
+
+        stop_signal.wait().get();
       });
     });
   } catch (...) {
