@@ -67,7 +67,7 @@ def get_python_flags(libs):
     return dict(
         include_dirs=[distutils.sysconfig.get_python_inc()],
         library_dirs=distutils.sysconfig.get_config_vars('LIBDIR', 'LIBPL'),
-        libraries=libs + py_libs,
+        libraries=py_libs,
         extra_compile_args=filter_unsupported_flags(
             compiler.compiler[0],
             compiler.compiler[1:] + distutils.sysconfig.get_config_var('CFLAGS').split()),
