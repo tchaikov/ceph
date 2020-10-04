@@ -40,10 +40,25 @@ protected:
   using ec_profile_t = std::map<std::string, std::string>;
   // low-level read errorator
   using ll_read_errorator = crimson::os::FuturizedStore::read_errorator;
+  using interruptible_ll_read_errorator =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      ll_read_errorator>;
 
 public:
   using load_metadata_ertr = crimson::errorator<
     crimson::ct_error::object_corrupted>;
+  using interruptible_load_metadata_ertr =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      load_metadata_ertr>;
+  using interruptor =
+    ::crimson::interruptible::interruptor<
+      ::crimson::osd::IOInterruptCondition>;
+  template <typename T = void>
+  using interruptible_future =
+    ::crimson::interruptible::interruptible_future<
+      ::crimson::osd::IOInterruptCondition, T>;
   PGBackend(shard_id_t shard, CollectionRef coll, crimson::os::FuturizedStore* store);
   virtual ~PGBackend() = default;
   static std::unique_ptr<PGBackend> create(pg_t pgid,
@@ -56,71 +71,95 @@ public:
     std::map<std::string, ceph::bufferptr, std::less<>>;
   using read_errorator = ll_read_errorator::extend<
     crimson::ct_error::object_corrupted>;
-  read_errorator::future<> read(
+  using interruptible_read_errorator =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      read_errorator>;
+  interruptible_read_errorator::future<> read(
     const ObjectState& os,
     OSDOp& osd_op);
-  read_errorator::future<> sparse_read(
+  interruptible_read_errorator::future<> sparse_read(
     const ObjectState& os,
     OSDOp& osd_op);
   using checksum_errorator = ll_read_errorator::extend<
     crimson::ct_error::object_corrupted,
     crimson::ct_error::invarg>;
-  checksum_errorator::future<> checksum(
+  using interruptible_checksum_errorator =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      checksum_errorator>;
+  interruptible_checksum_errorator::future<> checksum(
     const ObjectState& os,
     OSDOp& osd_op);
   using cmp_ext_errorator = ll_read_errorator::extend<
     crimson::ct_error::invarg>;
-  cmp_ext_errorator::future<> cmp_ext(
+  using interruptible_cmp_ext_errorator =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      cmp_ext_errorator>;
+  interruptible_cmp_ext_errorator::future<> cmp_ext(
     const ObjectState& os,
     OSDOp& osd_op);
   using stat_errorator = crimson::errorator<crimson::ct_error::enoent>;
-  stat_errorator::future<> stat(
+  using interruptible_stat_errorator =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      stat_errorator>;
+  interruptible_stat_errorator::future<> stat(
     const ObjectState& os,
     OSDOp& osd_op);
 
   // TODO: switch the entire write family to errorator.
   using write_ertr = crimson::errorator<
     crimson::ct_error::file_too_large>;
-  seastar::future<> create(
+  using interruptible_write_ertr =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      write_ertr>;
+  interruptible_future<> create(
     ObjectState& os,
     const OSDOp& osd_op,
     ceph::os::Transaction& trans);
-  seastar::future<> remove(
+  interruptible_future<> remove(
     ObjectState& os,
     ceph::os::Transaction& txn);
-  seastar::future<> write(
+  interruptible_future<> write(
     ObjectState& os,
     const OSDOp& osd_op,
     ceph::os::Transaction& trans,
     osd_op_params_t& osd_op_params);
-  seastar::future<> write_same(
+  interruptible_future<> write_same(
     ObjectState& os,
     const OSDOp& osd_op,
     ceph::os::Transaction& trans,
     osd_op_params_t& osd_op_params);
-  seastar::future<> writefull(
+  interruptible_future<> writefull(
     ObjectState& os,
     const OSDOp& osd_op,
     ceph::os::Transaction& trans,
     osd_op_params_t& osd_op_params);
   using append_errorator = crimson::errorator<
     crimson::ct_error::invarg>;
-  append_errorator::future<> append(
+  using interruptible_append_errorator =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      append_errorator>;
+  interruptible_append_errorator::future<> append(
     ObjectState& os,
     OSDOp& osd_op,
     ceph::os::Transaction& trans,
     osd_op_params_t& osd_op_params);
-  write_ertr::future<> truncate(
+  interruptible_write_ertr::future<> truncate(
     ObjectState& os,
     const OSDOp& osd_op,
     ceph::os::Transaction& trans,
     osd_op_params_t& osd_op_params);
-  write_ertr::future<> zero(
+  interruptible_write_ertr::future<> zero(
     ObjectState& os,
     const OSDOp& osd_op,
     ceph::os::Transaction& trans,
     osd_op_params_t& osd_op_params);
-  seastar::future<crimson::osd::acked_peers_t> mutate_object(
+  interruptible_future<crimson::osd::acked_peers_t> mutate_object(
     std::set<pg_shard_t> pg_shards,
     crimson::osd::ObjectContextRef &&obc,
     ceph::os::Transaction&& txn,
@@ -128,68 +167,80 @@ public:
     epoch_t min_epoch,
     epoch_t map_epoch,
     std::vector<pg_log_entry_t>&& log_entries);
-  seastar::future<std::tuple<std::vector<hobject_t>, hobject_t>> list_objects(
+  interruptible_future<std::tuple<std::vector<hobject_t>, hobject_t>> list_objects(
     const hobject_t& start,
     uint64_t limit) const;
-  seastar::future<> setxattr(
+  interruptible_future<> setxattr(
     ObjectState& os,
     const OSDOp& osd_op,
     ceph::os::Transaction& trans);
   using get_attr_errorator = crimson::os::FuturizedStore::get_attr_errorator;
-  get_attr_errorator::future<> getxattr(
+  using interruptible_get_attr_errorator =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      get_attr_errorator>;
+  interruptible_get_attr_errorator::future<> getxattr(
     const ObjectState& os,
     OSDOp& osd_op) const;
-  get_attr_errorator::future<ceph::bufferptr> getxattr(
+  interruptible_get_attr_errorator::future<ceph::bufferptr> getxattr(
     const hobject_t& soid,
     std::string_view key) const;
-  get_attr_errorator::future<> get_xattrs(
+  interruptible_get_attr_errorator::future<> get_xattrs(
     const ObjectState& os,
     OSDOp& osd_op) const;
   using rm_xattr_ertr = crimson::errorator<crimson::ct_error::enoent>;
-  rm_xattr_ertr::future<> rm_xattr(
+  using interruptible_rm_xattr_ertr =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      rm_xattr_ertr>;
+  interruptible_rm_xattr_ertr::future<> rm_xattr(
     ObjectState& os,
     const OSDOp& osd_op,
     ceph::os::Transaction& trans);
-  seastar::future<struct stat> stat(
+  interruptible_future<struct stat> stat(
     CollectionRef c,
     const ghobject_t& oid) const;
-  seastar::future<std::map<uint64_t, uint64_t>> fiemap(
+  interruptible_future<std::map<uint64_t, uint64_t>> fiemap(
     CollectionRef c,
     const ghobject_t& oid,
     uint64_t off,
     uint64_t len);
 
   // OMAP
-  ll_read_errorator::future<> omap_get_keys(
+  interruptible_ll_read_errorator::future<> omap_get_keys(
     const ObjectState& os,
     OSDOp& osd_op) const;
-  ll_read_errorator::future<> omap_get_vals(
+  interruptible_ll_read_errorator::future<> omap_get_vals(
     const ObjectState& os,
     OSDOp& osd_op) const;
-  ll_read_errorator::future<> omap_get_vals_by_keys(
+  interruptible_ll_read_errorator::future<> omap_get_vals_by_keys(
     const ObjectState& os,
     OSDOp& osd_op) const;
-  seastar::future<> omap_set_vals(
+  interruptible_future<> omap_set_vals(
     ObjectState& os,
     const OSDOp& osd_op,
     ceph::os::Transaction& trans,
     osd_op_params_t& osd_op_params);
-  ll_read_errorator::future<ceph::bufferlist> omap_get_header(
+  interruptible_ll_read_errorator::future<ceph::bufferlist> omap_get_header(
     const crimson::os::CollectionRef& c,
     const ghobject_t& oid) const;
-  ll_read_errorator::future<> omap_get_header(
+  interruptible_ll_read_errorator::future<> omap_get_header(
     const ObjectState& os,
     OSDOp& osd_op) const;
-  seastar::future<> omap_set_header(
+  interruptible_future<> omap_set_header(
     ObjectState& os,
     const OSDOp& osd_op,
     ceph::os::Transaction& trans);
-  seastar::future<> omap_remove_range(
+  interruptible_future<> omap_remove_range(
     ObjectState& os,
     const OSDOp& osd_op,
     ceph::os::Transaction& trans);
   using omap_clear_ertr = crimson::errorator<crimson::ct_error::enoent>;
-  omap_clear_ertr::future<> omap_clear(
+  using interruptible_omap_clear_ertr =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      omap_clear_ertr>;
+  interruptible_omap_clear_ertr::future<> omap_clear(
     ObjectState& os,
     OSDOp& osd_op,
     ceph::os::Transaction& trans,
@@ -217,18 +268,19 @@ public:
     std::optional<SnapSet> ss;
     using ref = std::unique_ptr<loaded_object_md_t>;
   };
-  load_metadata_ertr::future<loaded_object_md_t::ref> load_metadata(
+  interruptible_load_metadata_ertr::future<loaded_object_md_t::ref>
+  load_metadata(
     const hobject_t &oid);
 
 private:
-  virtual ll_read_errorator::future<ceph::bufferlist> _read(
+  virtual interruptible_ll_read_errorator::future<ceph::bufferlist> _read(
     const hobject_t& hoid,
     size_t offset,
     size_t length,
     uint32_t flags) = 0;
 
   bool maybe_create_new_object(ObjectState& os, ceph::os::Transaction& txn);
-  virtual seastar::future<crimson::osd::acked_peers_t>
+  virtual interruptible_future<crimson::osd::acked_peers_t>
   _submit_transaction(std::set<pg_shard_t>&& pg_shards,
 		      const hobject_t& hoid,
 		      ceph::os::Transaction&& txn,

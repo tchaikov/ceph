@@ -4,16 +4,25 @@
 #include "io_interrupt_condition.h"
 #include "pg.h"
 
+#include "crimson/common/log.h"
+
 namespace crimson::osd {
 
 IOInterruptCondition::IOInterruptCondition(Ref<PG>& pg)
   : pg(pg), e(pg->get_osdmap_epoch()) {}
 
-epoch_t IOInterruptCondition::get_current_osdmap_epoch() {
-  return pg->get_osdmap_epoch();
+bool IOInterruptCondition::new_interval_created() {
+  bool ret = e < pg->get_interval_start_epoch();
+  if (ret)
+    ::crimson::get_logger(ceph_subsys_osd).debug(
+      "{} new interval, should interrupt, e{}", *pg);
+  return ret;
 }
 
 bool IOInterruptCondition::is_stopping() {
+  if (pg->stopping)
+    ::crimson::get_logger(ceph_subsys_osd).debug(
+      "{} shutting down, should interrupt", *pg);
   return pg->stopping;
 }
 

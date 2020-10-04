@@ -16,7 +16,7 @@ class IOInterruptCondition {
 public:
   IOInterruptCondition(Ref<PG>& pg);
 
-  epoch_t get_current_osdmap_epoch();
+  bool new_interval_created();
 
   bool is_stopping();
 
@@ -24,7 +24,7 @@ public:
 
   template <typename T>
   std::pair<bool, std::optional<T>> may_interrupt() {
-    if (e != get_current_osdmap_epoch()) {
+    if (new_interval_created()) {
       return std::pair<bool, std::optional<T>>(
 		true, seastar::futurize<T>::make_exception_future(
 			  ::crimson::common::actingset_changed(is_primary())));
