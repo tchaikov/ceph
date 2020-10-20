@@ -1178,6 +1178,7 @@ function test_mon_mon()
   # test mon stat
   # don't check output, just ensure it does not fail.
   ceph mon stat
+  ceph mon stat -f json
   ceph mon stat -f json | jq '.'
 }
 
