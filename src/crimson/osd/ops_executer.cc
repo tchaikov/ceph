@@ -79,14 +79,14 @@ OpsExecuter::interruptible_call_errorator::future<> OpsExecuter::do_op_call(OSDO
                  cname, mname, num_read, num_write);
   const auto prev_rd = num_read;
   const auto prev_wr = num_write;
-  return seastar::async(
+  return interruptor::async(
     [this, method, indata=std::move(indata)]() mutable {
       ceph::bufferlist outdata;
       auto cls_context = reinterpret_cast<cls_method_context_t>(this);
       const auto ret = method->exec(cls_context, indata, outdata);
       return std::make_pair(ret, std::move(outdata));
     }
-  ).then(
+  ).then_interruptible(
     [this, prev_rd, prev_wr, &osd_op, flags]
     (auto outcome) -> call_errorator::future<> {
       auto& [ret, outdata] = outcome;
