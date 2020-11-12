@@ -25,6 +25,7 @@ using std::string;
 
 static void usage(std::ostream& out)
 {
+  std::raise(SIGSEGV);
   // TODO: add generic_usage once cerr/derr issues are resolved
   out << R"(Ceph configuration query tool
 
