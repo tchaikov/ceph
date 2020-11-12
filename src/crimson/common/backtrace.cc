@@ -15,10 +15,36 @@
 
 namespace symbolized {
 
+template<typename Func>
+void backtrace(Func&& func) noexcept(noexcept(func(frame()))) {
+  std::cout << boost::stacktrace::stacktrace();
+  constexpr size_t max_backtrace = 100;
+  void* buffer[max_backtrace];
+  int n = ::backtrace(buffer, max_backtrace);
+  char** strings = ::backtrace_symbols(buffer, n);
+  for (int i = 0; i < n; ++i) {
+    auto ip = reinterpret_cast<uintptr_t>(buffer[i]);
+    seastar::frame f = seastar::decorate(ip);
+    if (strings) {
+      func({f.so, f.addr, BackTrace::demangle(strings[i])});
+      // std::cout << "===" << strings[i] << "======" << std::endl;
+    } else {
+      func({f.so, f.addr, ""});
+    }
+  }
+  if (strings) {
+    free(strings);
+  }
+}
+
+bool operator==(const frame& a, const frame& b) {
+    return a.so == b.so && a.addr == b.addr;
+}
+
 simple_backtrace current_backtrace_tasklocal() noexcept
 {
   simple_backtrace::vector_type v;
-  seastar::backtrace([&] (seastar::frame f) {
+  backtrace([&] (frame f) {
     if (v.size() < v.capacity()) {
       v.emplace_back(std::move(f));
     }
@@ -49,31 +75,22 @@ bool tasktrace::operator==(const tasktrace& o) const {
 
 tasktrace::~tasktrace() {}
 
-// operator<<(std::ostream&, const frame&) is not declared in
-// seastar/util/backtrace.hh, but this is not the reason why we are cooking
-// our own version. we need to: echo $address | symbolize | demangle 
-static void print_frame(std::ostream &out, const seastar::frame &f)
-{
-  void* const addresses[] = {reinterpret_cast<void*>(f.addr + f.so->begin)};
-  // for looking up symbols by their addresses in the dynamic symbol table,
-  // please ensure "-rdynamic" is passed to linker
-  char** names = backtrace_symbols(addresses, std::size(addresses));
-  out << "  ";
-  if (names) {
-    out << BackTrace::demangle(names[0]) << "\n";
-    free(names);
+std::ostream& operator<<(std::ostream& out, const frame& f) {
+  if (!f.symbolized.empty()) {
+    out << f.symbolized;
   } else {
     if (!f.so->name.empty()) {
       out << f.so->name << "+";
     }
-    out << fmt::format("{:#018x}\n", f.addr);
+    out << fmt::format("{:#018x}", f.addr);
   }
+  return out;
 }
 
 std::ostream& operator<<(std::ostream& out, const simple_backtrace& b)
 {
   for (auto f : b._frames) {
-    print_frame(out, f);
+    out << "   " << f << "\n";
   }
   return out;
 }
