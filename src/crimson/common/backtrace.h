@@ -9,25 +9,14 @@
 #include <seastar/core/scheduling.hh>
 #include <seastar/core/condition-variable.hh>
 #include <seastar/core/shared_ptr.hh>
-#include <seastar/core/sstring.hh>
 
 // symbolized backtrace
 namespace symbolized {
 
-// in addition to seastar::frame, a symbolized version of the "addr" is
-// included
-struct frame {
-  const seastar::shared_object* so;
-  uintptr_t addr;
-  seastar::basic_sstring<char, uint8_t, 64> symbolized;
-};
-
-bool operator==(const frame& a, const frame& b);
-
 // Represents a call stack of a single thread.
 class simple_backtrace {
 public:
-  using vector_type = boost::container::static_vector<frame, 64>;
+  using vector_type = boost::container::static_vector<seastar::frame, 64>;
 private:
   vector_type _frames;
   size_t _hash;
