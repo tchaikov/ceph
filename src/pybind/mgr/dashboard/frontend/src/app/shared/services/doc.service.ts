@@ -24,7 +24,7 @@ export class DocService {
   }
 
   urlGenerator(section: string, release = 'master'): string {
-    const domain = `http://docs.ceph.com/docs/${release}/`;
+    const domain = `http://docs.ceph.com/en/${release}/`;
     const domainCeph = `https://ceph.io/`;
 
     const sections = {
