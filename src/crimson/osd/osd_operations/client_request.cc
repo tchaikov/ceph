@@ -72,15 +72,8 @@ seastar::future<> ClientRequest::start()
 	if (pg.can_discard_op(*m)) {
 	  return osd.send_incremental_map(conn.get(), m->get_map_epoch());
 	}
-	return with_blocking_future(
-	  handle.enter(pp(pg).await_map)
-	).then([this, &pg]() mutable {
-	  return with_blocking_future(
-	    pg.osdmap_gate.wait_for_map(m->get_map_epoch()));
-	}).then([this, &pg](auto map) mutable {
-	  return with_blocking_future(
-	    handle.enter(pp(pg).wait_for_active));
-	}).then([this, &pg]() mutable {
+	return with_blocking_future(handle.enter(pp(pg).wait_for_active))
+	.then([this, &pg]() mutable {
 	  return with_blocking_future(pg.wait_for_active_blocker.wait());
 	}).then([this, pgref=std::move(pgref)]() mutable {
 	  if (m->finish_decode()) {
