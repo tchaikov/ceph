@@ -776,7 +776,6 @@ PG::with_head_obc(hobject_t oid, with_obc_func_t&& func)
 {
   assert(oid.is_head());
   auto [obc, existed] = shard_services.obc_registry.get_cached_obc(oid);
-  auto loaded = load_obc_ertr::make_ready_future<>();
   return obc->with_lock<State>(
     [oid=std::move(oid), existed=existed, obc=std::move(obc),
      func=std::move(func), this] {
