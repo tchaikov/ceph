@@ -176,6 +176,50 @@ int main(int argc, const char **argv)
   std::string dump_format;
 
   argv_to_vec(argc, argv, args);
+
+  // strip the PID from the name option for non-daemon names
+  std::string nval;
+  auto name_value = [&]() -> std::pair<string, string> {
+    for (auto i = args.begin(); i != args.end(); i++) {
+      if (ceph_argparse_witharg(args, i, &nval, "--name", "-n", (char*)NULL)) {
+        size_t dot_pos = nval.rfind('.');
+        if (dot_pos == nval.npos) {
+          return {nval, ""};
+        }
+        return {nval.substr(0, dot_pos), nval.substr(dot_pos + 1)};
+      }
+    }
+    return {"", ""};
+  };
+
+  auto [name, id] = name_value();
+  if (!name.empty() && id.empty()) {
+    // push the name option back
+    args.push_back("--name");
+    args.push_back(nval.c_str());
+  } else if (!name.empty() && !id.empty()) {
+    static const char* daemon_types[] = {"mon", "osd", "mds", "mgr"};
+    if (std::find(std::begin(daemon_types), std::end(daemon_types), name) ==
+      std::end(daemon_types)) {
+      // only override name and pid for non-daemon names
+      try {
+        std::stoi(id);
+        // only override pid for $id which looks like pid
+        args.push_back("--name");
+        args.push_back(name.c_str());
+        setenv("PID", id.c_str(), 1);
+      } catch (const std::logic_error&) {
+        // push the name option back
+        args.push_back("--name");
+        args.push_back(nval.c_str());
+      }
+    } else {
+      // push the name option back
+      args.push_back("--name");
+      args.push_back(nval.c_str());
+    }
+  }
+
   auto orig_args = args;
   auto cct = [&args] {
     std::map<std::string,std::string> defaults = {{"log_to_file", "false"}};
