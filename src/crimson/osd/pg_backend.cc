@@ -209,13 +209,19 @@ PGBackend::read(const ObjectState& os, OSDOp& osd_op)
   return _read(oi.soid, offset, length, op.flags).safe_then(
     [&oi, &osd_op](auto&& bl) -> read_errorator::future<> {
     if (!_read_verify_data(oi, bl)) {
-      return crimson::ct_error::object_corrupted::make();
+      // crc mismatches
+      return crimson::ct_error::eagain::make();
     }
     logger().debug("read: data length: {}", bl.length());
     osd_op.rval = bl.length();
     osd_op.outdata = std::move(bl);
     return read_errorator::now();
-  });
+  }).handle_error(
+      crimson::ct_error::input_output_error::handle([]() -> crimson::errorator<crimson::ct_error::eagain>::future<> {
+        return crimson::ct_error::eagain::make();
+      }),
+      read_errorator::pass_further{}
+  );
 }
 
 PGBackend::read_errorator::future<>
@@ -241,10 +247,15 @@ PGBackend::sparse_read(const ObjectState& os, OSDOp& osd_op)
                          osd_op.op.extent.length, os.oi.soid);
           return read_errorator::make_ready_future<>();
         } else {
-          // TODO: repair it if crc mismatches
-          return crimson::ct_error::object_corrupted::make();
+          // crc mismatches
+          return crimson::ct_error::eagain::make();
         }
-      });
+      }).handle_error(
+          crimson::ct_error::input_output_error::handle([]() -> crimson::errorator<crimson::ct_error::eagain>::future<> {
+            return crimson::ct_error::eagain::make();
+          }),
+          read_errorator::pass_further{}
+      );
     });
   });
 }
