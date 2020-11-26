@@ -547,7 +547,7 @@ private:
     ObjectContextRef obc,
     const OpsExecuter& ox,
     const MOSDOp& m) const;
-  seastar::future<Ref<MOSDOpReply>> do_osd_ops(
+  crimson::errorator<crimson::ct_error::eagain>::future<Ref<MOSDOpReply>> do_osd_ops(
     Ref<MOSDOp> m,
     ObjectContextRef obc,
     const OpInfo &op_info);
@@ -557,6 +557,9 @@ private:
 				       ObjectContextRef&& obc,
 				       ceph::os::Transaction&& txn,
 				       const osd_op_params_t& oop);
+  crimson::errorator<crimson::ct_error::eagain>::future<> rep_repair_primary_object(Ref<MOSDOp> m, 
+               const hobject_t& oid,
+               eversion_t& v);
 
 private:
   OSDMapGate osdmap_gate;

@@ -661,7 +661,24 @@ seastar::future<Ref<MOSDOpReply>> PG::handle_failed_op(
   }, load_obc_ertr::assert_all{ "can't live with object state messed up" });
 }
 
-seastar::future<Ref<MOSDOpReply>> PG::do_osd_ops(
+crimson::errorator<crimson::ct_error::eagain>::future<> PG::rep_repair_primary_object(
+  Ref<MOSDOp> m,
+  const hobject_t& oid,
+  eversion_t& v) 
+{
+  ceph_assert(is_primary());
+  logger().debug("{}: {} peers osd.{}", __func__, oid, get_acting_recovery_backfill());
+  // Add object to PG's missing set if it isn't there already
+  if (!get_local_missing().is_missing(oid)) {
+    peering_state.force_object_missing(pg_whoami, oid, v);
+  }
+  // Send Pull&Push messages to OSD holding replicas and add object to the recovery map
+  auto [op, fut] = get_shard_services().start_operation<crimson::osd::UrgentRecovery>(
+		oid, v, this, get_shard_services(), m->get_min_epoch());
+  return crimson::ct_error::eagain::make();
+}
+
+crimson::errorator<crimson::ct_error::eagain>::future<Ref<MOSDOpReply>> PG::do_osd_ops(
   Ref<MOSDOp> m,
   ObjectContextRef obc,
   const OpInfo &op_info)
@@ -670,7 +687,7 @@ seastar::future<Ref<MOSDOpReply>> PG::do_osd_ops(
     throw crimson::common::system_shutdown_exception();
   }
 
-  using osd_op_errorator = OpsExecuter::osd_op_errorator;
+  using osd_op_errorator_no_eagain = OpsExecuter::osd_op_errorator_no_eagain;
   const auto oid = m->get_snapid() == CEPH_SNAPDIR ? m->get_hobj().get_head()
                                                    : m->get_hobj();
   auto ox = std::make_unique<OpsExecuter>(
@@ -689,17 +706,17 @@ seastar::future<Ref<MOSDOpReply>> PG::do_osd_ops(
       *m,
       obc->obs.oi.soid);
     return std::move(*ox).flush_changes(
-      [m] (auto&& obc) -> osd_op_errorator::future<> {
+      [m] (auto&& obc) -> osd_op_errorator_no_eagain::future<> {
 	logger().debug(
 	  "do_osd_ops: {} - object {} txn is empty, bypassing mutate",
 	  *m,
 	  obc->obs.oi.soid);
-        return osd_op_errorator::now();
+        return osd_op_errorator_no_eagain::now();
       },
       [this, m, &op_info] (auto&& txn,
 			   auto&& obc,
 			   auto&& osd_op_p,
-                           bool user_modify) -> osd_op_errorator::future<> {
+                           bool user_modify) -> osd_op_errorator_no_eagain::future<> {
 	logger().debug(
 	  "do_osd_ops: {} - object {} submitting txn",
 	  *m,
@@ -736,11 +753,15 @@ seastar::future<Ref<MOSDOpReply>> PG::do_osd_ops(
       *m,
       obc->obs.oi.soid);
     return seastar::make_ready_future<Ref<MOSDOpReply>>(std::move(reply));
-  }, osd_op_errorator::all_same_way([ox = ox.get(),
+  }, OpsExecuter::osd_op_errorator_no_eagain::all_same_way([ox = ox.get(),
                                      m,
                                      obc,
                                      this] (const std::error_code& e) {
     return handle_failed_op(e, std::move(obc), *ox, *m);
+  }), PGBackend::read_errorator::all_same_way([m,
+                                     obc,
+                                     this] () {
+    rep_repair_primary_object(m, obc->obs.oi.soid, obc->obs.oi.version);
   })).handle_exception_type([ox_deleter = std::move(ox),
                              m,
                              obc,
@@ -749,6 +770,7 @@ seastar::future<Ref<MOSDOpReply>> PG::do_osd_ops(
     logger().debug("encountered the legacy error handling path!");
     return handle_failed_op(e.code(), std::move(obc), *ox_deleter, *m);
   });
+  return crimson::ct_error::eagain::make();
 }
 
 seastar::future<Ref<MOSDOpReply>> PG::do_pg_ops(Ref<MOSDOp> m)

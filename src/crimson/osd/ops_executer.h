@@ -71,6 +71,13 @@ public:
     PGBackend::checksum_errorator,
     PGBackend::stat_errorator>;
 
+  using osd_op_errorator_no_eagain = crimson::compound_errorator_t<
+    call_errorator,
+    write_ertr,
+    get_attr_errorator,
+    watch_errorator,
+    PGBackend::stat_errorator>;
+
 private:
   // an operation can be divided into two stages: main and effect-exposing
   // one. The former is performed immediately on call to `do_osd_op()` while
