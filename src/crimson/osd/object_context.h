@@ -134,7 +134,7 @@ public:
     case RWState::RWNONE:
       return seastar::futurize_invoke(std::forward<Func>(func));
     default:
-      assert(0 == "noop");
+      std::abort();
     }
   }
   template<RWState::State Type, typename Func>
@@ -146,8 +146,8 @@ public:
       return _with_lock(lock.excl_from_read(), std::forward<Func>(func));
     case RWState::RWEXCL:
       return _with_lock(lock.excl_from_excl(), std::forward<Func>(func));
-     default:
-      assert(0 == "noop");
+    default:
+      std::abort();
     }
   }
 
