@@ -310,6 +310,8 @@ class CLICommand(object):
         self.args_dict = self._parse_args(args)
         self.arg_spec = {}    # type: Dict[str, Any]
 
+    KNOWN_ARGS = '_', 'self', 'mgr', 'inbuf', 'return'
+
     @staticmethod
     def _parse_args(args):
         if not args:
@@ -331,7 +333,14 @@ class CLICommand(object):
         if not self.desc:
             self.desc = inspect.getdoc(func)
         if not self.args_dict:
-            self.arg_spec = inspect.getfullargspec(func).annotations
+            full_argspec = inspect.getfullargspec(func)
+            self.arg_spec = full_argspec.annotations
+            for arg in full_argspec.args:
+                assert arg in CLICommand.KNOWN_ARGS or arg in self.arg_spec, \
+                    f"'{arg}' is not annotated for {func}: {full_argspec}"
+            self.args = ' '.join(CephArgtype.to_argdesc(tp, dict(name=name))
+                                 for name, tp in self.arg_spec)
+
         self.COMMANDS[self.prefix] = self
         return self.func
 
