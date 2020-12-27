@@ -15,6 +15,8 @@ import tempfile
 import threading
 import time
 
+from typing import Optional
+
 from mgr_module import CLIWriteCommand, MgrModule, MgrStandbyModule, Option
 from mgr_util import ServerConfigException, create_self_signed_cert, \
     get_default_addr, verify_tls_files
@@ -358,9 +360,10 @@ class Module(MgrModule, CherryPyConfig):
         logger.info('Stopping engine...')
         self.shutdown_event.set()
 
-    @CLIWriteCommand("dashboard set-ssl-certificate",
-                     "name=mgr_id,type=CephString,req=false")
-    def set_ssl_certificate(self, mgr_id=None, inbuf=None):
+    @CLIWriteCommand("dashboard set-ssl-certificate")
+    def set_ssl_certificate(self,
+                            mgr_id: Optional[str] = None,
+                            inbuf: Optional[bytes] = None):
         if inbuf is None:
             return -errno.EINVAL, '',\
                 'Please specify the certificate file with "-i" option'
@@ -370,9 +373,10 @@ class Module(MgrModule, CherryPyConfig):
             self.set_store('crt', inbuf)
         return 0, 'SSL certificate updated', ''
 
-    @CLIWriteCommand("dashboard set-ssl-certificate-key",
-                     "name=mgr_id,type=CephString,req=false")
-    def set_ssl_certificate_key(self, mgr_id=None, inbuf=None):
+    @CLIWriteCommand("dashboard set-ssl-certificate-key")
+    def set_ssl_certificate_key(self,
+                                mgr_id: Optional[str] = None,
+                                inbuf: Optional[bytes] = None):
         if inbuf is None:
             return -errno.EINVAL, '',\
                 'Please specify the certificate key file with "-i" option'
