@@ -145,8 +145,17 @@ class CephArgtype(object):
         """
         return '<{0}>'.format(self.__class__.__name__)
 
+    def __call__(self, v):
+        return v
+
     def complete(self, s):
         return []
+
+    def argdesc(self, attrs=None):
+        desc = {'type': type(self).__name__}
+        if attrs:
+            desc.update(attrs)
+        return ','.join(f'{k}={v}' for k,v in desc.items())
 
 
 class CephInt(CephArgtype):
@@ -183,6 +192,12 @@ class CephInt(CephArgtype):
 
         return '<int{0}>'.format(r)
 
+    def argdesc(self):
+        desc = {}
+        if self.range:
+            desc['range'] = '|'.join(self.range)
+        return super().argdesc(desc)
+
 
 class CephFloat(CephArgtype):
     """
@@ -216,6 +231,12 @@ class CephFloat(CephArgtype):
         if len(self.range) == 2:
             r = '[{0}-{1}]'.format(self.range[0], self.range[1])
         return '<float{0}>'.format(r)
+
+    def argdesc(self):
+        desc = {}
+        if self.range:
+            desc['range'] = '|'.join(self.range)
+        return super().argdesc(desc)
 
 
 class CephString(CephArgtype):
@@ -252,6 +273,12 @@ class CephString(CephArgtype):
             return []
         else:
             return [s]
+
+    def argdesc(self):
+        desc = {}
+        if self.goodchars:
+            desc['goodchars'] = self.goodchars
+        return super().argdesc(desc)
 
 
 class CephSocketpath(CephArgtype):
@@ -474,8 +501,11 @@ class CephChoices(CephArgtype):
     """
     Set of string literals; init with valid choices
     """
-    def __init__(self, strings='', **kwargs):
+    def __init__(self, strings='', enum=None, **kwargs):
         self.strings = strings.split('|')
+        self.enum = enum
+        if self.enum is not None:
+            self.strings = list(e.name for e in self.enum)
 
     def valid(self, s, partial=False):
         if not partial:
@@ -498,9 +528,19 @@ class CephChoices(CephArgtype):
         else:
             return '{0}'.format('|'.join(self.strings))
 
+    def __call__(self, v):
+        if self.enum is None:
+            return v
+        else:
+            return self.enum[v]
+
     def complete(self, s):
         all_elems = [token for token in self.strings if token.startswith(s)]
         return all_elems
+
+    def argdesc(self):
+        desc['strings'] = '|'.join(self.strings)
+        return super().argdesc(desc)
 
 
 class CephBool(CephArgtype):
