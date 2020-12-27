@@ -16,6 +16,7 @@ import functools
 import json
 import threading
 from collections import defaultdict, namedtuple
+from enum import Enum
 import rados
 import re
 import sys
@@ -362,6 +363,8 @@ class CLICommand(object):
                 continue
             kwargs_switch, k, v = self._get_arg_value(kwargs_switch,
                                                       name, cmd_dict[name])
+            if isinstance(tp, type) and issubclass(tp, Enum):
+                v = tp(v)
             kwargs[k] = v
         return kwargs
 
