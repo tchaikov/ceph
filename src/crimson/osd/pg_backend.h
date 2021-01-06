@@ -54,7 +54,6 @@ public:
   using attrs_t =
     std::map<std::string, ceph::bufferptr, std::less<>>;
   using read_errorator = ll_read_errorator::extend<
-    crimson::ct_error::object_corrupted,
     crimson::ct_error::eagain>;
   read_errorator::future<> read(
     const ObjectState& os,

@@ -68,6 +68,7 @@ public:
     write_ertr,
     get_attr_errorator,
     watch_errorator,
+    PGBackend::checksum_errorator,
     PGBackend::stat_errorator>;
 
 private:
