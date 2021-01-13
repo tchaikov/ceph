@@ -401,6 +401,7 @@ def CLICheckNonemptyFileInput(func):
                                    and not kwargs['inbuf'].strip('\n')):
             return -errno.EINVAL, '', ERROR_MSG_EMPTY_INPUT_FILE
         return func(*args, **kwargs)
+    check.__signature__ = inspect.signature(func)
     return check
 
 
@@ -477,6 +478,7 @@ class Command(dict):
         def wrapper(mgr, *args, **kwargs):
             retval, stdout, stderr = f(instance or mgr, *args, **kwargs)
             return HandleCommandResult(retval, stdout, stderr)
+        wrapper.__signature__ = inspect.signature(f)
         return wrapper
 
     def register(self, instance=False):
