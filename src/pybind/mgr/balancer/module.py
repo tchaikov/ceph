@@ -11,7 +11,7 @@ import random
 import time
 from mgr_module import CLIReadCommand, CLICommand, CommandResult, MgrModule, Option, OSDMap
 from threading import Event
-from typing import cast, Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import cast, Any, Dict, List, Sequence, Tuple, Union
 from mgr_module import CRUSHMap
 import datetime
 
@@ -445,7 +445,7 @@ class Module(MgrModule):
         self.set_module_option('pool_ids', ','.join(final))
         return (0, '', '')
 
-    def _state_from_option(self, option: Optional[str] = None) -> Tuple[MappingState, List[str]]:
+    def _state_from_option(self, option: str) -> Tuple[MappingState, List[str]]:
         plan = self.plans.get(option)
         pools = []
         if plan:
@@ -477,7 +477,7 @@ class Module(MgrModule):
         return ms, pools
 
     @CLIReadCommand('balancer eval-verbose')
-    def plan_eval_verbose(self, option: Optional[str] = None):
+    def plan_eval_verbose(self, option: str):
         """
         Evaluate data distribution for the current cluster or specific pool or specific plan (verbosely)
         """
@@ -488,7 +488,7 @@ class Module(MgrModule):
             return (-errno.EINVAL, '', str(e))
 
     @CLIReadCommand('balancer eval-verbose')
-    def plan_eval_brief(self, option: Optional[str] = None):
+    def plan_eval_brief(self, option: str):
         """
         Evaluate data distribution for the current cluster or specific pool or specific plan
         """
