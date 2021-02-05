@@ -159,7 +159,7 @@ bool is_intended_refcount_state(librados::IoCtx& src_ioctx,
 				std::string src_oid,
 				librados::IoCtx& dst_ioctx,
 				std::string dst_oid,
-				uint64_t expected_refcount)
+				int expected_refcount)
 {
   int src_refcount = 0, dst_refcount = 0;
   {
@@ -178,21 +178,19 @@ bool is_intended_refcount_state(librados::IoCtx& src_ioctx,
       dst_refcount = refs.count();
     }
   }
-  if (dst_refcount == expected_refcount) {
-    return true;
-  }
   {
     bufferlist in, out;
     encode(dst_oid, in);
-    src_refcount = src_ioctx.exec(src_oid, "cas", "references_chunk", in, out);
-    if (src_refcount == -ENOENT || src_refcount == -ENOLINK) {
+    int r = src_ioctx.exec(src_oid, "cas", "references_chunk", in, out);
+    if (r == -ENOENT || r == -ENOLINK) {
       src_refcount = 0;
+    } else {
+      src_refcount = r;
     }
     ceph_assert(src_refcount >= 0);
   }
-  if (src_refcount > dst_refcount) {
-    return false;
-  }
+  ceph_assert(src_refcount == expected_refcount);
+  ceph_assert(src_refcount <= dst_refcount);
   return true;
 }
 
