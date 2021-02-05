@@ -224,6 +224,51 @@ void FSMap::print(ostream& out) const
   }
 }
 
+void FSMap::print_daemon_summary(ostream& out) const
+{
+  // this appears in the "services:" section of "ceph status"
+  int num_up = 0, num_in = 0, num_failed = 0;
+  for (auto& [fscid, fs] : filesystems) {
+    num_up += fs->mds_map.get_num_up_mds();
+    num_in += fs->mds_map.get_num_in_mds();
+    num_failed += fs->mds_map.get_num_failed_mds();
+  }
+  int num_standby = standby_daemons.size();
+  out << num_up << "/" << num_in << " daemons up";
+  if (num_failed) {
+    out << " (" << num_failed << " failed)";
+  }
+  if (num_standby) {
+    out << ", " << num_standby << " standby";
+  }
+}
+
+void FSMap::print_fs_summary(ostream& out) const
+{
+  // this appears in the "data:" section of "ceph status"
+  if (!filesystems.empty()) {
+    int num_degraded = 0, num_stopped = 0, num_healthy = 0;
+    for (auto& [fscid, fs] : filesystems) {
+      if (fs->mds_map.is_degraded()) {
+	++num_degraded;
+      } else if (fs->mds_map.get_max_mds() == 0) {
+	++num_stopped;
+      } else {
+	++num_healthy;
+      }
+    }
+    out << "    volumes: "
+	<< num_healthy << "/" << filesystems.size() << " file systems healthy";
+    if (num_degraded) {
+      out << ", " << num_degraded << " degraded";
+    }
+    if (num_stopped) {
+      out << ", " << num_stopped << " stopped";
+    }
+    out << "\n";
+  }
+}
+
 void FSMap::print_summary(Formatter *f, ostream *out) const
 {
   if (f) {
