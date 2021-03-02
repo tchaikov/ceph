@@ -340,3 +340,14 @@ set_target_properties(cls_fifo PROPERTIES
   INSTALL_RPATH ""
   CXX_VISIBILITY_PRESET hidden)
 install(TARGETS cls_fifo DESTINATION ${cls_dir})
+
+# cls_remote_reads
+set(cls_remote_reads_srcs remote_reads/cls_remote_reads.cc)
+add_library(cls_remote_reads SHARED ${cls_remote_reads_srcs})
+set_target_properties(cls_remote_reads PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+#include_directories(dummy/include)
+install(TARGETS cls_remote_reads DESTINATION ${cls_dir})
