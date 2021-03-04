@@ -37,7 +37,7 @@ TEST(ClsRemoteReads, TestGather) {
   encode_json("src_objects", src_objects, formatter);
   encode_json("cls", "remote_reads", formatter);
   encode_json("method", "test_read", formatter);
-  encode_json("pool", "mypool", formatter);
+  encode_json("pool", pool_name, formatter);
   formatter->close_section();
   in.clear();
   formatter->flush(in);
