@@ -7,7 +7,7 @@
 
 using namespace librados;
 
-TEST(ClsRemoteReads, TestGather) {
+TEST(ClsTestRemoteReads, TestGather) {
   Rados cluster;
   std::string pool_name = get_temp_pool_name();
   ASSERT_EQ("", create_one_pool_pp(pool_name, cluster));
@@ -35,7 +35,7 @@ TEST(ClsRemoteReads, TestGather) {
   src_objects.insert("src_object.2");
   src_objects.insert("src_object.3");
   encode_json("src_objects", src_objects, formatter);
-  encode_json("cls", "remote_reads", formatter);
+  encode_json("cls", "test_remote_reads", formatter);
   encode_json("method", "test_read", formatter);
   encode_json("pool", pool_name, formatter);
   formatter->close_section();
@@ -43,7 +43,7 @@ TEST(ClsRemoteReads, TestGather) {
   formatter->flush(in);
 
   // create target object by combining data gathered from source objects using "test_read" method
-  ASSERT_EQ(0, ioctx.exec("tgt_object", "remote_reads", "test_gather", in, out));
+  ASSERT_EQ(0, ioctx.exec("tgt_object", "test_remote_reads", "test_gather", in, out));
 
   // read target object and check its size
   ASSERT_EQ(3*object_size, ioctx.read("tgt_object", out, 0, 0));
