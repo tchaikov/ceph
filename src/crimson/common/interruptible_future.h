@@ -25,7 +25,7 @@
 //  3. At the end of the continuation run, the global "interrupt_cond" will be cleared
 //     to prevent other continuations that are not supposed to be interrupted wrongly
 //     capture an interruption condition.
-// With this approach, continuations captures the interrupt condition at their creation,
+// With this approach, continuations capture the interrupt condition at their creation,
 // restore the interrupt conditions at the beginning of their execution and clear those
 // interrupt conditions at the end of their execution. So the global "interrupt_cond"
 // only hold valid interrupt conditions when the corresponding continuations are actually
@@ -78,12 +78,12 @@ struct is_interruptible_future<
 
 namespace internal {
 
-template <typename InterruptCond, typename Func, typename... T>
+template <typename InterruptCond, typename Func, typename... Args>
 auto call_with_interruption_impl(
   InterruptCondRef<InterruptCond> interrupt_condition,
-  Func&& func, T&&... args)
+  Func&& func, Args&&... args)
 {
-  using futurator_t = seastar::futurize<std::invoke_result_t<Func, T...>>;
+  using futurator_t = seastar::futurize<std::invoke_result_t<Func, Args...>>;
   // there might be a case like this:
   // 	with_interruption([] {
   // 		interruptor::do_for_each([] {
@@ -115,7 +115,7 @@ auto call_with_interruption_impl(
 
   auto fut = seastar::futurize_invoke(
       std::forward<Func>(func),
-      std::forward<T>(args)...);
+      std::forward<Args>(args)...);
   // Clear the global "interrupt_cond" to prevent it from interfering other
   // continuation chains.
   if (set_int_cond && interrupt_cond<InterruptCond>)
@@ -125,13 +125,13 @@ auto call_with_interruption_impl(
 
 }
 
-template <typename InterruptCond, typename Func, typename T,
-	  typename Result = std::invoke_result_t<Func, T>,
-	  std::enable_if_t<!InterruptCond::template is_interruption_v<T> &&
-	    seastar::is_future<T>::value, int> = 0>
+template <typename InterruptCond, typename Func, typename Ret,
+	  typename Result = std::invoke_result_t<Func, Ret>,
+	  std::enable_if_t<!InterruptCond::template is_interruption_v<Ret> &&
+	    seastar::is_future<Ret>::value, int> = 0>
 auto call_with_interruption(
   InterruptCondRef<InterruptCond> interrupt_condition,
-  Func&& func, T&& fut)
+  Func&& func, Ret&& fut)
 {
   // if "T" is already an interrupt exception, return it directly;
   // otherwise, upper layer application may encounter errors executing
@@ -144,7 +144,7 @@ auto call_with_interruption(
     return internal::call_with_interruption_impl(
 	      interrupt_condition,
 	      std::forward<Func>(func),
-	      seastar::futurize<T>::make_exception_future(
+	      seastar::futurize<Ret>::make_exception_future(
 		std::move(eptr)));
   }
   return internal::call_with_interruption_impl(
@@ -202,10 +202,11 @@ decltype(auto) non_futurized_call_with_interruption(
   bool set_int_cond = false;
   if (!interrupt_cond<InterruptCond> && interrupt_condition) {
     auto [interrupt, fut] = interrupt_condition->template may_interrupt<seastar::future<>>();
-    if (interrupt)
+    if (interrupt) {
       std::rethrow_exception(fut->get_exception());
+    }
     set_int_cond = true;
-    interrupt_cond<InterruptCond> = interrupt_condition;
+    interrupt_cond<InterruptCond> = std::move(interrupt_condition);
   }
   try {
     if constexpr (std::is_void_v<Result>) {
@@ -254,25 +255,19 @@ public:
 
   [[gnu::always_inline]]
   value_type&& get() {
-    if (!core_type::available()) { // destined to wait!
+    if (core_type::available()) {
+      return core_type::get();
+    } else {
+      // destined to wait!
       auto interruption_condition = interrupt_cond<InterruptCond>;
-      auto&& value = std::move(core_type::get());
+      auto&& value = core_type::get();
       interrupt_cond<InterruptCond> = interruption_condition;
       return std::move(value);
-    } else {
-      return std::move(core_type::get());
     }
   }
 
-  [[gnu::always_inline]]
-  bool available() const noexcept {
-    return core_type::available();
-  }
-
-  [[gnu::always_inline]]
-  bool failed() const noexcept {
-    return core_type::failed();
-  }
+  using core_type::available;
+  using core_type::failed;
 
   template <typename Func>
   [[gnu::always_inline]]
@@ -303,7 +298,7 @@ public:
       [func=std::move(func), interrupt_condition=interrupt_cond<InterruptCond>]
       (auto&& fut) mutable {
       return call_with_interruption(
-		interrupt_condition,
+		std::move(interrupt_condition),
 		std::forward<Func>(func),
 		std::move(fut));
     });

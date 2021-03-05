@@ -1,4 +1,4 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
 // vim: ts=8 sw=2 smarttab
 
 #pragma once
@@ -22,19 +22,17 @@ public:
 
   bool is_primary();
 
-  template <typename T>
-  std::pair<bool, std::optional<T>> may_interrupt() {
+  template <typename Fut>
+  std::pair<bool, std::optional<Fut>> may_interrupt() {
     if (new_interval_created()) {
-      return std::pair<bool, std::optional<T>>(
-		true, seastar::futurize<T>::make_exception_future(
-			  ::crimson::common::actingset_changed(is_primary())));
+      return {true, seastar::futurize<Fut>::make_exception_future(
+        ::crimson::common::actingset_changed(is_primary()))};
     }
     if (is_stopping()) {
-      return std::pair<bool, std::optional<T>>(
-		true, seastar::futurize<T>::make_exception_future(
-			  ::crimson::common::system_shutdown_exception()));
+      return {true, seastar::futurize<Fut>::make_exception_future(
+        ::crimson::common::system_shutdown_exception())};
     }
-    return std::pair<bool, std::optional<T>>(false, std::optional<T>());
+    return {false, std::optional<Fut>()};
   }
 
   template <typename T>
@@ -43,13 +41,10 @@ public:
     || std::is_same_v<T, ::crimson::common::system_shutdown_exception>;
 
   bool is_interruption(std::exception_ptr& eptr) {
-    if (*eptr.__cxa_exception_type() ==
-	  typeid(::crimson::common::actingset_changed)
-	|| *eptr.__cxa_exception_type() ==
-	  typeid(::crimson::common::system_shutdown_exception)) {
-      return true;
-    }
-    return false;
+    return (*eptr.__cxa_exception_type() ==
+            typeid(::crimson::common::actingset_changed) ||
+            *eptr.__cxa_exception_type() ==
+            typeid(::crimson::common::system_shutdown_exception));
   }
 
 private:
