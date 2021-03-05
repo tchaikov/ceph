@@ -217,10 +217,10 @@ decltype(auto) non_futurized_call_with_interruption(
 	interrupt_cond<InterruptCond>.release();
       return;
     } else {
-      Result err = std::invoke(std::forward<Func>(func), std::forward<T>(args)...);
+      auto&& err = std::invoke(std::forward<Func>(func), std::forward<T>(args)...);
       if (set_int_cond && interrupt_cond<InterruptCond>)
 	interrupt_cond<InterruptCond>.release();
-      return err;
+      return std::forward<Result>(err);
     }
   } catch (std::exception& e) {
     // Clear the global "interrupt_cond" to prevent it from interfering other
