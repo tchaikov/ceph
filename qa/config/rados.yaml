@@ -6,5 +6,7 @@ overrides:
         osd op queue cut off: debug_random
         osd debug verify missing on start: true
         osd debug verify cached snaps: true
+        osd debug inject dispatch delay duration: 0.2
+        osd debug inject dispatch delay probability: 0.1
       mon:
         mon scrub interval: 300
