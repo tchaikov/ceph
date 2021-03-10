@@ -1,7 +1,7 @@
-add_executable(ceph_test_cls_test_remote_reads
+add_executable(ceph_test_rados_cls_test_remote_reads
   test_cls_test_remote_reads.cc
   )
-target_link_libraries(ceph_test_cls_test_remote_reads
+target_link_libraries(ceph_test_rados_cls_test_remote_reads
   librados
   global
   ${EXTRALIBS}
@@ -11,5 +11,5 @@ target_link_libraries(ceph_test_cls_test_remote_reads
   ${UNITTEST_LIBS}
   )
 install(TARGETS
-  ceph_test_cls_test_remote_reads
+  ceph_test_rados_cls_test_remote_reads
   DESTINATION ${CMAKE_INSTALL_BINDIR})
