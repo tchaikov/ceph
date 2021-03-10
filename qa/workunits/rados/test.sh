@@ -31,7 +31,8 @@ for f in \
     api_c_read_operations \
     list_parallel \
     open_pools_parallel \
-    delete_pools_parallel
+    delete_pools_parallel \
+    cls_test_remote_reads
 do
     if [ $parallel -eq 1 ]; then
 	r=`printf '%25s' $f`
