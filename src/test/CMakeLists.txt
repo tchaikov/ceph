@@ -55,7 +55,6 @@ if(NOT WIN32)
   add_subdirectory(cls_queue)
   add_subdirectory(cls_2pc_queue)
   add_subdirectory(cls_cmpomap)
-  add_subdirectory(cls_test_remote_reads)
   add_subdirectory(journal)
 
   add_subdirectory(erasure-code)
