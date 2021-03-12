@@ -4860,8 +4860,6 @@ PGRef OSD::handle_pg_create_info(const OSDMapRef& osdmap,
     return nullptr;
   }
 
-  PeeringCtx rctx = create_context();
-
   OSDMapRef startmap = get_map(info->epoch);
 
   if (info->by_mon) {
@@ -4895,6 +4893,7 @@ PGRef OSD::handle_pg_create_info(const OSDMapRef& osdmap,
 		 << "the pool allows ec overwrites but is not stored in "
 		 << "bluestore, so deep scrubbing will not detect bitrot";
   }
+  PeeringCtx rctx;
   create_pg_collection(
     rctx.transaction, pgid, pgid.get_split_bits(pp->get_pg_num()));
   init_pg_ondisk(rctx.transaction, pgid, pp);
@@ -8559,7 +8558,7 @@ void OSD::_finish_splits(set<PGRef>& pgs)
        ++i) {
     PG *pg = i->get();
 
-    PeeringCtx rctx = create_context();
+    PeeringCtx rctx;
     pg->lock();
     dout(10) << __func__ << " " << *pg << dendl;
     epoch_t e = pg->get_osdmap_epoch();
@@ -9214,11 +9213,6 @@ void OSD::handle_pg_create(OpRequestRef op)
 // ----------------------------------------
 // peering and recovery
 
-PeeringCtx OSD::create_context()
-{
-  return PeeringCtx();
-}
-
 void OSD::dispatch_context(PeeringCtx &ctx, PG *pg, OSDMapRef curmap,
                            ThreadPool::TPHandle *handle)
 {
@@ -9661,7 +9655,7 @@ void OSD::do_recovery(
 	     << " on " << *pg << dendl;
 
     if (do_unfound) {
-      PeeringCtx rctx = create_context();
+      PeeringCtx rctx;
       rctx.handle = &handle;
       pg->find_unfound(queued, rctx);
       dispatch_context(rctx, pg, pg->get_osdmap());
@@ -9850,7 +9844,6 @@ void OSD::dequeue_peering_evt(
   PGPeeringEventRef evt,
   ThreadPool::TPHandle& handle)
 {
-  PeeringCtx rctx = create_context();
   auto curmap = sdata->get_osdmap();
   bool need_up_thru = false;
   epoch_t same_interval_since = 0;
@@ -9861,7 +9854,8 @@ void OSD::dequeue_peering_evt(
       derr << __func__ << " unrecognized pg-less event " << evt->get_desc() << dendl;
       ceph_abort();
     }
-  } else if (advance_pg(curmap->get_epoch(), pg, handle, rctx)) {
+  } else if (PeeringCtx rctx;
+	     advance_pg(curmap->get_epoch(), pg, handle, rctx)) {
     pg->do_peering_event(evt, rctx);
     if (pg->is_deleted()) {
       pg->unlock();
