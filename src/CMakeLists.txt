@@ -955,6 +955,7 @@ add_custom_target(cephfs_testing DEPENDS
     cls_cephfs
     ceph-fuse
     ceph-dencoder
+    ceph-dencoder-modules
     cephfs-journal-tool
     cephfs-meta-injection
     cephfs-data-scan
