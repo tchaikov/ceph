@@ -104,6 +104,7 @@ void MDSMap::mds_info_t::dump(Formatter *f) const
   f->close_section();
   f->dump_unsigned("features", mds_features);
   f->dump_unsigned("flags", flags);
+  f->dump_object("compat", compat);
 }
 
 void MDSMap::mds_info_t::dump(std::ostream& o) const
@@ -123,7 +124,9 @@ void MDSMap::mds_info_t::dump(std::ostream& o) const
   if (join_fscid != FS_CLUSTER_ID_NONE) {
     o << " join_fscid=" << join_fscid;
   }
-  o << " addr " << addrs << "]";
+  o << " addr " << addrs;
+  o << " compat " << compat;
+  o << "]";
 }
 
 void MDSMap::mds_info_t::generate_test_instances(std::list<mds_info_t*>& ls)
@@ -522,7 +525,7 @@ void MDSMap::get_health_checks(health_check_map_t *checks) const
 
 void MDSMap::mds_info_t::encode_versioned(bufferlist& bl, uint64_t features) const
 {
-  __u8 v = 9;
+  __u8 v = 10;
   if (!HAVE_FEATURE(features, SERVER_NAUTILUS)) {
     v = 7;
   }
@@ -547,6 +550,9 @@ void MDSMap::mds_info_t::encode_versioned(bufferlist& bl, uint64_t features) con
   encode(false, bl);
   if (v >= 9) {
     encode(flags, bl);
+  }
+  if (v >= 10) {
+    encode(compat, bl);
   }
   ENCODE_FINISH(bl);
 }
@@ -603,6 +609,9 @@ void MDSMap::mds_info_t::decode(bufferlist::const_iterator& bl)
   }
   if (struct_v >= 9) {
     decode(flags, bl);
+  }
+  if (struct_v >= 10) {
+    decode(compat, bl);
   }
   DECODE_FINISH(bl);
 }
