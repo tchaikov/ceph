@@ -9,6 +9,9 @@
   that were storing state in RADOS omap, especially without striping which
   limits scalability.
 
+* MDS upgrades no longer require stopping all standby MDS daemons before
+  upgrading the sole active MDS for a file system.
+
 >=16.0.0
 --------
 * mgr-pg_autoscaler: Autoscaler will now start out by scaling each
