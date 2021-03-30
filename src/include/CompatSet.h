@@ -156,7 +156,7 @@ struct CompatSet {
    * -1: This CompatSet is missing at least one feature
    *     described in the other. It may still have more features, though.
    */
-  int compare(const CompatSet& other) {
+  int compare(const CompatSet& other) const {
     if ((other.compat.mask == compat.mask) &&
 	(other.ro_compat.mask == ro_compat.mask) &&
 	(other.incompat.mask == incompat.mask)) return 0;
@@ -172,7 +172,7 @@ struct CompatSet {
   /* Get the features supported by other CompatSet but not this one,
    * as a CompatSet.
    */
-  CompatSet unsupported(CompatSet& other) {
+  CompatSet unsupported(CompatSet& other) const {
     CompatSet diff;
     uint64_t other_compat =
       ((other.compat.mask ^ compat.mask) & other.compat.mask);
