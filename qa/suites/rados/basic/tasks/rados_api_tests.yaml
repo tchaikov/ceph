@@ -17,8 +17,8 @@ overrides:
       mon:
         mon warn on pool no app: false
       osd:
-        osd class load list: *
-        osd class default list: *
+        osd class load list: "*"
+        osd class default list: "*"
 tasks:
 - workunit:
     clients:
