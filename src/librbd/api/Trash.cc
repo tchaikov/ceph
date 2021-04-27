@@ -25,8 +25,6 @@
 #include <json_spirit/json_spirit.h>
 #include "librbd/journal/DisabledPolicy.h"
 #include "librbd/image/ListWatchersRequest.h"
-#include <experimental/map>
-
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
 #define dout_prefix *_dout << "librbd::api::Trash: " << __func__ << ": "
@@ -295,14 +293,18 @@ int Trash<I>::move(librados::IoCtx &io_ctx, rbd_trash_image_source_t source,
     if (r < 0) {
       return r;
     }
-
-    std::experimental::erase_if(
-      trash_image_specs, [image_name](const auto& pair) {
-        const auto& spec = pair.second;
-        return (spec.source != cls::rbd::TRASH_IMAGE_SOURCE_USER ||
-                spec.state != cls::rbd::TRASH_IMAGE_STATE_MOVING ||
-                spec.name != image_name);
-      });
+    // should use std::erase_if() in C++20
+    for (auto it = trash_image_specs.begin(), last = trash_image_specs.end();
+         it != last;) {
+      if (const auto& spec = it->second;
+          spec.source != cls::rbd::TRASH_IMAGE_SOURCE_USER ||
+          spec.state != cls::rbd::TRASH_IMAGE_STATE_MOVING ||
+          spec.name != image_name) {
+        it = trash_image_specs.erase(it);
+      } else {
+        ++it;
+      }
+    }
     if (trash_image_specs.empty()) {
       return -ENOENT;
     }
