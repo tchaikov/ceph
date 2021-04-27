@@ -2978,8 +2978,8 @@ void sparsify(librados::ObjectWriteOperation *op, size_t sparse_size,
               bool remove_empty)
 {
   bufferlist bl;
-  encode(sparse_size, bl);
-  encode(remove_empty, bl);
+  ceph::encode(sparse_size, bl);
+  ceph::encode(remove_empty, bl);
   op->exec("rbd", "sparsify", bl);
 }
 
