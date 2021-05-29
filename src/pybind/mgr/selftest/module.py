@@ -1,10 +1,13 @@
 
-from mgr_module import MgrModule, CommandResult, CLICommand, Option
+from mgr_module import MgrModule, CommandResult, HandleCommandResult, CLICommand, Option
 import enum
 import json
 import random
 import sys
 import threading
+from code import InteractiveInterpreter
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -60,6 +63,7 @@ class Module(MgrModule):
         self._event = threading.Event()
         self._workload: Optional[Workload] = None
         self._health: Dict[str, Dict[str, Any]] = {}
+        self._repl = InteractiveInterpreter(dict(mgr=self))
 
     @CLICommand('mgr self-test python-version', perm='r')
     def python_version(self) -> Tuple[int, str, str]:
@@ -463,6 +467,24 @@ class Module(MgrModule):
 
         self._event.clear()
         self.log.info("Ended command_spam workload...")
+
+    @CLICommand('mgr self-test repl')
+    def repl(self, s) -> HandleCommandResult:
+        '''
+        eval given statement
+        '''
+        with StringIO() as err, redirect_stderr(err), \
+             StringIO() as out, redirect_stdout(out):
+            needs_more = self._repl.runsource(s)
+            if needs_more:
+                retval = 0
+                stdout = ''
+                stderr = ''
+            else:
+                retval = 1
+                stdout = out.getvalue()
+                stderr = err.getvalue()
+            return HandleCommandResult(retval, stdout, stderr)
 
     def serve(self) -> None:
         while True:
