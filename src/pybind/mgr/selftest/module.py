@@ -80,7 +80,7 @@ class Module(MgrModule):
         return 0, '', 'Self-test succeeded'
 
     @CLICommand('mgr self-test background start')
-    def backgroun_start(self, workload: Workload) -> Tuple[int, str, str]:
+    def background_start(self, workload: Workload) -> Tuple[int, str, str]:
         '''
         Activate a background workload (one of command_spam, throw_exception)
         '''
