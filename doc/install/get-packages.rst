@@ -27,7 +27,10 @@ Install packages with cephadm
 
 #. Download the cephadm script::
 
-    curl --silent --remote-name --location https://github.com/ceph/ceph/raw/octopus/src/cephadm/cephadm
+.. prompt:: bash $
+   :substitutions:
+
+   curl --silent --remote-name --location https://github.com/ceph/ceph/raw/|stable-release|/src/cephadm/cephadm
     chmod +x cephadm
 
 #. Configure the Ceph repository based on the release name::
