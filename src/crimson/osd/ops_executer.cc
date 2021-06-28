@@ -654,9 +654,10 @@ static PG::interruptible_future<hobject_t> pgls_filter(
     logger().debug("pgls_filter: filter is interested in xattr={} for obj={}",
                    xattr, sobj);
     return backend.getxattr(sobj, xattr).safe_then_interruptible(
-      [&filter, sobj] (ceph::bufferlist val) {
+      [&filter, sobj] (ceph::bufferptr ptr) {
         logger().debug("pgls_filter: got xvalue for obj={}", sobj);
-
+	bufferlist val;
+	val.append(std::move(ptr));
         const bool filtered = filter.filter(sobj, val);
         return seastar::make_ready_future<hobject_t>(filtered ? sobj : hobject_t{});
       }, PGBackend::get_attr_errorator::all_same_way([&filter, sobj] {

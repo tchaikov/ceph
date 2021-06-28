@@ -26,7 +26,9 @@ namespace {
     if (found == values.end()) {
       return {};
     }
-    auto p = found->second.cbegin();
+    bufferlist bl;
+    bl.push_back(found->second);
+    auto p = bl.cbegin();
     T value;
     decode(value, p);
     return std::make_optional(std::move(value));

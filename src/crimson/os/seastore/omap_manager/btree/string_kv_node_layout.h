@@ -1066,14 +1066,11 @@ public:
 	get_node_key().val_len);
     }
 
-    ceph::bufferlist get_val() const {
+    ceph::buffer::ptr get_val() const {
       auto node_key = get_node_key();
-      ceph::bufferlist bl;
-      ceph::bufferptr bptr(
+      return ceph::buffer::ptr(
 	get_node_val_ptr() + node_key.key_len,
 	get_node_key().val_len);
-      bl.append(bptr);
-      return bl;
     }
   };
   using const_iterator = iter_t<true>;
@@ -1281,7 +1278,7 @@ public:
     auto iter2 = rhs.iter_begin();
     while (iter != iter_end()) {
       if(iter->get_key() != iter2->get_key() ||
-         iter->get_val() != iter2->get_val()) {
+         iter->get_val().cmp(iter2->get_val()) != 0) {
 	return false;
       }
       iter++;

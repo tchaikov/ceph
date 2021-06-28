@@ -220,7 +220,7 @@ CyanStore::read_errorator::future<ceph::bufferlist> CyanStore::readv(
 }
 
 
-CyanStore::get_attr_errorator::future<ceph::bufferlist> CyanStore::get_attr(
+CyanStore::get_attr_errorator::future<ceph::bufferptr> CyanStore::get_attr(
   CollectionRef ch,
   const ghobject_t& oid,
   std::string_view name) const
@@ -233,7 +233,7 @@ CyanStore::get_attr_errorator::future<ceph::bufferlist> CyanStore::get_attr(
     return crimson::ct_error::enoent::make();
   }
   if (auto found = o->xattr.find(name); found != o->xattr.end()) {
-    return get_attr_errorator::make_ready_future<ceph::bufferlist>(found->second);
+    return get_attr_errorator::make_ready_future<ceph::bufferptr>(found->second);
   } else {
     return crimson::ct_error::enodata::make();
   }
@@ -373,10 +373,10 @@ seastar::future<> CyanStore::do_transaction(CollectionRef ch,
         coll_t cid = i.get_cid(op->cid);
         ghobject_t oid = i.get_oid(op->oid);
         std::string name = i.decode_string();
-        ceph::bufferlist bl;
-        i.decode_bl(bl);
-        std::map<std::string, bufferlist> to_set;
-	to_set.emplace(name, std::move(bl));
+        ceph::bufferptr ptr;
+        i.decode_bp(ptr);
+        std::map<std::string, bufferptr> to_set;
+	to_set.emplace(name, std::move(ptr));
         r = _setattrs(cid, oid, to_set);
       }
       break;
@@ -405,7 +405,7 @@ seastar::future<> CyanStore::do_transaction(CollectionRef ch,
       {
         coll_t cid = i.get_cid(op->cid);
         ghobject_t oid = i.get_oid(op->oid);
-        std::map<std::string, ceph::bufferlist> aset;
+        std::map<std::string, ceph::bufferptr> aset;
         i.decode_attrset(aset);
         r = _omap_set_values(cid, oid, std::move(aset));
       }
@@ -563,7 +563,7 @@ int CyanStore::_omap_clear(
 int CyanStore::_omap_set_values(
   const coll_t& cid,
   const ghobject_t& oid,
-  std::map<std::string, ceph::bufferlist> &&aset)
+  std::map<std::string, ceph::bufferptr> &&aset)
 {
   logger().debug(
     "{} {} {} {} keys",
@@ -659,7 +659,7 @@ int CyanStore::_truncate(const coll_t& cid, const ghobject_t& oid, uint64_t size
 }
 
 int CyanStore::_setattrs(const coll_t& cid, const ghobject_t& oid,
-                         std::map<std::string,bufferlist>& aset)
+                         std::map<std::string,bufferptr>& aset)
 {
   logger().debug("{} cid={} oid={}",
                 __func__, cid, oid);
@@ -670,9 +670,9 @@ int CyanStore::_setattrs(const coll_t& cid, const ghobject_t& oid,
   ObjectRef o = c->get_object(oid);
   if (!o)
     return -ENOENT;
-  for (std::map<std::string, bufferlist>::const_iterator p = aset.begin();
-       p != aset.end(); ++p)
-    o->xattr[p->first] = p->second;
+  for (auto& [key, val] : aset) {
+    o->xattr[key] = std::move(val);
+  };
   return 0;
 }
 

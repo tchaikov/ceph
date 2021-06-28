@@ -77,7 +77,8 @@ PGBackend::load_metadata(const hobject_t& oid)
       [oid](auto &&attrs) -> load_metadata_ertr::future<loaded_object_md_t::ref>{
 	loaded_object_md_t::ref ret(new loaded_object_md_t());
 	if (auto oiiter = attrs.find(OI_ATTR); oiiter != attrs.end()) {
-	  bufferlist bl = std::move(oiiter->second);
+	  bufferlist bl;
+	  bl.push_back(std::move(oiiter->second));
 	  ret->os = ObjectState(
 	    object_info_t(bl),
 	    true);
@@ -90,7 +91,8 @@ PGBackend::load_metadata(const hobject_t& oid)
 	
 	if (oid.is_head()) {
 	  if (auto ssiter = attrs.find(SS_ATTR); ssiter != attrs.end()) {
-	    bufferlist bl = std::move(ssiter->second);
+	    bufferlist bl;
+	    bl.push_back(std::move(ssiter->second));
 	    ret->ss = SnapSet(bl);
 	  } else {
 	    /* TODO: add support for writing out snapsets
@@ -790,14 +792,15 @@ PGBackend::get_attr_ierrorator::future<> PGBackend::getxattr(
   }
   logger().debug("getxattr on obj={} for attr={}", os.oi.soid, name);
   return getxattr(os.oi.soid, name).safe_then_interruptible(
-    [&osd_op] (ceph::bufferlist&& val) {
-    osd_op.outdata = std::move(val);
+    [&osd_op] (ceph::bufferptr&& ptr) {
+    osd_op.outdata.clear();
+    osd_op.outdata.push_back(ptr);
     osd_op.op.xattr.value_len = osd_op.outdata.length();
     return get_attr_errorator::now();
   });
 }
 
-PGBackend::get_attr_ierrorator::future<ceph::bufferlist>
+PGBackend::get_attr_ierrorator::future<ceph::bufferptr>
 PGBackend::getxattr(
   const hobject_t& soid,
   std::string_view key) const
@@ -818,12 +821,10 @@ PGBackend::get_attr_ierrorator::future<> PGBackend::get_xattrs(
   }
   return store->get_attrs(coll, ghobject_t{os.oi.soid}).safe_then(
     [&osd_op](auto&& attrs) {
-    std::vector<std::pair<std::string, bufferlist>> user_xattrs;
+    std::vector<std::pair<std::string, buffer::ptr>> user_xattrs;
     for (auto& [key, val] : attrs) {
       if (key.size() > 1 && key[0] == '_') {
-	ceph::bufferlist bl;
-	bl.append(std::move(val));
-	user_xattrs.emplace_back(key.substr(1), std::move(bl));
+	user_xattrs.emplace_back(key.substr(1), std::move(val));
       }
     }
     ceph::encode(user_xattrs, osd_op.outdata);

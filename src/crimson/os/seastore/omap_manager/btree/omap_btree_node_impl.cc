@@ -534,8 +534,8 @@ OMapLeafNode::list(
      string_upper_bound(*start)) :
     iter_begin();
 
-  for (; iter != iter_end() && result.size() < config.max_result_size; iter++) {
-    result.emplace(std::make_pair(iter->get_key(), iter->get_val()));
+  for (; iter != iter_end() && result.size() < config.max_result_size; ++iter) {
+    result.emplace(iter->get_key(), iter->get_val());
   }
 
   complete = (iter == iter_end());

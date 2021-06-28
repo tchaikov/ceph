@@ -242,7 +242,7 @@ SeaStore::read_errorator::future<ceph::bufferlist> SeaStore::readv(
 
 using crimson::os::seastore::omap_manager::BtreeOMapManager;
 
-SeaStore::get_attr_errorator::future<ceph::bufferlist> SeaStore::get_attr(
+SeaStore::get_attr_errorator::future<ceph::bufferptr> SeaStore::get_attr(
   CollectionRef ch,
   const ghobject_t& oid,
   std::string_view name) const
@@ -250,19 +250,17 @@ SeaStore::get_attr_errorator::future<ceph::bufferlist> SeaStore::get_attr(
   auto c = static_cast<SeastoreCollection*>(ch.get());
   LOG_PREFIX(SeaStore::get_attr);
   DEBUG("{} {}", c->get_cid(), oid);
-  return repeat_with_onode<ceph::bufferlist>(
+  return repeat_with_onode<ceph::bufferptr>(
     c, oid, [=](auto &t, auto& onode)
-    -> _omap_get_value_ertr::future<ceph::bufferlist> {
+    -> _omap_get_value_ertr::future<ceph::bufferptr> {
     auto& layout = onode.get_layout();
     if (name == OI_ATTR && layout.oi_size) {
-      ceph::bufferlist bl;
-      bl.append(ceph::bufferptr(&layout.oi[0], layout.oi_size));
-      return seastar::make_ready_future<ceph::bufferlist>(std::move(bl));
+      ceph::bufferptr ptr(&layout.oi[0], layout.oi_size);
+      return seastar::make_ready_future<ceph::bufferptr>(std::move(ptr));
     }
     if (name == SS_ATTR && layout.ss_size) {
-      ceph::bufferlist bl;
-      bl.append(ceph::bufferptr(&layout.ss[0], layout.ss_size));
-      return seastar::make_ready_future<ceph::bufferlist>(std::move(bl));
+      ceph::bufferptr ptr(&layout.ss[0], layout.ss_size);
+      return seastar::make_ready_future<ceph::bufferptr>(std::move(ptr));
     }
     return _omap_get_value(
       t,
@@ -288,15 +286,13 @@ SeaStore::get_attrs_ertr::future<SeaStore::attrs_t> SeaStore::get_attrs(
       OMapManager::omap_list_config_t::with_inclusive(false)
     ).safe_then([&layout](auto p) {
       auto& attrs = std::get<1>(p);
-      ceph::bufferlist bl;
       if (layout.oi_size) {
-        bl.append(ceph::bufferptr(&layout.oi[0], layout.oi_size));
-        attrs.emplace(OI_ATTR, std::move(bl));
+        ceph::buffer::ptr oi_buf(&layout.oi[0], layout.oi_size);
+        attrs.emplace(OI_ATTR, oi_buf);
       }
       if (layout.ss_size) {
-        bl.clear();
-        bl.append(ceph::bufferptr(&layout.ss[0], layout.ss_size));
-        attrs.emplace(SS_ATTR, std::move(bl));
+	ceph::buffer::ptr ss_buf(&layout.ss[0], layout.ss_size);
+        attrs.emplace(SS_ATTR, std::move(ss_buf));
       }
       return seastar::make_ready_future<omap_values_t>(std::move(attrs));
     });
@@ -377,7 +373,7 @@ SeaStore::_omap_get_value_ret SeaStore::_omap_get_value(
 	if (!opt) {
 	  return crimson::ct_error::enodata::make();
 	}
-	return seastar::make_ready_future<ceph::bufferlist>(std::move(*opt));
+	return seastar::make_ready_future<ceph::bufferptr>(std::move(*opt));
       });
     });
 }
@@ -405,12 +401,9 @@ SeaStore::_omap_get_values_ret SeaStore::_omap_get_values(
 	    key
 	  ).safe_then([&ret, &key](auto &&p) {
 	    if (p) {
-	      bufferlist bl;
-	      bl.append(*p);
 	      ret.emplace(
-		std::make_pair(
-		  std::move(key),
-		  std::move(bl)));
+		std::move(key),
+		std::move(*p));
 	    }
 	    return seastar::now();
 	  });
@@ -553,7 +546,7 @@ public:
   std::string key() {
     return iter->first;
   }
-  ceph::buffer::list value() {
+  ceph::buffer::ptr value() {
     return iter->second;
   }
   int status() const {

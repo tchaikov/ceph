@@ -50,7 +50,7 @@ public:
     std::string key() final {
       return iter->first;
     }
-    virtual ceph::buffer::list value() {
+    virtual ceph::buffer::ptr value() {
       return iter->second;
     }
     virtual int status() const {
@@ -58,7 +58,7 @@ public:
     }
     virtual ~CyanOmapIterator() {}
   private:
-    std::map<std::string, bufferlist>::const_iterator iter;
+    std::map<std::string, bufferptr>::const_iterator iter;
     ObjectRef obj;
   };
 
@@ -89,7 +89,7 @@ public:
     interval_set<uint64_t>& m,
     uint32_t op_flags = 0) final;
 
-  get_attr_errorator::future<ceph::bufferlist> get_attr(
+  get_attr_errorator::future<ceph::bufferptr> get_attr(
     CollectionRef c,
     const ghobject_t& oid,
     std::string_view name) const final;
@@ -156,7 +156,7 @@ private:
   int _omap_set_values(
     const coll_t& cid,
     const ghobject_t& oid,
-    std::map<std::string, ceph::bufferlist> &&aset);
+    std::map<std::string, ceph::bufferptr> &&aset);
   int _omap_set_header(
     const coll_t& cid,
     const ghobject_t& oid,
@@ -172,7 +172,7 @@ private:
     const std::string &last);
   int _truncate(const coll_t& cid, const ghobject_t& oid, uint64_t size);
   int _setattrs(const coll_t& cid, const ghobject_t& oid,
-                std::map<std::string,bufferlist>& aset);
+                std::map<std::string,bufferptr>& aset);
   int _rm_attr(const coll_t& cid, const ghobject_t& oid,
 	       string_view name);
   int _create_collection(const coll_t& cid, int bits);

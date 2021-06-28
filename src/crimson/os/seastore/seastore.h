@@ -58,7 +58,7 @@ public:
     const ghobject_t& oid,
     interval_set<uint64_t>& m,
     uint32_t op_flags = 0) final;
-  get_attr_errorator::future<ceph::bufferlist> get_attr(
+  get_attr_errorator::future<ceph::bufferptr> get_attr(
     CollectionRef c,
     const ghobject_t& oid,
     std::string_view name) const final;
@@ -198,7 +198,7 @@ private:
   using _omap_get_value_ertr = OMapManager::base_ertr::extend<
     crimson::ct_error::enodata
     >;
-  using _omap_get_value_ret = _omap_get_value_ertr::future<ceph::bufferlist>;
+  using _omap_get_value_ret = _omap_get_value_ertr::future<ceph::bufferptr>;
   _omap_get_value_ret _omap_get_value(
     Transaction &t,
     omap_root_t &&root,

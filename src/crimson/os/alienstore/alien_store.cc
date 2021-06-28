@@ -300,14 +300,14 @@ AlienStore::readv(CollectionRef ch,
   });
 }
 
-AlienStore::get_attr_errorator::future<ceph::bufferlist>
+AlienStore::get_attr_errorator::future<ceph::bufferptr>
 AlienStore::get_attr(CollectionRef ch,
                      const ghobject_t& oid,
                      std::string_view name) const
 {
   logger().debug("{}", __func__);
   assert(tp);
-  return seastar::do_with(ceph::bufferlist{}, std::string{name},
+  return seastar::do_with(ceph::bufferptr{}, std::string{name},
                           [=] (auto &value, const auto& name) {
     return tp->submit(ch->get_cid().hash_to_shard(tp->size()), [=, &value, &name] {
       // XXX: `name` isn't a `std::string_view` anymore! it had to be converted
@@ -316,13 +316,13 @@ AlienStore::get_attr(CollectionRef ch,
       // after-free issue.
       auto c = static_cast<AlienCollection*>(ch.get());
       return store->getattr(c->collection, oid, name.c_str(), value);
-    }).then([oid, &value] (int r) -> get_attr_errorator::future<ceph::bufferlist> {
+    }).then([oid, &value] (int r) -> get_attr_errorator::future<ceph::bufferptr> {
       if (r == -ENOENT) {
         return crimson::ct_error::enoent::make();
       } else if (r == -ENODATA) {
         return crimson::ct_error::enodata::make();
       } else {
-        return get_attr_errorator::make_ready_future<ceph::bufferlist>(
+        return get_attr_errorator::make_ready_future<ceph::bufferptr>(
           std::move(value));
       }
     });
@@ -338,14 +338,7 @@ AlienStore::get_attrs(CollectionRef ch,
   return seastar::do_with(attrs_t{}, [=] (auto &aset) {
     return tp->submit(ch->get_cid().hash_to_shard(tp->size()), [=, &aset] {
       auto c = static_cast<AlienCollection*>(ch.get());
-      std::map<std::string, ceph::bufferptr> blueaset;
-      const auto r = store->getattrs(c->collection, oid, blueaset);
-      for (auto& [bluekey, blueval] : blueaset) {
-        ceph::bufferlist bl;
-        bl.push_back(std::move(blueval));
-        aset.emplace(std::move(bluekey), std::move(bl));
-      }
-      return r;
+      return store->getattrs(c->collection, oid, aset);
     }).then([&aset] (int r) -> get_attrs_ertr::future<attrs_t> {
       if (r == -ENOENT) {
         return crimson::ct_error::enoent::make();
