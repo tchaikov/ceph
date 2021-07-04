@@ -7,6 +7,7 @@
 
 #include <boost/intrusive/list.hpp>
 
+#include "crimson/common/log.h"
 #include "crimson/os/seastore/ordering_handle.h"
 #include "crimson/os/seastore/seastore_types.h"
 #include "crimson/os/seastore/cached_extent.h"
@@ -14,7 +15,7 @@
 
 namespace crimson::os::seastore {
 
-struct retired_extent_gate_t;
+class retired_extent_gate_t;
 class SeaStore;
 class Transaction;
 
@@ -36,12 +37,15 @@ public:
       return get_extent_ret::RETIRED;
     } else if (auto iter = write_set.find_offset(addr);
 	iter != write_set.end()) {
+      ::crimson::get_logger(ceph_subsys_seastore).debug("{} found in write_set {}", __func__, *iter);
       if (out)
 	*out = CachedExtentRef(&*iter);
       return get_extent_ret::PRESENT;
     } else if (
       auto iter = read_set.find(addr);
       iter != read_set.end()) {
+      ::crimson::get_logger(ceph_subsys_seastore).debug("{} found in read_set {}", __func__, *iter->ref);
+      assert(!in_write_set(addr));
       if (out)
 	*out = iter->ref;
       return get_extent_ret::PRESENT;
@@ -165,7 +169,18 @@ public:
     retired_gate_token.reset(initiated_after);
     conflicted = false;
   }
-
+  bool in_write_set(paddr_t addr) {
+    for (auto it = write_set.begin();
+         it != write_set.end();
+         ++it) {
+      if (it->poffset == addr) {
+          ::crimson::get_logger(ceph_subsys_seastore).debug(
+              "{} write_set: {}", (void*)this, *it);
+	return true;
+      }
+    }
+    return false;
+  }
 private:
   friend class Cache;
   friend Ref make_test_transaction();

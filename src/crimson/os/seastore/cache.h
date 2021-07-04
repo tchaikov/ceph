@@ -8,7 +8,7 @@
 #include "seastar/core/shared_future.hh"
 
 #include "include/buffer.h"
-
+#include "crimson/common/log.h"
 #include "crimson/os/seastore/logging.h"
 #include "crimson/os/seastore/seastore_types.h"
 #include "crimson/os/seastore/transaction.h"
@@ -274,6 +274,8 @@ public:
     auto result = t.get_extent(offset, &ret);
     if (result != Transaction::get_extent_ret::ABSENT) {
       assert(result != Transaction::get_extent_ret::RETIRED);
+      ::crimson::get_logger(ceph_subsys_seastore).debug("{} {} extent: {}", __func__, (void*)&t, *ret);
+      t.in_write_set(offset);
       return seastar::make_ready_future<TCachedExtentRef<T>>(
 	ret->cast<T>());
     } else {
