@@ -23,7 +23,7 @@ import threading
 import uuid
 
 from collections import abc
-from typing import cast, Any, Callable, Dict, Generic, List, Optional, Sequence, Tuple, Union
+from typing import cast, Any, Callable, Dict, Generic, List, Optional, Sequence, Tuple, Type, Union
 
 if sys.version_info >= (3, 8):
     from typing import get_args, get_origin
@@ -122,14 +122,14 @@ class CephArgtype(object):
     method validates a string against that initialized instance,
     throwing ArgumentError if there's a problem.
     """
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any) -> None:
         """
         set any per-instance validation parameters here
         from kwargs (fixed string sets, integer ranges, etc)
         """
         pass
 
-    def valid(self, s, partial=False):
+    def valid(self, s: str, partial: bool = False) -> None:
         """
         Run validation against given string s (generally one word);
         partial means to accept partial string matches (begins-with).
@@ -140,7 +140,7 @@ class CephArgtype(object):
         """
         self.val = s
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """
         return string representation of description of type.  Note,
         this is not a representation of the actual value.  Subclasses
@@ -149,7 +149,7 @@ class CephArgtype(object):
         """
         return self.__class__.__name__
 
-    def __str__(self):
+    def __str__(self) -> str:
         """
         where __repr__ (ideally) returns a string that could be used to
         reproduce the object, __str__ returns one you'd like to see in
@@ -161,11 +161,13 @@ class CephArgtype(object):
     def __call__(self, v):
         return v
 
-    def complete(self, s):
+    def complete(self, s: str) -> List[str]:
         return []
 
     @staticmethod
-    def _compound_type_to_argdesc(tp, attrs, positional):
+    def _compound_type_to_argdesc(tp,
+                                  attrs: Dict[str, str],
+                                  positional: bool) -> str:
         # generate argdesc from Sequence[T], Tuple[T,..] and Optional[T]
         orig_type = get_origin(tp)
         type_args = get_args(tp)
@@ -188,7 +190,10 @@ class CephArgtype(object):
             raise ValueError(f"unknown type '{tp}': '{attrs}'")
 
     @staticmethod
-    def to_argdesc(tp, attrs, has_default=False, positional=True):
+    def to_argdesc(tp: Type[Any],
+                   attrs: Dict[str, str],
+                   has_default: bool = False,
+                   positional: bool = True) -> str:
         if has_default:
             attrs['req'] = 'false'
         if not positional:
@@ -209,7 +214,7 @@ class CephArgtype(object):
             else:
                 return CephArgtype._compound_type_to_argdesc(tp, attrs, positional)
 
-    def argdesc(self, attrs):
+    def argdesc(self, attrs: Dict[str, str]) -> str:
         attrs['type'] = type(self).__name__
         return ','.join(f'{k}={v}' for k, v in attrs.items())
 
@@ -229,7 +234,7 @@ class CephArgtype(object):
             raise ValueError(f"unknown type '{tp}': '{v}'")
 
     @staticmethod
-    def cast_to(tp, v):
+    def cast_to(tp: Type[Any], v: Any) -> Any:
         PYTHON_TYPES = (
             str,
             int,
@@ -249,13 +254,13 @@ class CephInt(CephArgtype):
     range-limited integers, [+|-][0-9]+ or 0x[0-9a-f]+
     range: list of 1 or 2 ints, [min] or [min,max]
     """
-    def __init__(self, range=''):
+    def __init__(self, range: str = '') -> None:
         if range == '':
             self.range = list()
         else:
             self.range = [int(x) for x in range.split('|')]
 
-    def valid(self, s, partial=False):
+    def valid(self, s: str, partial: bool = False) -> None:
         try:
             val = int(s, 0)
         except ValueError:
@@ -268,7 +273,7 @@ class CephInt(CephArgtype):
                 raise ArgumentValid(f"{val} not in range {self.range}")
         self.val = val
 
-    def __str__(self):
+    def __str__(self) -> str:
         r = ''
         if len(self.range) == 1:
             r = '[{0}-]'.format(self.range[0])
@@ -288,13 +293,13 @@ class CephFloat(CephArgtype):
     range-limited float type
     range: list of 1 or 2 floats, [min] or [min, max]
     """
-    def __init__(self, range=''):
+    def __init__(self, range: str = '') -> None:
         if range == '':
             self.range = list()
         else:
             self.range = [float(x) for x in range.split('|')]
 
-    def valid(self, s, partial=False):
+    def valid(self, s: str, partial: str = False) -> None:
         try:
             val = float(s)
         except ValueError:
@@ -307,7 +312,7 @@ class CephFloat(CephArgtype):
                 raise ArgumentValid(f"{val} not in range {self.range}")
         self.val = val
 
-    def __str__(self):
+    def __str__(self) -> str:
         r = ''
         if len(self.range) == 1:
             r = '[{0}-]'.format(self.range[0])
@@ -325,7 +330,7 @@ class CephString(CephArgtype):
     """
     String; pretty generic.  goodchars is a RE char class of valid chars
     """
-    def __init__(self, goodchars=''):
+    def __init__(self, goodchars: str = '') -> None:
         from string import printable
         try:
             re.compile(goodchars)
@@ -350,13 +355,13 @@ class CephString(CephArgtype):
             b += '(goodchars {0})'.format(self.goodchars)
         return '<string{0}>'.format(b)
 
-    def complete(self, s) -> List[str]:
+    def complete(self, s: str) -> List[str]:
         if s == '':
             return []
         else:
             return [s]
 
-    def argdesc(self, attrs):
+    def argdesc(self, attrs: Dict[str, str]) -> str:
         if self.goodchars:
             attrs['goodchars'] = self.goodchars
         return super().argdesc(attrs)
@@ -380,7 +385,7 @@ class CephIPAddr(CephArgtype):
     """
     IP address (v4 or v6) with optional port
     """
-    def valid(self, s, partial=False):
+    def valid(self, s: str, partial: bool = False) -> None:
         # parse off port, use socket to validate addr
         type = 6
         p: Optional[str] = None
@@ -427,7 +432,7 @@ class CephIPAddr(CephArgtype):
         self.addr = a
         self.port = p
 
-    def __str__(self):
+    def __str__(self) -> str:
         return '<IPaddr[:port]>'
 
 
@@ -480,7 +485,7 @@ class CephPgid(CephArgtype):
     """
     pgid, in form N.xxx (N = pool number, xxx = hex pgnum)
     """
-    def valid(self, s, partial=False):
+    def valid(self, s: str, partial: bool = False):
         if s.find('.') == -1:
             raise ArgumentFormat('pgid has no .')
         poolid_s, pgnum_s = s.split('.', 1)
@@ -496,7 +501,7 @@ class CephPgid(CephArgtype):
             raise ArgumentFormat('pgnum {0} not hex integer'.format(pgnum))
         self.val = s
 
-    def __str__(self):
+    def __str__(self) -> str:
         return '<pgid>'
 
 
@@ -512,7 +517,7 @@ class CephName(CephArgtype):
         self.nametype: Optional[str] = None
         self.nameid: Optional[str] = None
 
-    def valid(self, s, partial=False):
+    def valid(self, s: str, partial: bool = False) -> None:
         if s == '*':
             self.val = s
             return
@@ -540,7 +545,7 @@ class CephName(CephArgtype):
         self.val = s
         self.nameid = i
 
-    def __str__(self):
+    def __str__(self) -> str:
         return '<name (type.id)>'
 
 
@@ -550,11 +555,11 @@ class CephOsdName(CephArgtype):
 
     osd.<id>, or <id>, or *, where id is a base10 int
     """
-    def __init__(self):
+    def __init__(self) -> None:
         self.nametype: Optional[str] = None
         self.nameid: Optional[int] = None
 
-    def valid(self, s, partial=False):
+    def valid(self, s: str, partial: bool = False) -> None:
         if s == '*':
             self.val = s
             return
@@ -575,7 +580,7 @@ class CephOsdName(CephArgtype):
         self.nameid = v
         self.val = v
 
-    def __str__(self):
+    def __str__(self) -> str:
         return '<osdname (id|osd.id)>'
 
 
@@ -589,7 +594,7 @@ class CephChoices(CephArgtype):
         if self.enum is not None:
             self.strings = list(e.value for e in self.enum)
 
-    def valid(self, s, partial=False):
+    def valid(self, s: str, partial: bool = False) -> None:
         if not partial:
             if s not in self.strings:
                 # show as __str__ does: {s1|s2..}
@@ -604,7 +609,7 @@ class CephChoices(CephArgtype):
                 return
         raise ArgumentValid("{0} not in {1}".  format(s, self))
 
-    def __str__(self):
+    def __str__(self) -> str:
         if len(self.strings) == 1:
             return '{0}'.format(self.strings[0])
         else:
@@ -616,7 +621,7 @@ class CephChoices(CephArgtype):
         else:
             return self.enum[v]
 
-    def complete(self, s):
+    def complete(self, s: str) -> List[str]:
         all_elems = [token for token in self.strings if token.startswith(s)]
         return all_elems
 
@@ -630,10 +635,10 @@ class CephBool(CephArgtype):
     A boolean argument, values may be case insensitive 'true', 'false', '0',
     '1'.  In keyword form, value may be left off (implies true).
     """
-    def __init__(self, strings='', **kwargs):
+    def __init__(self, strings: str = '', **kwargs: Any) -> None:
         self.strings = strings.split('|')
 
-    def valid(self, s, partial=False):
+    def valid(self, s: str, partial: bool = False) -> None:
         lower_case = s.lower()
         if lower_case in ['true', '1']:
             self.val = True
@@ -642,7 +647,7 @@ class CephBool(CephArgtype):
         else:
             raise ArgumentValid("{0} not one of 'true', 'false'".format(s))
 
-    def __str__(self):
+    def __str__(self) -> str:
         return '<bool>'
 
 
@@ -650,14 +655,14 @@ class CephFilepath(CephArgtype):
     """
     Openable file
     """
-    def valid(self, s, partial=False):
+    def valid(self, s: str, partial: bool = False) -> bool:
         # set self.val if the specified path is readable or writable
         s = os.path.abspath(s)
         if not os.access(s, os.R_OK):
             self._validate_writable_file(s)
         self.val = s
 
-    def _validate_writable_file(self, fname):
+    def _validate_writable_file(self, fname: str) -> None:
         if os.path.exists(fname):
             if os.path.isfile(fname):
                 if not os.access(fname, os.W_OK):
@@ -669,7 +674,7 @@ class CephFilepath(CephArgtype):
             if not os.access(dirname, os.W_OK):
                 raise ArgumentValid('cannot create file in {0}'.format(dirname))
 
-    def __str__(self):
+    def __str__(self) -> str:
         return '<outfilename>'
 
 
@@ -677,7 +682,7 @@ class CephFragment(CephArgtype):
     """
     'Fragment' ??? XXX
     """
-    def valid(self, s, partial=False):
+    def valid(self, s: str, partial: bool = False) -> None:
         if s.find('/') == -1:
             raise ArgumentFormat('{0}: no /'.format(s))
         val, bits = s.split('/')
@@ -694,7 +699,7 @@ class CephFragment(CephArgtype):
             raise ArgumentFormat('can\'t convert {0} to integer'.format(bits))
         self.val = s
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "<CephFS fragment ID (0xvvv/bbb)>"
 
 
@@ -746,7 +751,7 @@ class CephPrefix(CephArgtype):
     def __str__(self) -> str:
         return self.prefix
 
-    def complete(self, s) -> List[str]:
+    def complete(self, s: str) -> List[str]:
         if self.prefix.startswith(s):
             return [self.prefix.rstrip(' ')]
         else:
@@ -775,7 +780,12 @@ class argdesc(object):
     valid() will later be called with input to validate against it,
     and will store the validated value in self.instance.val for extraction.
     """
-    def __init__(self, t, name=None, n=1, req=True, positional=True, **kwargs) -> None:
+    def __init__(self, t: Type[Any],
+                 name: Optional[str] = None,
+                 n: int = 1,
+                 req: bool = True,
+                 positional: bool = True,
+                 **kwargs: Any) -> None:
         if isinstance(t, basestring):
             self.t = CephPrefix
             self.typeargs = {'prefix': t}
@@ -800,7 +810,7 @@ class argdesc(object):
 
         self.instance = self.t(**self.typeargs)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         r = 'argdesc(' + str(self.t) + ', '
         internals = ['N', 'typeargs', 'instance', 't']
         for (k, v) in self.__dict__.items():
@@ -815,7 +825,7 @@ class argdesc(object):
             r += '{0}={1}, '.format(k, v)
         return r[:-2] + ')'
 
-    def __str__(self):
+    def __str__(self) -> str:
         if ((self.t == CephChoices and len(self.instance.strings) == 1)
            or (self.t == CephPrefix)):
             s = str(self.instance)
@@ -827,7 +837,7 @@ class argdesc(object):
             s = '[' + s + ']'
         return s
 
-    def helpstr(self):
+    def helpstr(self) -> str:
         """
         like str(), but omit parameter names (except for CephString,
         which really needs them)
@@ -889,23 +899,23 @@ class argdesc(object):
 
         return s
 
-    def complete(self, s):
+    def complete(self, s: str) -> List[str]:
         return self.instance.complete(s)
 
 
-def concise_sig(sig):
+def concise_sig(sig: List[argdesc]) -> str:
     """
     Return string representation of sig useful for syntax reference in help
     """
     return ' '.join([d.helpstr() for d in sig])
 
 
-def descsort_key(sh):
+def descsort_key(sh: Dict[str, Any]) -> str:
     """
     sort descriptors by prefixes, defined as the concatenation of all simple
     strings in the descriptor; this works out to just the leading strings.
     """
-    return concise_sig(sh['sig'])
+    return concise_sig(cast(List[argdesc], sh['sig']))
 
 
 def parse_funcsig(sig: Sequence[Union[str, Dict[str, Any]]]) -> List[argdesc]:
@@ -1007,8 +1017,9 @@ def parse_json_funcsigs(s: str,
 
 ArgValT = Union[bool, int, float, str, Tuple[str, str]]
 
+
 def validate_one(word: str,
-                 desc,
+                 desc: argdesc,
                  is_kwarg: bool,
                  partial: bool = False) -> List[ArgValT]:
     """
@@ -1352,9 +1363,10 @@ def validate_command(sigdict: Dict[str, Dict[str, Any]],
     # Sort bestcmds by number of req args so we can try shortest first
     # (relies on a cmdsig being key,val where val is a list of len 1)
 
-    def grade(cmd):
+    def grade(cmd: Dict[str, Any]) -> int:
         # prefer optional arguments over required ones
         sigs = cmd['sig']
+        assert isinstance(sigs, argdesc)
         return sum(map(lambda sig: sig.req, sigs))
 
     bestcmds_sorted = sorted(bestcmds, key=grade)
@@ -1429,7 +1441,9 @@ def find_cmd_target(childargs: List[str]) -> Tuple[str, Optional[str]]:
             name = CephName()
             # if this fails, something is horribly wrong, as it just
             # validated successfully above
-            name.valid(valid_dict['target'])
+            target = valid_dict['target']
+            assert isinstance(target, str)
+            name.valid(target)
             assert name.nametype is not None
             return name.nametype, name.nameid
 
@@ -1486,14 +1500,17 @@ def find_cmd_target(childargs: List[str]) -> Tuple[str, Optional[str]]:
 
 
 class RadosThread(threading.Thread):
-    def __init__(self, func, *args, **kwargs):
+    def __init__(self,
+                 func: Callable[..., Tuple[int, bytes, str]],
+                 *args: Any,
+                 **kwargs: Any) -> None:
         self.args = args
         self.kwargs = kwargs
         self.func = func
         self.exception = None
         threading.Thread.__init__(self)
 
-    def run(self):
+    def run(self) -> None:
         try:
             self.retval = self.func(*self.args, **self.kwargs)
         except Exception as e:
@@ -1548,7 +1565,7 @@ def send_command_retry(*args: Any, **kwargs: Any) -> Tuple[int, bytes, str]:
                 raise
 
 
-def send_command(cluster,
+def send_command(cluster: 'rados.Rados',
                  target: Tuple[str, Optional[str]] = ('mon', ''),
                  cmd: Optional[str] = None,
                  inbuf: Optional[bytes] = b'',
@@ -1648,7 +1665,7 @@ def send_command(cluster,
     return ret, outbuf, outs
 
 
-def json_command(cluster,
+def json_command(cluster: 'rados.Rados',
                  target: Tuple[str, Optional[str]] = ('mon', ''),
                  prefix: Optional[str] = None,
                  argdict: Optional[ValidatedArgs] = None,
