@@ -127,3 +127,14 @@ if(WITH_TESTS)
   include(AddCephTest)
   add_tox_test(mgr-dashboard TOX_ENVS py3 lint check openapi-check)
 endif()
+
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  DESTINATION ${CEPH_INSTALL_DATADIR}/mgr/dashboard
+  ${mgr_module_install_excludes}
+  REGEX "node_modules" EXCLUDE
+  REGEX "cypress.*" EXCLUDE
+  REGEX "\.coveragerc" EXCLUDE
+  REGEX "\.editorconfig" EXCLUDE
+  REGEX "\..*lintrc" EXCLUDE
+  REGEX "\.browserslistrc" EXCLUDE
+  REGEX "\.prettier*" EXCLUDE)
