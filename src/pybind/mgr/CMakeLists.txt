@@ -1,9 +1,9 @@
 set(mgr_module_install_excludes
-  REGEX "CMakeLists.txt" EXCLUDE
-  REGEX "\\.gitignore" EXCLUDE
-  REGEX "tox.ini" EXCLUDE
-  REGEX "requirements.*\.txt" EXCLUDE
-  REGEX "constraints.*\.txt" EXCLUDE)
+  PATTERN "CMakeLists.txt" EXCLUDE
+  PATTERN ".gitignore" EXCLUDE
+  PATTERN "tox.ini" EXCLUDE
+  PATTERN "requirements*.txt" EXCLUDE
+  PATTERN "constraints*.txt" EXCLUDE)
 
 if(WITH_MGR_DASHBOARD_FRONTEND)
   add_subdirectory(dashboard)

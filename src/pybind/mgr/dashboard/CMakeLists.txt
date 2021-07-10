@@ -131,10 +131,6 @@ endif()
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   DESTINATION ${CEPH_INSTALL_DATADIR}/mgr
   ${mgr_module_install_excludes}
-  REGEX "node_modules" EXCLUDE
-  REGEX "cypress.*" EXCLUDE
-  REGEX "\.coveragerc" EXCLUDE
-  REGEX "\.editorconfig" EXCLUDE
-  REGEX "\..*lintrc" EXCLUDE
-  REGEX "\.browserslistrc" EXCLUDE
-  REGEX "\.prettier*" EXCLUDE)
+  PATTERN "node_modules" EXCLUDE
+  PATTERN "cypress*" EXCLUDE
+  PATTERN ".*" EXCLUDE)
