@@ -1,9 +1,9 @@
 set(mgr_module_install_excludes
-  REGEX "CMakeLists.txt" EXCLUDE
-  REGEX "\\.gitignore" EXCLUDE
-  REGEX "tox.ini" EXCLUDE
-  REGEX "requirements.*\.txt" EXCLUDE
-  REGEX "constraints.*\.txt" EXCLUDE)
+  PATTERN "CMakeLists.txt" EXCLUDE
+  PATTERN ".gitignore" EXCLUDE
+  PATTERN "tox.ini" EXCLUDE
+  PATTERN "requirements*.txt" EXCLUDE
+  PATTERN "constraints*.txt" EXCLUDE)
 
 if(WITH_MGR_DASHBOARD_FRONTEND)
   add_subdirectory(dashboard)
@@ -12,13 +12,9 @@ endif()
 install(DIRECTORY dashboard
   DESTINATION ${CEPH_INSTALL_DATADIR}/mgr
   ${mgr_module_install_excludes}
-  REGEX "node_modules" EXCLUDE
   REGEX "cypress.*" EXCLUDE
-  REGEX "\.coveragerc" EXCLUDE
-  REGEX "\.editorconfig" EXCLUDE
-  REGEX "\..*lintrc" EXCLUDE
-  REGEX "\.browserslistrc" EXCLUDE
-  REGEX "\.prettier*" EXCLUDE)
+  PATTERN "frontend/node_modules" EXCLUDE
+  PATTERN ".*" EXCLUDE)
 
 if(WITH_MGR_ROOK_CLIENT)
   add_subdirectory(rook)
