@@ -1282,7 +1282,7 @@ cmake .. \
     -DCMAKE_INSTALL_SYSTEMD_SERVICEDIR:PATH=%{_unitdir} \
     -DWITH_MANPAGE:BOOL=ON \
     -DWITH_PYTHON3:STRING=%{python3_version} \
-    -DWITH_MGR_DASHBOARD_FRONTEND:BOOL=OFF \
+    -DWITH_MGR_DASHBOARD_FRONTEND:BOOL=ON \
 %if 0%{without ceph_test_package}
     -DWITH_TESTS:BOOL=OFF \
 %endif
