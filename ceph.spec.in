@@ -38,6 +38,7 @@
 %endif
 %if 0%{?fedora} || 0%{?rhel}
 %bcond_without selinux
+%bcond_without mgr_dashboard
 %if 0%{?rhel} >= 8
 %bcond_with cephfs_java
 %else
@@ -53,6 +54,7 @@
 %global _remote_tarball_prefix https://download.ceph.com/tarballs/
 %endif
 %if 0%{?suse_version}
+%bcond_with mgr_dashboard
 %bcond_with amqp_endpoint
 %bcond_with cephfs_java
 %bcond_with kafka_endpoint
@@ -260,6 +262,9 @@ BuildRequires:	python%{python3_pkgversion}-virtualenv
 BuildRequires:	python%{python3_pkgversion}-coverage
 BuildRequires:	python%{python3_pkgversion}-pyOpenSSL
 BuildRequires:	socat
+%endif
+%if 0%{with mgr_dashboard}
+BuildRequires:	npm
 %endif
 %if 0%{with zbd}
 BuildRequires:  libzbd-devel
@@ -564,6 +569,7 @@ module derived from Calamari) and expose CLI hooks.  ceph-mgr gathers
 the cluster maps, the daemon metadata, and performance counters, and
 exposes all these to the python modules.
 
+%if 0%{with mgr_dashboard}
 %package mgr-dashboard
 Summary:        Ceph Dashboard
 BuildArch:      noarch
@@ -594,6 +600,7 @@ ceph-mgr-dashboard is a manager module, providing a web-based application
 to monitor and manage many aspects of a Ceph cluster and related components.
 See the Dashboard documentation at http://docs.ceph.com/ for details and a
 detailed feature overview.
+%endif
 
 %package mgr-diskprediction-local
 Summary:        Ceph Manager module for predicting disk failures
@@ -1282,7 +1289,12 @@ cmake .. \
     -DCMAKE_INSTALL_SYSTEMD_SERVICEDIR:PATH=%{_unitdir} \
     -DWITH_MANPAGE:BOOL=ON \
     -DWITH_PYTHON3:STRING=%{python3_version} \
+%if 0%{with mgr_dashboard}
+    -DWITH_MGR_DASHBOARD_FRONTEND:BOOL=ON \
+    -DWITH_SYSTEM_NPM:BOOL=ON \
+%else
     -DWITH_MGR_DASHBOARD_FRONTEND:BOOL=OFF \
+%endif
 %if 0%{without ceph_test_package}
     -DWITH_TESTS:BOOL=OFF \
 %endif
@@ -1742,6 +1754,7 @@ if [ $1 -ge 1 ] ; then
   fi
 fi
 
+%if 0%{with mgr_dashboard}
 %files mgr-dashboard
 %{_datadir}/ceph/mgr/dashboard
 
@@ -1754,6 +1767,7 @@ fi
 if [ $1 -eq 1 ] ; then
     /usr/bin/systemctl try-restart ceph-mgr.target >/dev/null 2>&1 || :
 fi
+%endif
 
 %files mgr-diskprediction-local
 %{_datadir}/ceph/mgr/diskprediction_local
