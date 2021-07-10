@@ -57,6 +57,7 @@ if [ -z "$DIR" ] ; then
 fi
 rm -fr $DIR
 mkdir -p $DIR
+set -ex
 virtualenv $PYTHON_OPTION $DIR
 . $DIR/bin/activate
 
