@@ -3,7 +3,8 @@ set(mgr_module_install_excludes
   PATTERN ".gitignore" EXCLUDE
   PATTERN "tox.ini" EXCLUDE
   PATTERN "requirements*.txt" EXCLUDE
-  PATTERN "constraints*.txt" EXCLUDE)
+  PATTERN "constraints*.txt" EXCLUDE
+  PATTERN "tests" EXCLUDE)
 
 if(WITH_MGR_DASHBOARD_FRONTEND)
   add_subdirectory(dashboard)
@@ -12,9 +13,13 @@ endif()
 install(DIRECTORY dashboard
   DESTINATION ${CEPH_INSTALL_DATADIR}/mgr
   ${mgr_module_install_excludes}
-  REGEX "cypress.*" EXCLUDE
-  PATTERN "frontend/node_modules" EXCLUDE
+  PATTERN "frontend" EXCLUDE
   PATTERN ".*" EXCLUDE)
+install(DIRECTORY dashboard/frontend
+  DESTINATION ${CEPH_INSTALL_DATADIR}/mgr/dashboard
+  ${mgr_module_install_excludes}
+  PATTERN "dist"
+  PATTERN "package.json")
 
 if(WITH_MGR_ROOK_CLIENT)
   add_subdirectory(rook)
