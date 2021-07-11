@@ -18,7 +18,7 @@ else
 endif
 
 extraopts += -DWITH_OCF=ON -DWITH_LTTNG=ON
-extraopts += -DWITH_MGR_DASHBOARD_FRONTEND=OFF
+extraopts += -DWITH_MGR_DASHBOARD_FRONTEND=ON -DWITH_SYSTEM_NPM=ON
 extraopts += -DWITH_PYTHON3=3
 extraopts += -DWITH_CEPHFS_JAVA=ON
 extraopts += -DWITH_CEPHFS_SHELL=ON
