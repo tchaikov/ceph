@@ -57,6 +57,7 @@ if [ -z "$DIR" ] ; then
 fi
 rm -fr $DIR
 mkdir -p $DIR
+set -ex
 virtualenv $PYTHON_OPTION $DIR
 . $DIR/bin/activate
 
@@ -66,7 +67,6 @@ else
     DISABLE_PIP_VERSION_CHECK=
 fi
 
-set -ex
 # older versions of pip will not install wrap_console scripts
 # when using wheel packages
 pip $DISABLE_PIP_VERSION_CHECK --log $DIR/log.txt install --upgrade 'pip >= 6.1'
