@@ -131,6 +131,7 @@ endif()
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   DESTINATION ${CEPH_INSTALL_DATADIR}/mgr
   ${mgr_module_install_excludes}
-  PATTERN "node_modules" EXCLUDE
-  PATTERN "cypress*" EXCLUDE
+  PATTERN "frontend/cypress*" EXCLUDE
+  PATTERN "frontend/node_modules" EXCLUDE
+  PATTERN "frontend/src" EXCLUDE
   PATTERN ".*" EXCLUDE)
