@@ -9,6 +9,7 @@ install(DIRECTORY dashboard
   DESTINATION ${CEPH_INSTALL_DATADIR}/mgr
   ${mgr_module_install_excludes}
   PATTERN "frontend/*" EXCLUDE
+  PATTERN "tests/*" EXCLUDE
   PATTERN ".*" EXCLUDE)
 
 if(WITH_MGR_DASHBOARD_FRONTEND)
