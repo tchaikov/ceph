@@ -5,23 +5,7 @@ set(mgr_module_install_excludes
   PATTERN "requirements*.txt" EXCLUDE
   PATTERN "constraints*.txt" EXCLUDE)
 
-install(DIRECTORY dashboard
-  DESTINATION ${CEPH_INSTALL_DATADIR}/mgr
-  ${mgr_module_install_excludes}
-  PATTERN "frontend/*" EXCLUDE
-  PATTERN "tests/*" EXCLUDE
-  PATTERN ".*" EXCLUDE)
-
-if(WITH_MGR_DASHBOARD_FRONTEND)
-  # build from source
-  add_subdirectory(dashboard)
-else()
-  # prebuilt
-  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/dashboard/frontend/dist
-    DESTINATION ${CEPH_INSTALL_DATADIR}/mgr/dashboard/frontend)
-  install(FILES dashboard/frontend/package.json
-    DESTINATION ${CEPH_INSTALL_DATADIR}/mgr/dashboard/frontend)
-endif()
+add_subdirectory(dashboard)
 
 if(WITH_MGR_ROOK_CLIENT)
   add_subdirectory(rook)
