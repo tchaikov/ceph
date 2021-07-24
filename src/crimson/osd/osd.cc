@@ -1361,30 +1361,31 @@ Ref<PG> OSD::get_pg(spg_t pgid)
 
 seastar::future<> OSD::prepare_to_stop()
 {
-  if (osdmap && osdmap->is_up(whoami)) {
-    state.set_prestop();
-    const auto timeout =
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-	std::chrono::duration<double>(
-	  local_conf().get_val<double>("osd_mon_shutdown_timeout")));
-
-    return seastar::with_timeout(
-      seastar::timer<>::clock::now() + timeout,
-      monc->send_message(
-	  crimson::make_message<MOSDMarkMeDown>(
-	    monc->get_fsid(),
-	    whoami,
-	    osdmap->get_addrs(whoami),
-	    osdmap->get_epoch(),
-	    true)).then([this] {
-	return stop_acked.get_future();
-      })
-    ).handle_exception_type(
-      [](seastar::timed_out_error&) {
-      return seastar::now();
-    });
+  if (!osdmap) {
+    return seastar::now();
   }
-  return seastar::now();
+  if (!osdmap->is_up(whoami)) {
+    return seastar::now();
+  }
+
+  state.set_prestop();
+  const auto timeout =
+    std::chrono::duration<double>(
+      local_conf().get_val<double>("osd_mon_shutdown_timeout"));
+
+  return seastar::with_timeout(
+    seastar::timer<>::clock::now() + timeout,
+    monc->send_message(
+      crimson::make_message<MOSDMarkMeDown>(
+        monc->get_fsid(),
+        whoami,
+        osdmap->get_addrs(whoami),
+        osdmap->get_epoch(),
+        true)
+    ).then([this] {
+      return stop_acked.get_future();
+    })
+  ).handle_exception_type([](seastar::timed_out_error&) {});
 }
 
 }
