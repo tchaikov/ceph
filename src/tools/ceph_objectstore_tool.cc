@@ -615,8 +615,10 @@ int write_pg(ObjectStore::Transaction &t, epoch_t epoch, pg_info_t &info,
 
   if (!divergent.empty()) {
     ceph_assert(missing.get_items().empty());
+    bool require_rollback = !info.pgid.is_no_shard();
     PGLog::write_log_and_missing_wo_missing(
-      t, &km, log, coll, info.pgid.make_pgmeta_oid(), divergent, true);
+      t, &km, log, coll, info.pgid.make_pgmeta_oid(), divergent,
+      require_rollback);
   } else {
     pg_missing_tracker_t tmissing(missing);
     bool rebuilt_missing_set_with_deletes = missing.may_include_deletes;
