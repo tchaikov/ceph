@@ -22,6 +22,22 @@ seastar::logger& logger() {
   return crimson::get_logger(ceph_subsys_test);
 }
 
+#define INTR(fun, t)		\
+  with_trans_intr( 		\
+    *t,				\
+    [&] (auto &tr) {		\
+      return fun(tr);		\
+    }				\
+  )
+#define INTR_WITH_PARAM(fun, t, v)	\
+  with_trans_intr(  		        \
+   *t,                        		\
+    [&, v] (auto &tr) {     		\
+      return fun(tr, v);            	\
+    }                           	\
+  )
+
+
 template <bool TRACK>
 class PerfTree : public TMTestState {
  public:
@@ -35,12 +51,12 @@ class PerfTree : public TMTestState {
                       : NodeExtentManager::create_seastore(*tm)));
         {
           auto t = create_mutate_transaction();
-          tree->bootstrap(*t).unsafe_get();
+          INTR(tree->bootstrap, t).unsafe_get();
           submit_transaction(std::move(t));
         }
         {
           auto t = create_mutate_transaction();
-          tree->insert(*t).unsafe_get();
+          INTR(tree->insert, t).unsafe_get();
           auto start_time = mono_clock::now();
           submit_transaction(std::move(t));
           std::chrono::duration<double> duration = mono_clock::now() - start_time;
@@ -49,18 +65,19 @@ class PerfTree : public TMTestState {
         {
           // Note: create_weak_transaction() can also work, but too slow.
           auto t = create_read_transaction();
-          tree->get_stats(*t).unsafe_get();
-          tree->validate(*t).unsafe_get();
+          INTR(tree->get_stats, t).unsafe_get();
+          INTR(tree->validate, t).unsafe_get();
         }
         {
           auto t = create_mutate_transaction();
-          tree->erase(*t, kvs.size() * erase_ratio).unsafe_get();
+	  auto value = kvs.size() * erase_ratio;
+          INTR_WITH_PARAM(tree->erase, t, value).unsafe_get();
           submit_transaction(std::move(t));
         }
         {
           auto t = create_read_transaction();
-          tree->get_stats(*t).unsafe_get();
-          tree->validate(*t).unsafe_get();
+          INTR(tree->get_stats, t).unsafe_get();
+          INTR(tree->validate, t).unsafe_get();
         }
         tree.reset();
       });
