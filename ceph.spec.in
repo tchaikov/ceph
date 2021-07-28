@@ -230,10 +230,8 @@ BuildRequires:	snappy-devel
 BuildRequires:	sqlite-devel
 BuildRequires:	sudo
 BuildRequires:	pkgconfig(udev)
-BuildRequires:	util-linux
 BuildRequires:	valgrind-devel
 BuildRequires:	which
-BuildRequires:	xfsprogs
 BuildRequires:	xfsprogs-devel
 BuildRequires:	xmlstarlet
 BuildRequires:	nasm
@@ -447,7 +445,6 @@ Requires:      logrotate
 Requires:      parted
 Requires:      psmisc
 Requires:      util-linux
-Requires:      xfsprogs
 Requires:      which
 %if 0%{?rhel} && 0%{?rhel} < 8
 # The following is necessary due to tracker 36508 and can be removed once the
@@ -842,6 +839,8 @@ Requires: ceph-osd = %{_epoch_prefix}%{version}-%{release}
 Requires: cryptsetup
 Requires: lvm2
 Requires: parted
+Requires: util-linux
+Requires: xfsprogs
 Requires: python%{python3_pkgversion}-setuptools
 Requires: python%{python3_pkgversion}-ceph-common = %{_epoch_prefix}%{version}-%{release}
 %description volume
