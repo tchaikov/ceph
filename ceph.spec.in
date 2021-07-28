@@ -440,7 +440,6 @@ Requires:      librgw2 = %{_epoch_prefix}%{version}-%{release}
 %if 0%{with selinux}
 Requires:      ceph-selinux = %{_epoch_prefix}%{version}-%{release}
 %endif
-Requires:      cryptsetup
 Requires:      e2fsprogs
 Requires:      findutils
 Requires:      grep
@@ -840,6 +839,7 @@ BuildArch: noarch
 Group: System/Filesystems
 %endif
 Requires: ceph-osd = %{_epoch_prefix}%{version}-%{release}
+Requires: cryptsetup
 Requires: lvm2
 Requires: parted
 Requires: python%{python3_pkgversion}-setuptools
