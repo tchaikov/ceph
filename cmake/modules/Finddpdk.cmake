@@ -79,7 +79,10 @@ foreach(c ${components})
     get_target_property(DPDK_rte_${c}_LIBRARY
       ${dpdk_lib} IMPORTED_LOCATION)
   else()
-    find_library(DPDK_rte_${c}_LIBRARY rte_${c}
+    find_library(DPDK_rte_${c}_LIBRARY
+      NAMES
+        # use static library
+        ${CMAKE_STATIC_LIBRARY_PREFIX}rte_${c}${CMAKE_STATIC_LIBRARY_SUFFIX}
       HINTS
         ENV DPDK_DIR
         ${dpdk_LIBRARY_DIRS}
