@@ -74,11 +74,6 @@ public:
     iter_t &operator=(const iter_t &) = default;
     iter_t &operator=(iter_t &&) = default;
 
-    operator iter_t<!is_const>() const {
-      static_assert(!is_const);
-      return iter_t<!is_const>(node, offset);
-    }
-
     // Work nicely with for loops without requiring a nested type.
     using reference = iter_t&;
     iter_t &operator*() { return *this; }
@@ -124,15 +119,22 @@ public:
 	offset - off);
     }
 
-    bool operator==(const iter_t &rhs) const {
-      assert(node == rhs.node);
-      return rhs.offset == offset;
+    friend bool operator==(const iter_t &lhs, const iter_t &rhs) {
+      assert(lhs.node == rhs.node);
+      return lhs.offset == rhs.offset;
     }
 
-    bool operator!=(const iter_t &rhs) const {
-      return !(*this == rhs);
+    friend bool operator!=(const iter_t &lhs, const iter_t &rhs) {
+      return !(lhs == rhs);
     }
 
+    friend bool operator==(const iter_t<is_const> &lhs, const iter_t<!is_const> &rhs) {
+      assert(lhs.node == rhs.node);
+      return lhs.offset == rhs.offset;
+    }
+    friend bool operator!=(const iter_t<is_const> &lhs, const iter_t<!is_const> &rhs) {
+      return !(lhs == rhs);
+    }
     K get_key() const {
       return K(node->get_key_ptr()[offset]);
     }
