@@ -1482,10 +1482,10 @@ TYPED_TEST(TestImageReplayer, SnapshotUnprotect) {
   this->open_local_image(&local_image_ctx);
   auto local_snap_id_it = local_image_ctx->snap_ids.find({
     {cls::rbd::UserSnapshotNamespace{}}, "snap1"});
-  ASSERT_NE(local_image_ctx->snap_ids.end(), local_snap_id_it);
+  ASSERT_TRUE(local_image_ctx->snap_ids.end() != local_snap_id_it);
   auto local_snap_id = local_snap_id_it->second;
   auto local_snap_info_it = local_image_ctx->snap_info.find(local_snap_id);
-  ASSERT_NE(local_image_ctx->snap_info.end(), local_snap_info_it);
+  ASSERT_TRUE(local_image_ctx->snap_info.end() != local_snap_info_it);
   ASSERT_EQ(RBD_PROTECTION_STATUS_PROTECTED,
             local_snap_info_it->second.protection_status);
 
@@ -1497,7 +1497,7 @@ TYPED_TEST(TestImageReplayer, SnapshotUnprotect) {
 
   ASSERT_EQ(0, local_image_ctx->state->refresh());
   local_snap_info_it = local_image_ctx->snap_info.find(local_snap_id);
-  ASSERT_NE(local_image_ctx->snap_info.end(), local_snap_info_it);
+  ASSERT_TRUE(local_image_ctx->snap_info.end() != local_snap_info_it);
   ASSERT_EQ(RBD_PROTECTION_STATUS_UNPROTECTED,
             local_snap_info_it->second.protection_status);
 
@@ -1524,10 +1524,10 @@ TYPED_TEST(TestImageReplayer, SnapshotProtect) {
   this->open_local_image(&local_image_ctx);
   auto local_snap_id_it = local_image_ctx->snap_ids.find({
     {cls::rbd::UserSnapshotNamespace{}}, "snap1"});
-  ASSERT_NE(local_image_ctx->snap_ids.end(), local_snap_id_it);
+  ASSERT_TRUE(local_image_ctx->snap_ids.end() != local_snap_id_it);
   auto local_snap_id = local_snap_id_it->second;
   auto local_snap_info_it = local_image_ctx->snap_info.find(local_snap_id);
-  ASSERT_NE(local_image_ctx->snap_info.end(), local_snap_info_it);
+  ASSERT_TRUE(local_image_ctx->snap_info.end() != local_snap_info_it);
   ASSERT_EQ(RBD_PROTECTION_STATUS_UNPROTECTED,
             local_snap_info_it->second.protection_status);
 
@@ -1539,7 +1539,7 @@ TYPED_TEST(TestImageReplayer, SnapshotProtect) {
 
   ASSERT_EQ(0, local_image_ctx->state->refresh());
   local_snap_info_it = local_image_ctx->snap_info.find(local_snap_id);
-  ASSERT_NE(local_image_ctx->snap_info.end(), local_snap_info_it);
+  ASSERT_TRUE(local_image_ctx->snap_info.end() != local_snap_info_it);
   ASSERT_EQ(RBD_PROTECTION_STATUS_PROTECTED,
             local_snap_info_it->second.protection_status);
 
@@ -1566,7 +1566,7 @@ TYPED_TEST(TestImageReplayer, SnapshotRemove) {
   this->open_local_image(&local_image_ctx);
   auto local_snap_id_it = local_image_ctx->snap_ids.find({
     {cls::rbd::UserSnapshotNamespace{}}, "snap1"});
-  ASSERT_NE(local_image_ctx->snap_ids.end(), local_snap_id_it);
+  ASSERT_TRUE(local_image_ctx->snap_ids.end() != local_snap_id_it);
 
   // remove the snapshot
   ASSERT_EQ(0, remote_image_ctx->operations->snap_remove(
@@ -1577,7 +1577,7 @@ TYPED_TEST(TestImageReplayer, SnapshotRemove) {
   ASSERT_EQ(0, local_image_ctx->state->refresh());
   local_snap_id_it = local_image_ctx->snap_ids.find({
     {cls::rbd::UserSnapshotNamespace{}}, "snap1"});
-  ASSERT_EQ(local_image_ctx->snap_ids.end(), local_snap_id_it);
+  ASSERT_TRUE(local_image_ctx->snap_ids.end() == local_snap_id_it);
 
   this->close_image(local_image_ctx);
   this->close_image(remote_image_ctx);
@@ -1602,10 +1602,10 @@ TYPED_TEST(TestImageReplayer, SnapshotRename) {
   this->open_local_image(&local_image_ctx);
   auto local_snap_id_it = local_image_ctx->snap_ids.find({
     {cls::rbd::UserSnapshotNamespace{}}, "snap1"});
-  ASSERT_NE(local_image_ctx->snap_ids.end(), local_snap_id_it);
+  ASSERT_TRUE(local_image_ctx->snap_ids.end() != local_snap_id_it);
   auto local_snap_id = local_snap_id_it->second;
   auto local_snap_info_it = local_image_ctx->snap_info.find(local_snap_id);
-  ASSERT_NE(local_image_ctx->snap_info.end(), local_snap_info_it);
+  ASSERT_TRUE(local_image_ctx->snap_info.end() != local_snap_info_it);
   ASSERT_EQ(RBD_PROTECTION_STATUS_UNPROTECTED,
             local_snap_info_it->second.protection_status);
 
@@ -1617,7 +1617,7 @@ TYPED_TEST(TestImageReplayer, SnapshotRename) {
 
   ASSERT_EQ(0, local_image_ctx->state->refresh());
   local_snap_info_it = local_image_ctx->snap_info.find(local_snap_id);
-  ASSERT_NE(local_image_ctx->snap_info.end(), local_snap_info_it);
+  ASSERT_TRUE(local_image_ctx->snap_info.end() != local_snap_info_it);
   ASSERT_EQ("snap1-renamed", local_snap_info_it->second.name);
 
   this->close_image(local_image_ctx);
