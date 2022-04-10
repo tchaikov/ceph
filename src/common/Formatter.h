@@ -80,6 +80,7 @@ namespace ceph {
     virtual void open_object_section(std::string_view name) = 0;
     virtual void open_object_section_in_ns(std::string_view name, const char *ns) = 0;
     virtual void close_section() = 0;
+    template<typename T> void dump(std::string_view name, T v);
     virtual void dump_unsigned(std::string_view name, uint64_t u) = 0;
     virtual void dump_int(std::string_view name, int64_t s) = 0;
     virtual void dump_float(std::string_view name, double d) = 0;

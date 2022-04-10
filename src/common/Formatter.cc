@@ -146,6 +146,30 @@ void Formatter::dump_format_unquoted(std::string_view name, const char *fmt, ...
   va_end(ap);
 }
 
+template<> void Formatter::dump<uint64_t>(std::string_view name, uint64_t u)
+{
+  dump_unsigned(name, u);
+}
+
+template<> void Formatter::dump<int64_t>(std::string_view name, int64_t s)
+{
+  dump_int(name, s);
+}
+
+template<> void Formatter::dump<double>(std::string_view name, double d)
+{
+  dump_float(name, d);
+}
+
+template<> void Formatter::dump<std::string_view>(std::string_view name, std::string_view s)
+{
+  dump_string(name, s);
+}
+
+template<> void Formatter::dump<bool>(std::string_view name, bool b)
+{
+  dump_bool(name, b);
+}
 // -----------------------
 
 JSONFormatter::JSONFormatter(bool p)
