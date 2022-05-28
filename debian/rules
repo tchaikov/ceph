@@ -138,16 +138,6 @@ override_dh_strip:
 override_dh_shlibdeps:
 	dh_shlibdeps -a --exclude=erasure-code --exclude=rados-classes --exclude=compressor --exclude=ceph_crypto
 
-override_dh_python3:
-	for binding in rados cephfs rbd rgw; do \
-	  dh_python3 -p python3-$$binding;      \
-	done
-	dh_python3 -p python3-ceph-argparse
-	dh_python3 -p python3-ceph-common
-	dh_python3 -p cephfs-shell
-	dh_python3 -p cephfs-top
-	dh_python3 -p cephadm
-
 # do not run tests
 override_dh_auto_test:
 
