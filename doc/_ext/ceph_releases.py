@@ -115,6 +115,55 @@ class CephReleases(Directive):
 
         return [table]
 
+
+RELEASES_TEMPLATE = '''
+.. mermaid::
+
+   gantt
+       dateFormat  YYYY-MM-DD
+       axisFormat  %Y-%m
+{% for release in releases %}
+       Lastest: {{ release.latest_version }}: done, {{ release.debute_date }},{{ release.life_time }}
+{% endif %}
+'''
+
+class ReleasesGantt(Directive):
+    has_content = True
+    required_arguments = 1
+    optional_arguments = 0
+    final_argument_whitespace = False
+
+    template = jinja2.Environment().from_string(GANTT_TEMPLATE)
+
+    def _render_time_line(self, filename, display_releases):
+        try:
+            with open(filename) as f:
+                releases = yaml.safe_load(f)['releases']
+        except Exception as e:
+            message = f'Unable read release file: "{filename}": {e}'
+            self.error(message)
+
+        for release in releases:
+
+
+
+        rendered = self.template.render(display_releases=display_releases,
+                                        releases=releases)
+        return rendered.splitlines()
+
+    def run(self):
+        filename = self.arguments[0]
+        display_releases = self.arguments[1].split()
+        document = self.state.document
+        env = document.settings.env
+        rel_filename, filename = env.relfn2path(filename)
+        env.note_dependency(filename)
+        lines = self._render_time_line(filename, display_releases)
+        lineno = self.lineno - self.state_machine.input_offset - 1
+        source = self.state_machine.input_lines.source(lineno)
+        self.state_machine.insert_input(lines, source)
+        return []
+
 class CephTimeline(Directive):
     has_content = False
     required_arguments = 4
@@ -267,6 +316,7 @@ class TimeLineGantt(Directive):
 
 def setup(app):
     app.add_directive('ceph_releases', CephReleases)
+    app.add_directive('ceph_releases_gantt', ReleasesGantt)
     app.add_directive('ceph_timeline', CephTimeline)
     app.add_directive('ceph_timeline_gantt', TimeLineGantt)
     return {
