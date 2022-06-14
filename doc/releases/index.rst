@@ -56,6 +56,7 @@ receive bug fixes or backports).
 Release timeline
 ----------------
 
+.. ceph_timeline_gantt:: releases.yml quincy pacific octopus
 .. ceph_timeline:: releases.yml quincy pacific octopus
 
 .. _Quincy: quincy

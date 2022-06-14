@@ -6,6 +6,7 @@
 # into the glory that follows:
 import json
 import yaml
+import jinja2
 import sphinx
 import datetime
 from docutils.parsers.rst import Directive
@@ -207,9 +208,67 @@ class CephTimeline(Directive):
 
         return [table]
 
+
+GANTT_TEMPLATE = '''
+.. mermaid::
+
+   gantt
+       dateFormat  YYYY-MM-DD
+       axisFormat  %Y-%m
+{% if title %}
+       title       {{title}}
+{% endif %}
+{% for major_version in display_releases %}
+       section {{ major_version }}
+{%if major_version.actual_eol %}
+       End of life:             crit,            {{ major_version.actual_eol }},4d
+{% else %}
+       End of life (estimated): crit,            {{ major_version.target_eol }},4d
+{% endif %}
+{% for release in releases[major_version].releases %}
+       {{ release.version }}:   milestone, done, {{ release.released }},0d
+{% endfor %}
+{% endfor %}
+'''
+
+class TimeLineGantt(Directive):
+    has_content = True
+    required_arguments = 2
+    optional_arguments = 0
+    final_argument_whitespace = True
+
+    template = jinja2.Environment().from_string(GANTT_TEMPLATE)
+
+    def _render_time_line(self, filename, display_releases):
+        try:
+            with open(filename) as f:
+                releases = yaml.safe_load(f)['releases']
+        except Exception as e:
+            message = f'Unable read release file: "{filename}": {e}'
+            self.error(message)
+
+        rendered = self.template.render(display_releases=display_releases,
+                                        releases=releases)
+        return rendered.splitlines()
+
+    def run(self):
+        filename = self.arguments[0]
+        display_releases = self.arguments[1].split()
+        document = self.state.document
+        env = document.settings.env
+        rel_filename, filename = env.relfn2path(filename)
+        env.note_dependency(filename)
+        lines = self._render_time_line(filename, display_releases)
+        lineno = self.lineno - self.state_machine.input_offset - 1
+        source = self.state_machine.input_lines.source(lineno)
+        self.state_machine.insert_input(lines, source)
+        return []
+
+
 def setup(app):
     app.add_directive('ceph_releases', CephReleases)
     app.add_directive('ceph_timeline', CephTimeline)
+    app.add_directive('ceph_timeline_gantt', TimeLineGantt)
     return {
         'parallel_read_safe': True,
         'parallel_write_safe': True
