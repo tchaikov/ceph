@@ -34,15 +34,15 @@ class DeltaRecorderT final: public DeltaRecorder {
 
   ~DeltaRecorderT() override = default;
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   void encode_insert(
-      const full_key_t<KT>& key,
+      const Key& key,
       const value_input_t& value,
       const position_t& insert_pos,
       const match_stage_t& insert_stage,
       const node_offset_t& insert_size) {
     ceph::encode(node_delta_op_t::INSERT, encoded);
-    encode_key<KT>(key, encoded);
+    encode_key<Key>(key, encoded);
     encode_value(value, encoded);
     insert_pos.encode(encoded);
     ceph::encode(insert_stage, encoded);
@@ -56,10 +56,10 @@ class DeltaRecorderT final: public DeltaRecorder {
     split_at.encode(p_node_start, encoded);
   }
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   void encode_split_insert(
       const StagedIterator& split_at,
-      const full_key_t<KT>& key,
+      const Key& key,
       const value_input_t& value,
       const position_t& insert_pos,
       const match_stage_t& insert_stage,
@@ -67,7 +67,7 @@ class DeltaRecorderT final: public DeltaRecorder {
       const char* p_node_start) {
     ceph::encode(node_delta_op_t::SPLIT_INSERT, encoded);
     split_at.encode(p_node_start, encoded);
-    encode_key<KT>(key, encoded);
+    encode_key(key, encoded);
     encode_value(value, encoded);
     insert_pos.encode(encoded);
     ceph::encode(insert_stage, encoded);
@@ -133,7 +133,7 @@ class DeltaRecorderT final: public DeltaRecorder {
             "apply {}, {}, insert_pos({}), insert_stage={}, "
             "insert_size={}B ...",
             key, value, insert_pos, insert_stage, insert_size);
-        layout_t::template insert<KeyT::HOBJ>(
+        layout_t::template insert(
           mut, stage, key, value, insert_pos, insert_stage, insert_size);
         break;
       }
@@ -160,7 +160,7 @@ class DeltaRecorderT final: public DeltaRecorder {
             "apply split_at={}, {}, {}, insert_pos({}), insert_stage={}, "
             "insert_size={}B ...",
             split_at, key, value, insert_pos, insert_stage, insert_size);
-        layout_t::template split_insert<KeyT::HOBJ>(
+        layout_t::template split_insert(
           mut, stage, split_at, key, value, insert_pos, insert_stage, insert_size);
         break;
       }
@@ -369,9 +369,9 @@ class NodeExtentAccessorT {
     assert(extent->is_pending());
   }
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   const value_t* insert_replayable(
-      const full_key_t<KT>& key,
+      const Key& key,
       const value_input_t& value,
       position_t& insert_pos,
       match_stage_t& insert_stage,
@@ -379,15 +379,15 @@ class NodeExtentAccessorT {
     assert(extent->is_pending());
     assert(state != nextent_state_t::READ_ONLY);
     if (state == nextent_state_t::MUTATION_PENDING) {
-      recorder->template encode_insert<KT>(
+      recorder->template encode_insert(
           key, value, insert_pos, insert_stage, insert_size);
     }
 #ifndef NDEBUG
     test_extent->prepare_replay(extent);
-    test_recorder->template encode_insert<KT>(
+    test_recorder->template encode_insert(
         key, value, insert_pos, insert_stage, insert_size);
 #endif
-    auto ret = layout_t::template insert<KT>(
+    auto ret = layout_t::template insert(
         *mut, read(), key, value,
         insert_pos, insert_stage, insert_size);
 #ifndef NDEBUG
@@ -412,10 +412,10 @@ class NodeExtentAccessorT {
 #endif
   }
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   const value_t* split_insert_replayable(
       StagedIterator& split_at,
-      const full_key_t<KT>& key,
+      const Key& key,
       const value_input_t& value,
       position_t& insert_pos,
       match_stage_t& insert_stage,
@@ -423,17 +423,17 @@ class NodeExtentAccessorT {
     assert(extent->is_pending());
     assert(state != nextent_state_t::READ_ONLY);
     if (state == nextent_state_t::MUTATION_PENDING) {
-      recorder->template encode_split_insert<KT>(
+      recorder->template encode_split_insert(
           split_at, key, value, insert_pos, insert_stage, insert_size,
           read().p_start());
     }
 #ifndef NDEBUG
     test_extent->prepare_replay(extent);
-    test_recorder->template encode_split_insert<KT>(
+    test_recorder->template encode_split_insert(
         split_at, key, value, insert_pos, insert_stage, insert_size,
         read().p_start());
 #endif
-    auto ret = layout_t::template split_insert<KT>(
+    auto ret = layout_t::template split_insert(
         *mut, read(), split_at, key, value,
         insert_pos, insert_stage, insert_size);
 #ifndef NDEBUG

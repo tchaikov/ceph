@@ -11,9 +11,9 @@ namespace crimson::os::seastore::onode {
 #define ITER_INST(NT) item_iterator_t<NT>
 
 template <node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 memory_range_t ITER_T::insert_prefix(
-    NodeExtentMutable& mut, const ITER_T& iter, const full_key_t<KT>& key,
+    NodeExtentMutable& mut, const ITER_T& iter, const Key& key,
     bool is_end, node_offset_t size, const char* p_left_bound)
 {
   // 1. insert range
@@ -37,18 +37,18 @@ memory_range_t ITER_T::insert_prefix(
   p_insert -= sizeof(node_offset_t);
   node_offset_t back_offset = (p_insert - p_insert_front);
   mut.copy_in_absolute(p_insert, back_offset);
-  ns_oid_view_t::append<KT>(mut, key, p_insert);
+  ns_oid_view_t::append<Key>(mut, key, p_insert);
 
   return {p_insert_front, p_insert};
 }
-#define IP_TEMPLATE(NT, KT)                                              \
-  template memory_range_t ITER_INST(NT)::insert_prefix<KT>(              \
-      NodeExtentMutable&, const ITER_INST(NT)&, const full_key_t<KT>&, \
+#define IP_TEMPLATE(NT, Key)                                              \
+  template memory_range_t ITER_INST(NT)::insert_prefix<Key>(              \
+      NodeExtentMutable&, const ITER_INST(NT)&, const Key&, \
       bool, node_offset_t, const char*)
-IP_TEMPLATE(node_type_t::LEAF, KeyT::VIEW);
-IP_TEMPLATE(node_type_t::INTERNAL, KeyT::VIEW);
-IP_TEMPLATE(node_type_t::LEAF, KeyT::HOBJ);
-IP_TEMPLATE(node_type_t::INTERNAL, KeyT::HOBJ);
+IP_TEMPLATE(node_type_t::LEAF, key_view_t);
+IP_TEMPLATE(node_type_t::INTERNAL, key_view_t);
+IP_TEMPLATE(node_type_t::LEAF, key_hobj_t);
+IP_TEMPLATE(node_type_t::INTERNAL, key_hobj_t);
 
 template <node_type_t NODE_TYPE>
 void ITER_T::update_size(
@@ -99,10 +99,10 @@ node_offset_t ITER_T::erase(
 ITER_TEMPLATE(node_type_t::LEAF);
 ITER_TEMPLATE(node_type_t::INTERNAL);
 
-#define APPEND_T ITER_T::Appender<KT>
+#define APPEND_T ITER_T::Appender<Key>
 
 template <node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 APPEND_T::Appender(NodeExtentMutable* p_mut,
                    const item_iterator_t& iter,
                    bool open) : p_mut{p_mut}
@@ -118,7 +118,7 @@ APPEND_T::Appender(NodeExtentMutable* p_mut,
 }
 
 template <node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 bool APPEND_T::append(const ITER_T& src, index_t& items)
 {
   auto p_end = src.p_end();
@@ -162,7 +162,7 @@ bool APPEND_T::append(const ITER_T& src, index_t& items)
 }
 
 template <node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 std::tuple<NodeExtentMutable*, char*>
 APPEND_T::open_nxt(const key_get_type& partial_key)
 {
@@ -173,18 +173,18 @@ APPEND_T::open_nxt(const key_get_type& partial_key)
 }
 
 template <node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 std::tuple<NodeExtentMutable*, char*>
-APPEND_T::open_nxt(const full_key_t<KT>& key)
+APPEND_T::open_nxt(const Key& key)
 {
   p_append -= sizeof(node_offset_t);
   p_offset_while_open = p_append;
-  ns_oid_view_t::append<KT>(*p_mut, key, p_append);
+  ns_oid_view_t::append<Key>(*p_mut, key, p_append);
   return {p_mut, p_append};
 }
 
 template <node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 void APPEND_T::wrap_nxt(char* _p_append)
 {
   assert(_p_append < p_append);
@@ -193,10 +193,10 @@ void APPEND_T::wrap_nxt(char* _p_append)
   p_append = _p_append;
 }
 
-#define APPEND_TEMPLATE(NT, KT) template class ITER_INST(NT)::Appender<KT>
-APPEND_TEMPLATE(node_type_t::LEAF, KeyT::VIEW);
-APPEND_TEMPLATE(node_type_t::INTERNAL, KeyT::VIEW);
-APPEND_TEMPLATE(node_type_t::LEAF, KeyT::HOBJ);
-APPEND_TEMPLATE(node_type_t::INTERNAL, KeyT::HOBJ);
+#define APPEND_TEMPLATE(NT, Key) template class ITER_INST(NT)::Appender<Key>
+APPEND_TEMPLATE(node_type_t::LEAF, key_view_t);
+APPEND_TEMPLATE(node_type_t::INTERNAL, key_view_t);
+APPEND_TEMPLATE(node_type_t::LEAF, key_hobj_t);
+APPEND_TEMPLATE(node_type_t::INTERNAL, key_hobj_t);
 
 }

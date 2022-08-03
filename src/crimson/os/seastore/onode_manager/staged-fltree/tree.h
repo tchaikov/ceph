@@ -104,12 +104,7 @@ class Btree {
           *p_tree->nm, p_tree->value_builder, p_cursor);
     }
 
-    bool operator>(const Cursor& o) const { return (int)compare_to(o) > 0; }
-    bool operator>=(const Cursor& o) const { return (int)compare_to(o) >= 0; }
-    bool operator<(const Cursor& o) const { return (int)compare_to(o) < 0; }
-    bool operator<=(const Cursor& o) const { return (int)compare_to(o) <= 0; }
-    bool operator==(const Cursor& o) const { return (int)compare_to(o) == 0; }
-    bool operator!=(const Cursor& o) const { return (int)compare_to(o) != 0; }
+    bool operator==(const Cursor& o) const { return operator<=>(o) == 0; }
 
     eagain_ifuture<Cursor> get_next(Transaction& t) {
       assert(!is_end());
@@ -155,7 +150,7 @@ class Btree {
     }
     Cursor(Btree* p_tree) : p_tree{p_tree} {}
 
-    MatchKindCMP compare_to(const Cursor& o) const {
+    std::strong_ordering operator<=>(const Cursor& o) const {
       assert(p_tree == o.p_tree);
       return p_cursor->compare_to(
           *o.p_cursor, p_tree->value_builder.get_header_magic());
@@ -197,7 +192,7 @@ class Btree {
 
   eagain_ifuture<bool> contains(Transaction& t, const ghobject_t& obj) {
     return seastar::do_with(
-      full_key_t<KeyT::HOBJ>(obj),
+      key_hobj_t(obj),
       [this, &t](auto& key) -> eagain_ifuture<bool> {
         return get_root(t).si_then([this, &t, &key](auto root) {
           // TODO: improve lower_bound()
@@ -211,7 +206,7 @@ class Btree {
 
   eagain_ifuture<Cursor> find(Transaction& t, const ghobject_t& obj) {
     return seastar::do_with(
-      full_key_t<KeyT::HOBJ>(obj),
+      key_hobj_t(obj),
       [this, &t](auto& key) -> eagain_ifuture<Cursor> {
         return get_root(t).si_then([this, &t, &key](auto root) {
           // TODO: improve lower_bound()
@@ -236,7 +231,7 @@ class Btree {
    */
   eagain_ifuture<Cursor> lower_bound(Transaction& t, const ghobject_t& obj) {
     return seastar::do_with(
-      full_key_t<KeyT::HOBJ>(obj),
+      key_hobj_t(obj),
       [this, &t](auto& key) -> eagain_ifuture<Cursor> {
         return get_root(t).si_then([this, &t, &key](auto root) {
           return root->lower_bound(get_context(t), key);
@@ -280,7 +275,7 @@ class Btree {
     }
     value_config_t vconf{value_builder.get_header_magic(), _vconf.payload_size};
     return seastar::do_with(
-      full_key_t<KeyT::HOBJ>(obj),
+      key_hobj_t(obj),
       [this, &t, vconf](auto& key) -> eagain_ifuture<std::pair<Cursor, bool>> {
         ceph_assert(key.is_valid());
         return get_root(t).si_then([this, &t, &key, vconf](auto root) {
@@ -295,7 +290,7 @@ class Btree {
 
   eagain_ifuture<std::size_t> erase(Transaction& t, const ghobject_t& obj) {
     return seastar::do_with(
-      full_key_t<KeyT::HOBJ>(obj),
+      key_hobj_t(obj),
       [this, &t](auto& key) -> eagain_ifuture<std::size_t> {
         return get_root(t).si_then([this, &t, &key](auto root) {
           return root->erase(get_context(t), key, std::move(root));

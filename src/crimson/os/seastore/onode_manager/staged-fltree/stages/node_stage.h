@@ -133,12 +133,12 @@ class node_extent_t {
 
   static node_offset_t header_size() { return FieldType::HEADER_SIZE; }
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   static node_offset_t estimate_insert(
-      const full_key_t<KT>& key, const value_input_t& value) {
+      const Key& key, const value_input_t& value) {
     auto size = FieldType::estimate_insert_one();
     if constexpr (FIELD_TYPE == field_type_t::N2) {
-      size += ns_oid_view_t::estimate_size<KT>(key);
+      size += ns_oid_view_t::estimate_size(key);
     } else if constexpr (FIELD_TYPE == field_type_t::N3 &&
                          NODE_TYPE == node_type_t::LEAF) {
       size += value.allocation_size();
@@ -146,10 +146,10 @@ class node_extent_t {
     return size;
   }
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   static const value_t* insert_at(
       NodeExtentMutable& mut, const node_extent_t&,
-      const full_key_t<KT>& key, const value_input_t& value,
+      const Key& key, const value_input_t& value,
       index_t index, node_offset_t size, const char* p_left_bound) {
     if constexpr (FIELD_TYPE == field_type_t::N3) {
       ceph_abort("not implemented");
@@ -158,10 +158,10 @@ class node_extent_t {
     }
   }
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   static memory_range_t insert_prefix_at(
       NodeExtentMutable&, const node_extent_t&,
-      const full_key_t<KT>& key,
+      const Key& key,
       index_t index, node_offset_t size, const char* p_left_bound);
 
   static void update_size_at(
@@ -175,7 +175,7 @@ class node_extent_t {
   static node_offset_t erase_at(NodeExtentMutable&, const node_extent_t&,
                                 index_t index, const char* p_left_bound);
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   class Appender;
 
  private:
@@ -185,7 +185,7 @@ class node_extent_t {
 };
 
 template <typename FieldType, node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 class node_extent_t<FieldType, NODE_TYPE>::Appender {
  public:
   Appender(NodeExtentMutable* p_mut, char* p_append)
@@ -201,10 +201,10 @@ class node_extent_t<FieldType, NODE_TYPE>::Appender {
   }
   Appender(NodeExtentMutable*, const node_extent_t&, bool open = false);
   void append(const node_extent_t& src, index_t from, index_t items);
-  void append(const full_key_t<KT>&, const value_input_t&, const value_t*&);
+  void append(const Key&, const value_input_t&, const value_t*&);
   char* wrap();
   std::tuple<NodeExtentMutable*, char*> open_nxt(const key_get_type&);
-  std::tuple<NodeExtentMutable*, char*> open_nxt(const full_key_t<KT>&);
+  std::tuple<NodeExtentMutable*, char*> open_nxt(const Key&);
   void wrap_nxt(char* p_append) {
     if constexpr (FIELD_TYPE != field_type_t::N3) {
       assert(p_append < p_append_right);

@@ -103,16 +103,16 @@ class internal_sub_items_t {
 
   static node_offset_t header_size() { return 0u; }
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   static node_offset_t estimate_insert(
-      const full_key_t<KT>&, const laddr_t&) {
+      const Key&, const laddr_t&) {
     return sizeof(internal_sub_item_t);
   }
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   static const laddr_packed_t* insert_at(
       NodeExtentMutable&, const internal_sub_items_t&,
-      const full_key_t<KT>&, const laddr_t&,
+      const Key&, const laddr_t&,
       index_t index, node_offset_t size, const char* p_left_bound);
 
   static node_offset_t trim_until(NodeExtentMutable&, internal_sub_items_t&, index_t);
@@ -120,7 +120,7 @@ class internal_sub_items_t {
   static node_offset_t erase_at(
       NodeExtentMutable&, const internal_sub_items_t&, index_t, const char*);
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   class Appender;
 
  private:
@@ -129,7 +129,7 @@ class internal_sub_items_t {
   const internal_sub_item_t* p_first_item;
 };
 
-template <KeyT KT>
+template <IsFullKey Key>
 class internal_sub_items_t::Appender {
  public:
   Appender(NodeExtentMutable* p_mut, char* p_append)
@@ -140,7 +140,7 @@ class internal_sub_items_t::Appender {
     assert(sub_items.keys());
   }
   void append(const internal_sub_items_t& src, index_t from, index_t items);
-  void append(const full_key_t<KT>&, const laddr_t&, const laddr_packed_t*&);
+  void append(const Key&, const laddr_t&, const laddr_packed_t*&);
   char* wrap() { return p_append; }
  private:
   NodeExtentMutable* p_mut;
@@ -283,16 +283,16 @@ class leaf_sub_items_t {
 
   static node_offset_t header_size() { return sizeof(num_keys_t); }
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   static node_offset_t estimate_insert(
-      const full_key_t<KT>&, const value_config_t& value) {
+      const Key&, const value_config_t& value) {
     return value.allocation_size() + sizeof(snap_gen_t) + sizeof(node_offset_t);
   }
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   static const value_header_t* insert_at(
       NodeExtentMutable&, const leaf_sub_items_t&,
-      const full_key_t<KT>&, const value_config_t&,
+      const Key&, const value_config_t&,
       index_t index, node_offset_t size, const char* p_left_bound);
 
   static node_offset_t trim_until(NodeExtentMutable&, leaf_sub_items_t&, index_t index);
@@ -300,7 +300,7 @@ class leaf_sub_items_t {
   static node_offset_t erase_at(
       NodeExtentMutable&, const leaf_sub_items_t&, index_t, const char*);
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   class Appender;
 
  private:
@@ -312,14 +312,14 @@ class leaf_sub_items_t {
 
 constexpr index_t APPENDER_LIMIT = 3u;
 
-template <KeyT KT>
+template <IsFullKey Key>
 class leaf_sub_items_t::Appender {
   struct range_items_t {
     index_t from;
     index_t items;
   };
   struct kv_item_t {
-    const full_key_t<KT>* p_key;
+    const Key* p_key;
     value_config_t value_config;
   };
   using var_t = std::variant<range_items_t, kv_item_t>;
@@ -334,7 +334,7 @@ class leaf_sub_items_t::Appender {
   }
 
   void append(const leaf_sub_items_t& src, index_t from, index_t items);
-  void append(const full_key_t<KT>& key,
+  void append(const Key& key,
               const value_config_t& value, const value_header_t*& p_value) {
     // append from empty
     assert(p_append);

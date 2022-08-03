@@ -67,23 +67,23 @@ namespace {
   std::pair<key_view_t, void*> build_key_view(const ghobject_t& hobj) {
     key_hobj_t key_hobj(hobj);
     size_t key_size = sizeof(shard_pool_crush_t) + sizeof(snap_gen_t) +
-                      ns_oid_view_t::estimate_size<KeyT::HOBJ>(key_hobj);
+                      ns_oid_view_t::estimate_size<key_hobj_t>(key_hobj);
     void* p_mem = std::malloc(key_size);
 
     key_view_t key_view;
     char* p_fill = (char*)p_mem + key_size;
 
-    auto spc = shard_pool_crush_t::from_key<KeyT::HOBJ>(key_hobj);
+    auto spc = shard_pool_crush_t::from_key<key_hobj_t>(key_hobj);
     p_fill -= sizeof(shard_pool_crush_t);
     std::memcpy(p_fill, &spc, sizeof(shard_pool_crush_t));
     key_view.set(*reinterpret_cast<const shard_pool_crush_t*>(p_fill));
 
     auto p_ns_oid = p_fill;
-    ns_oid_view_t::test_append<KeyT::HOBJ>(key_hobj, p_fill);
+    ns_oid_view_t::test_append<key_hobj_t>(key_hobj, p_fill);
     ns_oid_view_t ns_oid_view(p_ns_oid);
     key_view.set(ns_oid_view);
 
-    auto sg = snap_gen_t::from_key<KeyT::HOBJ>(key_hobj);
+    auto sg = snap_gen_t::from_key<key_hobj_t>(key_hobj);
     p_fill -= sizeof(snap_gen_t);
     ceph_assert(p_fill == (char*)p_mem);
     std::memcpy(p_fill, &sg, sizeof(snap_gen_t));
@@ -139,24 +139,24 @@ TEST_F(a_basic_test_t, 1_basic_sizes)
     "  LeafNode1: {} {} {}\n"
     "  LeafNode2: {} {}\n"
     "  LeafNode3: {}",
-    _STAGE_T(InternalNode0)::template insert_size<KeyT::VIEW>(key_view, i_value),
-    NXT_T(_STAGE_T(InternalNode0))::template insert_size<KeyT::VIEW>(key_view, i_value),
-    NXT_T(NXT_T(_STAGE_T(InternalNode0)))::template insert_size<KeyT::VIEW>(key_view, i_value),
-    _STAGE_T(InternalNode1)::template insert_size<KeyT::VIEW>(key_view, i_value),
-    NXT_T(_STAGE_T(InternalNode1))::template insert_size<KeyT::VIEW>(key_view, i_value),
-    NXT_T(NXT_T(_STAGE_T(InternalNode1)))::template insert_size<KeyT::VIEW>(key_view, i_value),
-    _STAGE_T(InternalNode2)::template insert_size<KeyT::VIEW>(key_view, i_value),
-    NXT_T(_STAGE_T(InternalNode2))::template insert_size<KeyT::VIEW>(key_view, i_value),
-    _STAGE_T(InternalNode3)::template insert_size<KeyT::VIEW>(key_view, i_value),
-    _STAGE_T(LeafNode0)::template insert_size<KeyT::HOBJ>(key, value),
-    NXT_T(_STAGE_T(LeafNode0))::template insert_size<KeyT::HOBJ>(key, value),
-    NXT_T(NXT_T(_STAGE_T(LeafNode0)))::template insert_size<KeyT::HOBJ>(key, value),
-    _STAGE_T(LeafNode1)::template insert_size<KeyT::HOBJ>(key, value),
-    NXT_T(_STAGE_T(LeafNode1))::template insert_size<KeyT::HOBJ>(key, value),
-    NXT_T(NXT_T(_STAGE_T(LeafNode1)))::template insert_size<KeyT::HOBJ>(key, value),
-    _STAGE_T(LeafNode2)::template insert_size<KeyT::HOBJ>(key, value),
-    NXT_T(_STAGE_T(LeafNode2))::template insert_size<KeyT::HOBJ>(key, value),
-    _STAGE_T(LeafNode3)::template insert_size<KeyT::HOBJ>(key, value)
+    _STAGE_T(InternalNode0)::template insert_size<key_view_t>(key_view, i_value),
+    NXT_T(_STAGE_T(InternalNode0))::template insert_size<key_view_t>(key_view, i_value),
+    NXT_T(NXT_T(_STAGE_T(InternalNode0)))::template insert_size<key_view_t>(key_view, i_value),
+    _STAGE_T(InternalNode1)::template insert_size<key_view_t>(key_view, i_value),
+    NXT_T(_STAGE_T(InternalNode1))::template insert_size<key_view_t>(key_view, i_value),
+    NXT_T(NXT_T(_STAGE_T(InternalNode1)))::template insert_size<key_view_t>(key_view, i_value),
+    _STAGE_T(InternalNode2)::template insert_size<key_view_t>(key_view, i_value),
+    NXT_T(_STAGE_T(InternalNode2))::template insert_size<key_view_t>(key_view, i_value),
+    _STAGE_T(InternalNode3)::template insert_size<key_view_t>(key_view, i_value),
+    _STAGE_T(LeafNode0)::template insert_size<key_hobj_t>(key, value),
+    NXT_T(_STAGE_T(LeafNode0))::template insert_size<key_hobj_t>(key, value),
+    NXT_T(NXT_T(_STAGE_T(LeafNode0)))::template insert_size<key_hobj_t>(key, value),
+    _STAGE_T(LeafNode1)::template insert_size<key_hobj_t>(key, value),
+    NXT_T(_STAGE_T(LeafNode1))::template insert_size<key_hobj_t>(key, value),
+    NXT_T(NXT_T(_STAGE_T(LeafNode1)))::template insert_size<key_hobj_t>(key, value),
+    _STAGE_T(LeafNode2)::template insert_size<key_hobj_t>(key, value),
+    NXT_T(_STAGE_T(LeafNode2))::template insert_size<key_hobj_t>(key, value),
+    _STAGE_T(LeafNode3)::template insert_size<key_hobj_t>(key, value)
   );
   std::free(p_mem);
 }
@@ -1193,7 +1193,7 @@ class DummyChildPool {
       // erase and merge
       [[maybe_unused]] auto pivot_key = node_to_split->get_pivot_key();
       logger().info("\n\nERASE-MERGE {}:", node_to_split->get_name());
-      assert(pivot_key.compare_to(key_hobj_t(key)) == MatchKindCMP::EQ);
+      assert(pivot_key <=> key_hobj_t(key) == std::strong_ordering::equal);
       with_trans_intr(pool_clone.get_context().t, [&] (auto &t) {
         return node_to_split->merge(
           pool_clone.get_context(), std::move(node_to_split));

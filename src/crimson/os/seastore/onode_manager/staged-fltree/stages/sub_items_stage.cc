@@ -7,14 +7,14 @@
 
 namespace crimson::os::seastore::onode {
 
-template <KeyT KT>
+template <IsFullKey Key>
 const laddr_packed_t* internal_sub_items_t::insert_at(
     NodeExtentMutable& mut, const internal_sub_items_t& sub_items,
-    const full_key_t<KT>& key, const laddr_t& value,
+    const Key& key, const laddr_t& value,
     index_t index, node_offset_t size, const char* p_left_bound)
 {
   assert(index <= sub_items.keys());
-  assert(size == estimate_insert<KT>(key, value));
+  assert(size == estimate_insert<Key>(key, value));
   const char* p_shift_start = p_left_bound;
   const char* p_shift_end = reinterpret_cast<const char*>(
       sub_items.p_first_item + 1 - index);
@@ -22,16 +22,16 @@ const laddr_packed_t* internal_sub_items_t::insert_at(
 
   auto p_insert = const_cast<char*>(p_shift_end) - size;
   auto item = internal_sub_item_t{
-    snap_gen_t::from_key<KT>(key), laddr_packed_t{value}};
+    snap_gen_t::from_key<Key>(key), laddr_packed_t{value}};
   mut.copy_in_absolute(p_insert, item);
   return &reinterpret_cast<internal_sub_item_t*>(p_insert)->value;
 }
-#define IA_TEMPLATE(KT)                                                     \
-  template const laddr_packed_t* internal_sub_items_t::insert_at<KT>(       \
-    NodeExtentMutable&, const internal_sub_items_t&, const full_key_t<KT>&, \
+#define IA_TEMPLATE(Key)                                                     \
+  template const laddr_packed_t* internal_sub_items_t::insert_at<Key>(       \
+    NodeExtentMutable&, const internal_sub_items_t&, const Key&, \
     const laddr_t&, index_t, node_offset_t, const char*)
-IA_TEMPLATE(KeyT::VIEW);
-IA_TEMPLATE(KeyT::HOBJ);
+IA_TEMPLATE(key_view_t);
+IA_TEMPLATE(key_hobj_t);
 
 node_offset_t internal_sub_items_t::trim_until(
     NodeExtentMutable& mut, internal_sub_items_t& items, index_t index)
@@ -57,8 +57,8 @@ node_offset_t internal_sub_items_t::erase_at(
   return erase_size;
 }
 
-template <KeyT KT>
-void internal_sub_items_t::Appender<KT>::append(
+template <IsFullKey Key>
+void internal_sub_items_t::Appender<Key>::append(
     const internal_sub_items_t& src, index_t from, index_t items)
 {
   assert(from <= src.keys());
@@ -72,26 +72,26 @@ void internal_sub_items_t::Appender<KT>::append(
   p_mut->copy_in_absolute(p_append, src.p_first_item + 1 - from - items, size);
 }
 
-template <KeyT KT>
-void internal_sub_items_t::Appender<KT>::append(
-    const full_key_t<KT>& key, const laddr_t& value,
+template <IsFullKey Key>
+void internal_sub_items_t::Appender<Key>::append(
+    const Key& key, const laddr_t& value,
     const laddr_packed_t*& p_value)
 {
   p_append -= sizeof(internal_sub_item_t);
   auto item = internal_sub_item_t{
-    snap_gen_t::from_key<KT>(key), laddr_packed_t{value}};
+    snap_gen_t::from_key<Key>(key), laddr_packed_t{value}};
   p_mut->copy_in_absolute(p_append, item);
   p_value = &reinterpret_cast<internal_sub_item_t*>(p_append)->value;
 }
 
-template <KeyT KT>
+template <IsFullKey Key>
 const value_header_t* leaf_sub_items_t::insert_at(
     NodeExtentMutable& mut, const leaf_sub_items_t& sub_items,
-    const full_key_t<KT>& key, const value_config_t& value,
+    const Key& key, const value_config_t& value,
     index_t index, node_offset_t size, const char* p_left_bound)
 {
   assert(index <= sub_items.keys());
-  assert(size == estimate_insert<KT>(key, value));
+  assert(size == estimate_insert<Key>(key, value));
   // a. [... item(index)] << size
   const char* p_shift_start = p_left_bound;
   const char* p_shift_end = sub_items.get_item_end(index);
@@ -102,7 +102,7 @@ const value_header_t* leaf_sub_items_t::insert_at(
   auto p_value = reinterpret_cast<value_header_t*>(p_insert);
   p_value->initiate(mut, value);
   p_insert += value.allocation_size();
-  mut.copy_in_absolute(p_insert, snap_gen_t::template from_key<KT>(key));
+  mut.copy_in_absolute(p_insert, snap_gen_t::template from_key<Key>(key));
   assert(p_insert + sizeof(snap_gen_t) + sizeof(node_offset_t) == p_shift_end);
 
   // c. compensate affected offsets
@@ -130,8 +130,8 @@ const value_header_t* leaf_sub_items_t::insert_at(
 
   return p_value;
 }
-template const value_header_t* leaf_sub_items_t::insert_at<KeyT::HOBJ>(
-    NodeExtentMutable&, const leaf_sub_items_t&, const full_key_t<KeyT::HOBJ>&,
+template const value_header_t* leaf_sub_items_t::insert_at<key_hobj_t>(
+    NodeExtentMutable&, const leaf_sub_items_t&, const key_hobj_t&,
     const value_config_t&, index_t, node_offset_t, const char*);
 
 node_offset_t leaf_sub_items_t::trim_until(
@@ -187,16 +187,16 @@ node_offset_t leaf_sub_items_t::erase_at(
   return erase_size;
 }
 
-template class internal_sub_items_t::Appender<KeyT::VIEW>;
-template class internal_sub_items_t::Appender<KeyT::HOBJ>;
+template class internal_sub_items_t::Appender<key_view_t>;
+template class internal_sub_items_t::Appender<key_hobj_t>;
 
 // helper type for the visitor
 template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
 // explicit deduction guide
 template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
-template <KeyT KT>
-void leaf_sub_items_t::Appender<KT>::append(
+template <IsFullKey Key>
+void leaf_sub_items_t::Appender<Key>::append(
     const leaf_sub_items_t& src, index_t from, index_t items)
 {
   if (p_append) {
@@ -255,8 +255,8 @@ void leaf_sub_items_t::Appender<KT>::append(
   }
 }
 
-template <KeyT KT>
-char* leaf_sub_items_t::Appender<KT>::wrap()
+template <IsFullKey Key>
+char* leaf_sub_items_t::Appender<Key>::wrap()
 {
   if (op_dst.has_value()) {
     // append from existing
@@ -312,7 +312,7 @@ char* leaf_sub_items_t::Appender<KT>::wrap()
       [&] (const kv_item_t& arg) {
         assert(pp_value);
         p_cur -= sizeof(snap_gen_t);
-        p_mut->copy_in_absolute(p_cur, snap_gen_t::template from_key<KT>(*arg.p_key));
+        p_mut->copy_in_absolute(p_cur, snap_gen_t::template from_key<Key>(*arg.p_key));
         p_cur -= arg.value_config.allocation_size();
         auto p_value = reinterpret_cast<value_header_t*>(p_cur);
         p_value->initiate(*p_mut, arg.value_config);
@@ -323,7 +323,7 @@ char* leaf_sub_items_t::Appender<KT>::wrap()
   return p_cur;
 }
 
-template class leaf_sub_items_t::Appender<KeyT::VIEW>;
-template class leaf_sub_items_t::Appender<KeyT::HOBJ>;
+template class leaf_sub_items_t::Appender<key_view_t>;
+template class leaf_sub_items_t::Appender<key_hobj_t>;
 
 }

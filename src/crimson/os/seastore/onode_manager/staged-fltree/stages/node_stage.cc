@@ -91,9 +91,9 @@ void NODE_T::update_is_level_tail(
 }
 
 template <typename FieldType, node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 memory_range_t NODE_T::insert_prefix_at(
-    NodeExtentMutable& mut, const node_extent_t& node, const full_key_t<KT>& key,
+    NodeExtentMutable& mut, const node_extent_t& node, const Key& key,
     index_t index, node_offset_t size, const char* p_left_bound)
 {
   assert(mut.get_length() == node.node_size);
@@ -107,7 +107,7 @@ memory_range_t NODE_T::insert_prefix_at(
     const char* p_insert = node.p_start() +
                            node.fields().get_item_end_offset(index, mut.get_length());
     const char* p_insert_front = p_insert - size_right;
-    FieldType::template insert_at<KT>(mut, key, node.fields(), index, size_right);
+    FieldType::template insert_at<Key>(mut, key, node.fields(), index, size_right);
     mut.shift_absolute(p_left_bound,
                        p_insert - p_left_bound,
                        -(int)size_right);
@@ -118,22 +118,22 @@ memory_range_t NODE_T::insert_prefix_at(
     ceph_abort("impossible");
   }
 }
-#define IPA_TEMPLATE(FT, NT, KT)                                         \
-  template memory_range_t NODE_INST(FT, NT)::insert_prefix_at<KT>(       \
-      NodeExtentMutable&, const node_extent_t&, const full_key_t<KT>&, \
+#define IPA_TEMPLATE(FT, NT, Key)                                      \
+  template memory_range_t NODE_INST(FT, NT)::insert_prefix_at<Key>(    \
+      NodeExtentMutable&, const node_extent_t&, const Key&,            \
       index_t, node_offset_t, const char*)
-IPA_TEMPLATE(node_fields_0_t, node_type_t::INTERNAL, KeyT::VIEW);
-IPA_TEMPLATE(node_fields_1_t, node_type_t::INTERNAL, KeyT::VIEW);
-IPA_TEMPLATE(node_fields_2_t, node_type_t::INTERNAL, KeyT::VIEW);
-IPA_TEMPLATE(node_fields_0_t, node_type_t::LEAF, KeyT::VIEW);
-IPA_TEMPLATE(node_fields_1_t, node_type_t::LEAF, KeyT::VIEW);
-IPA_TEMPLATE(node_fields_2_t, node_type_t::LEAF, KeyT::VIEW);
-IPA_TEMPLATE(node_fields_0_t, node_type_t::INTERNAL, KeyT::HOBJ);
-IPA_TEMPLATE(node_fields_1_t, node_type_t::INTERNAL, KeyT::HOBJ);
-IPA_TEMPLATE(node_fields_2_t, node_type_t::INTERNAL, KeyT::HOBJ);
-IPA_TEMPLATE(node_fields_0_t, node_type_t::LEAF, KeyT::HOBJ);
-IPA_TEMPLATE(node_fields_1_t, node_type_t::LEAF, KeyT::HOBJ);
-IPA_TEMPLATE(node_fields_2_t, node_type_t::LEAF, KeyT::HOBJ);
+IPA_TEMPLATE(node_fields_0_t, node_type_t::INTERNAL, key_view_t);
+IPA_TEMPLATE(node_fields_1_t, node_type_t::INTERNAL, key_view_t);
+IPA_TEMPLATE(node_fields_2_t, node_type_t::INTERNAL, key_view_t);
+IPA_TEMPLATE(node_fields_0_t, node_type_t::LEAF, key_view_t);
+IPA_TEMPLATE(node_fields_1_t, node_type_t::LEAF, key_view_t);
+IPA_TEMPLATE(node_fields_2_t, node_type_t::LEAF, key_view_t);
+IPA_TEMPLATE(node_fields_0_t, node_type_t::INTERNAL, key_hobj_t);
+IPA_TEMPLATE(node_fields_1_t, node_type_t::INTERNAL, key_hobj_t);
+IPA_TEMPLATE(node_fields_2_t, node_type_t::INTERNAL, key_hobj_t);
+IPA_TEMPLATE(node_fields_0_t, node_type_t::LEAF, key_hobj_t);
+IPA_TEMPLATE(node_fields_1_t, node_type_t::LEAF, key_hobj_t);
+IPA_TEMPLATE(node_fields_2_t, node_type_t::LEAF, key_hobj_t);
 
 template <typename FieldType, node_type_t NODE_TYPE>
 void NODE_T::update_size_at(
@@ -221,10 +221,10 @@ NODE_TEMPLATE(node_fields_1_t, node_type_t::LEAF);
 NODE_TEMPLATE(node_fields_2_t, node_type_t::LEAF);
 NODE_TEMPLATE(leaf_fields_3_t, node_type_t::LEAF);
 
-#define APPEND_T node_extent_t<FieldType, NODE_TYPE>::Appender<KT>
+#define APPEND_T node_extent_t<FieldType, NODE_TYPE>::Appender<Key>
 
 template <typename FieldType, node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 APPEND_T::Appender(NodeExtentMutable* p_mut, const node_extent_t& node, bool open)
     : p_mut{p_mut}, p_start{p_mut->get_write()}
 {
@@ -264,7 +264,7 @@ APPEND_T::Appender(NodeExtentMutable* p_mut, const node_extent_t& node, bool ope
 }
 
 template <typename FieldType, node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 void APPEND_T::append(const node_extent_t& src, index_t from, index_t items)
 {
   assert(from <= src.keys());
@@ -338,9 +338,9 @@ void APPEND_T::append(const node_extent_t& src, index_t from, index_t items)
 }
 
 template <typename FieldType, node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 void APPEND_T::append(
-    const full_key_t<KT>& key, const value_input_t& value, const value_t*& p_value)
+    const Key& key, const value_input_t& value, const value_t*& p_value)
 {
   if constexpr (FIELD_TYPE == field_type_t::N3) {
     ceph_abort("not implemented");
@@ -350,7 +350,7 @@ void APPEND_T::append(
 }
 
 template <typename FieldType, node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 std::tuple<NodeExtentMutable*, char*>
 APPEND_T::open_nxt(const key_get_type& partial_key)
 {
@@ -366,15 +366,15 @@ APPEND_T::open_nxt(const key_get_type& partial_key)
 }
 
 template <typename FieldType, node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 std::tuple<NodeExtentMutable*, char*>
-APPEND_T::open_nxt(const full_key_t<KT>& key)
+APPEND_T::open_nxt(const Key& key)
 {
   if constexpr (FIELD_TYPE == field_type_t::N0 ||
                 FIELD_TYPE == field_type_t::N1) {
-    FieldType::template append_key<KT>(*p_mut, key, p_append_left);
+    FieldType::template append_key<Key>(*p_mut, key, p_append_left);
   } else if constexpr (FIELD_TYPE == field_type_t::N2) {
-    FieldType::template append_key<KT>(*p_mut, key, p_append_right);
+    FieldType::template append_key<Key>(*p_mut, key, p_append_right);
   } else {
     ceph_abort("impossible path");
   }
@@ -382,7 +382,7 @@ APPEND_T::open_nxt(const full_key_t<KT>& key)
 }
 
 template <typename FieldType, node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 char* APPEND_T::wrap()
 {
   assert(p_append_left <= p_append_right);
@@ -399,22 +399,22 @@ char* APPEND_T::wrap()
   return p_append_left;
 }
 
-#define APPEND_TEMPLATE(FT, NT, KT) template class node_extent_t<FT, NT>::Appender<KT>
-APPEND_TEMPLATE(node_fields_0_t, node_type_t::INTERNAL, KeyT::VIEW);
-APPEND_TEMPLATE(node_fields_1_t, node_type_t::INTERNAL, KeyT::VIEW);
-APPEND_TEMPLATE(node_fields_2_t, node_type_t::INTERNAL, KeyT::VIEW);
-APPEND_TEMPLATE(internal_fields_3_t, node_type_t::INTERNAL, KeyT::VIEW);
-APPEND_TEMPLATE(node_fields_0_t, node_type_t::LEAF, KeyT::VIEW);
-APPEND_TEMPLATE(node_fields_1_t, node_type_t::LEAF, KeyT::VIEW);
-APPEND_TEMPLATE(node_fields_2_t, node_type_t::LEAF, KeyT::VIEW);
-APPEND_TEMPLATE(leaf_fields_3_t, node_type_t::LEAF, KeyT::VIEW);
-APPEND_TEMPLATE(node_fields_0_t, node_type_t::INTERNAL, KeyT::HOBJ);
-APPEND_TEMPLATE(node_fields_1_t, node_type_t::INTERNAL, KeyT::HOBJ);
-APPEND_TEMPLATE(node_fields_2_t, node_type_t::INTERNAL, KeyT::HOBJ);
-APPEND_TEMPLATE(internal_fields_3_t, node_type_t::INTERNAL, KeyT::HOBJ);
-APPEND_TEMPLATE(node_fields_0_t, node_type_t::LEAF, KeyT::HOBJ);
-APPEND_TEMPLATE(node_fields_1_t, node_type_t::LEAF, KeyT::HOBJ);
-APPEND_TEMPLATE(node_fields_2_t, node_type_t::LEAF, KeyT::HOBJ);
-APPEND_TEMPLATE(leaf_fields_3_t, node_type_t::LEAF, KeyT::HOBJ);
+#define APPEND_TEMPLATE(FT, NT, Key) template class node_extent_t<FT, NT>::Appender<Key>
+APPEND_TEMPLATE(node_fields_0_t, node_type_t::INTERNAL, key_view_t);
+APPEND_TEMPLATE(node_fields_1_t, node_type_t::INTERNAL, key_view_t);
+APPEND_TEMPLATE(node_fields_2_t, node_type_t::INTERNAL, key_view_t);
+APPEND_TEMPLATE(internal_fields_3_t, node_type_t::INTERNAL, key_view_t);
+APPEND_TEMPLATE(node_fields_0_t, node_type_t::LEAF, key_view_t);
+APPEND_TEMPLATE(node_fields_1_t, node_type_t::LEAF, key_view_t);
+APPEND_TEMPLATE(node_fields_2_t, node_type_t::LEAF, key_view_t);
+APPEND_TEMPLATE(leaf_fields_3_t, node_type_t::LEAF, key_view_t);
+APPEND_TEMPLATE(node_fields_0_t, node_type_t::INTERNAL, key_hobj_t);
+APPEND_TEMPLATE(node_fields_1_t, node_type_t::INTERNAL, key_hobj_t);
+APPEND_TEMPLATE(node_fields_2_t, node_type_t::INTERNAL, key_hobj_t);
+APPEND_TEMPLATE(internal_fields_3_t, node_type_t::INTERNAL, key_hobj_t);
+APPEND_TEMPLATE(node_fields_0_t, node_type_t::LEAF, key_hobj_t);
+APPEND_TEMPLATE(node_fields_1_t, node_type_t::LEAF, key_hobj_t);
+APPEND_TEMPLATE(node_fields_2_t, node_type_t::LEAF, key_hobj_t);
+APPEND_TEMPLATE(leaf_fields_3_t, node_type_t::LEAF, key_hobj_t);
 
 }

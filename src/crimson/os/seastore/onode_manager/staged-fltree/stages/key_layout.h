@@ -4,9 +4,12 @@
 #pragma once
 
 #include <cassert>
+#include <compare>
+#include <concepts>
 #include <limits>
 #include <optional>
 #include <ostream>
+#include <type_traits>
 
 #include "common/hobject.h"
 #include "crimson/os/seastore/onode.h"
@@ -42,6 +45,9 @@ template<> struct _full_key_type<KeyT::HOBJ> { using type = key_hobj_t; };
 template <KeyT type>
 using full_key_t = typename _full_key_type<type>::type;
 
+template<typename T>
+concept IsFullKey = std::same_as<T, key_hobj_t> || std::same_as<T, key_view_t>;
+
 static laddr_t get_lba_hint(shard_t shard, pool_t pool, crush_hash_t crush) {
   // FIXME: It is possible that PGs from different pools share the same prefix
   // if the mask 0xFF is not long enough, result in unexpected transaction
@@ -55,17 +61,17 @@ struct node_offset_packed_t {
   node_offset_t value;
 } __attribute__((packed));
 
+
 // TODO: consider alignments
 struct shard_pool_t {
-  bool operator==(const shard_pool_t& x) const {
-    return (shard == x.shard && pool() == x.pool());
-  }
   bool operator!=(const shard_pool_t& x) const { return !(*this == x); }
 
   pool_t pool() const { return _pool; }
 
-  template <KeyT KT>
-  static shard_pool_t from_key(const full_key_t<KT>& key);
+  template <IsFullKey K>
+  static shard_pool_t from_key(const K& key);
+
+  auto operator<=>(const shard_pool_t&) const = default;
 
   shard_t shard;
   pool_t _pool;
@@ -73,38 +79,25 @@ struct shard_pool_t {
 inline std::ostream& operator<<(std::ostream& os, const shard_pool_t& sp) {
   return os << (int)sp.shard << "," << sp.pool();
 }
-inline MatchKindCMP compare_to(const shard_pool_t& l, const shard_pool_t& r) {
-  auto ret = toMatchKindCMP(l.shard, r.shard);
-  if (ret != MatchKindCMP::EQ)
-    return ret;
-  return toMatchKindCMP(l.pool(), r.pool());
-}
 
 // Note: this is the reversed version of the object hash
 struct crush_t {
-  bool operator==(const crush_t& x) const { return crush == x.crush; }
-  bool operator!=(const crush_t& x) const { return !(*this == x); }
+  auto operator<=>(const crush_t&) const = default;
 
-  template <KeyT KT>
-  static crush_t from_key(const full_key_t<KT>& key);
+  template <IsFullKey K>
+  static crush_t from_key(const K& key);
 
   crush_hash_t crush;
 } __attribute__((packed));
 inline std::ostream& operator<<(std::ostream& os, const crush_t& c) {
   return os << "0x" << std::hex << c.crush << std::dec;
 }
-inline MatchKindCMP compare_to(const crush_t& l, const crush_t& r) {
-  return toMatchKindCMP(l.crush, r.crush);
-}
 
 struct shard_pool_crush_t {
-  bool operator==(const shard_pool_crush_t& x) const {
-    return (shard_pool == x.shard_pool && crush == x.crush);
-  }
-  bool operator!=(const shard_pool_crush_t& x) const { return !(*this == x); }
+  auto operator<=>(const shard_pool_crush_t&) const = default;
 
-  template <KeyT KT>
-  static shard_pool_crush_t from_key(const full_key_t<KT>& key);
+  template <IsFullKey K>
+  static shard_pool_crush_t from_key(const K& key);
 
   shard_pool_t shard_pool;
   crush_t crush;
@@ -112,34 +105,18 @@ struct shard_pool_crush_t {
 inline std::ostream& operator<<(std::ostream& os, const shard_pool_crush_t& spc) {
   return os << spc.shard_pool << ",0x" << std::hex << spc.crush << std::dec;
 }
-inline MatchKindCMP compare_to(
-    const shard_pool_crush_t& l, const shard_pool_crush_t& r) {
-  auto ret = compare_to(l.shard_pool, r.shard_pool);
-  if (ret != MatchKindCMP::EQ)
-    return ret;
-  return compare_to(l.crush, r.crush);
-}
 
 struct snap_gen_t {
-  bool operator==(const snap_gen_t& x) const {
-    return (snap == x.snap && gen == x.gen);
-  }
-  bool operator!=(const snap_gen_t& x) const { return !(*this == x); }
+  auto operator<=>(const snap_gen_t&) const = default;
 
-  template <KeyT KT>
-  static snap_gen_t from_key(const full_key_t<KT>& key);
+  template <IsFullKey K>
+  static snap_gen_t from_key(const K& key);
 
   snap_t snap;
   gen_t gen;
 } __attribute__((packed));
 inline std::ostream& operator<<(std::ostream& os, const snap_gen_t& sg) {
   return os << sg.snap << "," << sg.gen;
-}
-inline MatchKindCMP compare_to(const snap_gen_t& l, const snap_gen_t& r) {
-  auto ret = toMatchKindCMP(l.snap, r.snap);
-  if (ret != MatchKindCMP::EQ)
-    return ret;
-  return toMatchKindCMP(l.gen, r.gen);
 }
 
 /**
@@ -318,6 +295,19 @@ class string_view_masked_t {
     return (memcmp(view.data(), x.view.data(), size()) == 0);
   }
   bool operator!=(const string_view_masked_t& x) const { return !(*this == x); }
+  auto operator<=>(std::string_view rhs) const {
+    using Type = string_view_masked_t::Type;
+    assert(string_key_view_t::is_valid_size(rhs.size()));
+    auto lhs_type = get_type();
+    if (lhs_type == Type::MIN) {
+      return std::strong_ordering::less;
+    } else if (lhs_type == Type::MAX) {
+      return std::strong_ordering::greater;
+    } else { // r_type == Type::STR
+      assert(string_key_view_t::is_valid_size(size()));
+      return to_string_view() <=> rhs;
+    }
+  }
   void encode(ceph::bufferlist& bl) const {
     if (get_type() == Type::MIN) {
       ceph::encode(string_key_view_t::MARKER_MIN, bl);
@@ -351,38 +341,24 @@ class string_view_masked_t {
   Type type;
   std::string_view view;
 };
-inline MatchKindCMP compare_to(const string_view_masked_t& l, const string_view_masked_t& r) {
+
+inline auto operator<=>(const string_view_masked_t& l, const string_view_masked_t& r) {
   using Type = string_view_masked_t::Type;
   auto l_type = l.get_type();
   auto r_type = r.get_type();
   if (l_type == Type::STR && r_type == Type::STR) {
     assert(string_key_view_t::is_valid_size(l.size()));
     assert(string_key_view_t::is_valid_size(r.size()));
-    return toMatchKindCMP(l.to_string_view(), r.to_string_view());
+    return l.to_string_view() <=> r.to_string_view();
   } else if (l_type == r_type) {
-    return MatchKindCMP::EQ;
+    return std::strong_ordering::equal;
   } else if (l_type == Type::MIN || r_type == Type::MAX) {
-    return MatchKindCMP::LT;
+    return std::strong_ordering::less;
   } else { // l_type == Type::MAX || r_type == Type::MIN
-    return MatchKindCMP::GT;
+    return std::strong_ordering::greater;
   }
 }
-inline MatchKindCMP compare_to(std::string_view l, const string_view_masked_t& r) {
-  using Type = string_view_masked_t::Type;
-  assert(string_key_view_t::is_valid_size(l.size()));
-  auto r_type = r.get_type();
-  if (r_type == Type::MIN) {
-    return MatchKindCMP::GT;
-  } else if (r_type == Type::MAX) {
-    return MatchKindCMP::LT;
-  } else { // r_type == Type::STR
-    assert(string_key_view_t::is_valid_size(r.size()));
-    return toMatchKindCMP(l, r.to_string_view());
-  }
-}
-inline MatchKindCMP compare_to(const string_view_masked_t& l, std::string_view r) {
-  return reverse(compare_to(r, l));
-}
+
 inline std::ostream& operator<<(std::ostream& os, const string_view_masked_t& masked) {
   using Type = string_view_masked_t::Type;
   auto type = masked.get_type();
@@ -439,12 +415,12 @@ struct ns_oid_view_t {
     oid.reset_to(origin_base, new_base, node_size);
   }
 
-  template <KeyT KT>
-  static node_offset_t estimate_size(const full_key_t<KT>& key);
+  template <IsFullKey K>
+  static node_offset_t estimate_size(const K& key);
 
-  template <KeyT KT>
+  template <IsFullKey K>
   static void append(NodeExtentMutable&,
-                     const full_key_t<KT>& key,
+                     const K& key,
                      char*& p_append);
 
   static void append(NodeExtentMutable& mut,
@@ -458,8 +434,8 @@ struct ns_oid_view_t {
     }
   }
 
-  template <KeyT KT>
-  static void test_append(const full_key_t<KT>& key, char*& p_append);
+  template <IsFullKey K>
+  static void test_append(const K& key, char*& p_append);
 
   string_key_view_t nspace;
   string_key_view_t oid;
@@ -468,13 +444,13 @@ inline std::ostream& operator<<(std::ostream& os, const ns_oid_view_t& ns_oid) {
   return os << string_view_masked_t{ns_oid.nspace} << ","
             << string_view_masked_t{ns_oid.oid};
 }
-inline MatchKindCMP compare_to(const ns_oid_view_t& l, const ns_oid_view_t& r) {
-  auto ret = compare_to(string_view_masked_t{l.nspace},
-                        string_view_masked_t{r.nspace});
-  if (ret != MatchKindCMP::EQ)
+inline auto operator<=>(const ns_oid_view_t& l, const ns_oid_view_t& r) {
+  auto ret = (string_view_masked_t{l.nspace} <=>
+              string_view_masked_t{r.nspace});
+  if (ret != 0)
     return ret;
-  return compare_to(string_view_masked_t{l.oid},
-                    string_view_masked_t{r.oid});
+  return (string_view_masked_t{l.oid} <=>
+          string_view_masked_t{r.oid});
 }
 
 inline const ghobject_t _MIN_OID() {
@@ -496,8 +472,8 @@ inline const ghobject_t _MAX_OID() {
 }
 
 // the valid key stored in tree should be in the range of (_MIN_OID, _MAX_OID)
-template <KeyT KT>
-bool is_valid_key(const full_key_t<KT>& key);
+template <IsFullKey K>
+bool is_valid_key(const K& key) noexcept;
 
 /**
  * key_hobj_t
@@ -560,9 +536,6 @@ class key_hobj_t {
     return ghobj.generation;
   }
 
-  MatchKindCMP compare_to(const full_key_t<KeyT::VIEW>&) const;
-  MatchKindCMP compare_to(const full_key_t<KeyT::HOBJ>&) const;
-
   std::ostream& dump(std::ostream& os) const {
     os << "key_hobj(" << (int)shard() << ","
        << pool() << ",0x" << std::hex << crush() << std::dec << "; "
@@ -573,7 +546,7 @@ class key_hobj_t {
   }
 
   bool is_valid() const {
-    return is_valid_key<KeyT::HOBJ>(*this);
+    return is_valid_key(*this);
   }
 
   static key_hobj_t decode(ceph::bufferlist::const_iterator& delta) {
@@ -657,9 +630,6 @@ class key_view_t {
     return snap_gen_packed().gen;
   }
 
-  MatchKindCMP compare_to(const full_key_t<KeyT::VIEW>&) const;
-  MatchKindCMP compare_to(const full_key_t<KeyT::HOBJ>&) const;
-
   /**
    * key_view_t specific interfaces
    */
@@ -699,7 +669,7 @@ class key_view_t {
   }
 
   ghobject_t to_ghobj() const {
-    assert(is_valid_key<KeyT::VIEW>(*this));
+    assert(is_valid_key(*this));
     return ghobject_t(
         shard_id_t(shard()), pool(), crush(),
         std::string(nspace()), std::string(oid()), snap(), gen());
@@ -769,15 +739,15 @@ class key_view_t {
     return os;
   }
 
- private:
+private:
   const shard_pool_t* p_shard_pool = nullptr;
   const crush_t* p_crush = nullptr;
   std::optional<ns_oid_view_t> p_ns_oid;
   const snap_gen_t* p_snap_gen = nullptr;
 };
 
-template <KeyT KT>
-void encode_key(const full_key_t<KT>& key, ceph::bufferlist& bl) {
+template <IsFullKey K>
+void encode_key(const K& key, ceph::bufferlist& bl) {
   ceph::encode(key.shard(), bl);
   ceph::encode(key.pool(), bl);
   ceph::encode(key.crush(), bl);
@@ -787,129 +757,117 @@ void encode_key(const full_key_t<KT>& key, ceph::bufferlist& bl) {
   ceph::encode(key.gen(), bl);
 }
 
-template <KeyT TypeL, KeyT TypeR>
-MatchKindCMP compare_full_key(
-    const full_key_t<TypeL>& l, const full_key_t<TypeR>& r) {
-  auto ret = toMatchKindCMP(l.shard(), r.shard());
-  if (ret != MatchKindCMP::EQ)
+template<IsFullKey LHS, IsFullKey RHS>
+std::strong_ordering operator<=>(const LHS& lhs, const RHS& rhs) noexcept {
+  auto ret = lhs.shard() <=> rhs.shard();
+  if (ret != 0)
     return ret;
-  ret = toMatchKindCMP(l.pool(), r.pool());
-  if (ret != MatchKindCMP::EQ)
+
+  ret = lhs.pool() <=> rhs.pool();
+  if (ret != 0)
     return ret;
-  ret = toMatchKindCMP(l.crush(), r.crush());
-  if (ret != MatchKindCMP::EQ)
+  ret = lhs.crush() <=> rhs.crush();
+  if (ret != 0)
     return ret;
-  ret = toMatchKindCMP(l.nspace(), r.nspace());
-  if (ret != MatchKindCMP::EQ)
+  ret = lhs.nspace() <=> rhs.nspace();
+  if (ret != 0)
     return ret;
-  ret = toMatchKindCMP(l.oid(), r.oid());
-  if (ret != MatchKindCMP::EQ)
+  ret = lhs.oid() <=> rhs.oid();
+  if (ret != 0)
     return ret;
-  ret = toMatchKindCMP(l.snap(), r.snap());
-  if (ret != MatchKindCMP::EQ)
+  ret = lhs.snap() <=> rhs.snap();
+  if (ret != 0)
     return ret;
-  return toMatchKindCMP(l.gen(), r.gen());
+  return lhs.gen() <=> rhs.gen();
 }
 
-inline MatchKindCMP key_hobj_t::compare_to(
-    const full_key_t<KeyT::VIEW>& o) const {
-  return compare_full_key<KeyT::HOBJ, KeyT::VIEW>(*this, o);
-}
-inline MatchKindCMP key_hobj_t::compare_to(
-    const full_key_t<KeyT::HOBJ>& o) const {
-  return compare_full_key<KeyT::HOBJ, KeyT::HOBJ>(*this, o);
-}
-inline MatchKindCMP key_view_t::compare_to(
-    const full_key_t<KeyT::VIEW>& o) const {
-  return compare_full_key<KeyT::VIEW, KeyT::VIEW>(*this, o);
-}
-inline MatchKindCMP key_view_t::compare_to(
-    const full_key_t<KeyT::HOBJ>& o) const {
-  return compare_full_key<KeyT::VIEW, KeyT::HOBJ>(*this, o);
+template<IsFullKey LHS, IsFullKey RHS>
+bool operator==(const LHS& lhs, const RHS& rhs) noexcept {
+  return lhs <=> rhs == 0;
 }
 
-template <KeyT KT>
-bool is_valid_key(const full_key_t<KT>& key) {
-  return key.compare_to(key_hobj_t(ghobject_t())) == MatchKindCMP::GT &&
-         key.compare_to(key_hobj_t(ghobject_t::get_max())) == MatchKindCMP::LT;
+template <IsFullKey K>
+bool is_valid_key(const K& key) noexcept {
+  return key > key_hobj_t(ghobject_t()) &&
+         key < key_hobj_t(ghobject_t::get_max());
 }
 
 inline std::ostream& operator<<(std::ostream& os, const key_view_t& key) {
   return key.dump(os);
 }
 
-template <KeyT Type>
-MatchKindCMP compare_to(const full_key_t<Type>& key, const shard_pool_t& target) {
-  auto ret = toMatchKindCMP(key.shard(), target.shard);
-  if (ret != MatchKindCMP::EQ)
+template <IsFullKey K>
+auto operator<=>(const K& key, const shard_pool_t& target) {
+  auto ret = key.shard() <=> target.shard;
+  if (ret != 0)
     return ret;
-  return toMatchKindCMP(key.pool(), target.pool());
+  return key.pool() <=> target.pool();
 }
 
-template <KeyT Type>
-MatchKindCMP compare_to(const full_key_t<Type>& key, const crush_t& target) {
-  return toMatchKindCMP(key.crush(), target.crush);
+template <IsFullKey K>
+std::strong_ordering operator<=>(const K& key, const crush_t& target) {
+  return key.crush() <=> target.crush;
 }
 
-template <KeyT Type>
-MatchKindCMP compare_to(const full_key_t<Type>& key, const shard_pool_crush_t& target) {
-  auto ret = compare_to<Type>(key, target.shard_pool);
-  if (ret != MatchKindCMP::EQ)
+template <IsFullKey K>
+auto operator<=>(const K& key, const shard_pool_crush_t& target) {
+  auto ret = key <=> target.shard_pool;
+  if (ret != 0)
     return ret;
-  return compare_to<Type>(key, target.crush);
+  return key <=> target.crush;
 }
 
-template <KeyT Type>
-MatchKindCMP compare_to(const full_key_t<Type>& key, const ns_oid_view_t& target) {
-  auto ret = compare_to(key.nspace(), string_view_masked_t{target.nspace});
-  if (ret != MatchKindCMP::EQ)
+template <IsFullKey K>
+auto operator<=>(const K& key, const ns_oid_view_t& target) {
+  auto ret = key.nspace() <=> string_view_masked_t{target.nspace};
+  if (ret != 0)
     return ret;
-  return compare_to(key.oid(), string_view_masked_t{target.oid});
+  return key.oid() <=> string_view_masked_t{target.oid};
 }
 
-template <KeyT Type>
-MatchKindCMP compare_to(const full_key_t<Type>& key, const snap_gen_t& target) {
-  auto ret = toMatchKindCMP(key.snap(), target.snap);
-  if (ret != MatchKindCMP::EQ)
+template <IsFullKey K>
+auto operator<=>(const K& key, const snap_gen_t& target) {
+  auto ret = key.snap() <=> target.snap;
+  if (ret != 0)
     return ret;
-  return toMatchKindCMP(key.gen(), target.gen);
+  return key.gen() <=> target.gen;
 }
 
-template <KeyT KT>
-shard_pool_t shard_pool_t::from_key(const full_key_t<KT>& key) {
-  if constexpr (KT == KeyT::VIEW) {
+template <IsFullKey K>
+shard_pool_t shard_pool_t::from_key(const K& key) {
+  if constexpr (std::same_as<K, key_view_t>) {
     return key.shard_pool_packed();
   } else {
     return {key.shard(), key.pool()};
   }
 }
 
-template <KeyT KT>
-crush_t crush_t::from_key(const full_key_t<KT>& key) {
-  if constexpr (KT == KeyT::VIEW) {
+template <IsFullKey K>
+crush_t crush_t::from_key(const K& key) {
+  if constexpr (std::same_as<K, key_view_t>) {
     return key.crush_packed();
   } else {
     return {key.crush()};
   }
 }
 
-template <KeyT KT>
-shard_pool_crush_t shard_pool_crush_t::from_key(const full_key_t<KT>& key) {
-  return {shard_pool_t::from_key<KT>(key), crush_t::from_key<KT>(key)};
+template <IsFullKey K>
+shard_pool_crush_t shard_pool_crush_t::from_key(const K& key) {
+  return {shard_pool_t::from_key(key), crush_t::from_key(key)};
 }
 
-template <KeyT KT>
-snap_gen_t snap_gen_t::from_key(const full_key_t<KT>& key) {
-  if constexpr (KT == KeyT::VIEW) {
+template <IsFullKey K>
+snap_gen_t snap_gen_t::from_key(const K& key) {
+  if constexpr (std::same_as<K, key_view_t>) {
     return key.snap_gen_packed();
   } else {
     return {key.snap(), key.gen()};
   }
 }
 
-template <KeyT KT>
-node_offset_t ns_oid_view_t::estimate_size(const full_key_t<KT>& key) {
-  if constexpr (KT == KeyT::VIEW) {
+template <IsFullKey K>
+node_offset_t ns_oid_view_t::estimate_size(const K& key) {
+  if constexpr (std::same_as<K, key_view_t>) {
     return key.ns_oid_view().size();
   } else {
     if (key.dedup_type() != Type::STR) {
@@ -921,9 +879,9 @@ node_offset_t ns_oid_view_t::estimate_size(const full_key_t<KT>& key) {
   }
 }
 
-template <KeyT KT>
+template <IsFullKey K>
 void ns_oid_view_t::append(
-    NodeExtentMutable& mut, const full_key_t<KT>& key, char*& p_append) {
+    NodeExtentMutable& mut, const K& key, char*& p_append) {
   if (key.dedup_type() == Type::STR) {
     string_key_view_t::append_str(mut, key.nspace(), p_append);
     string_key_view_t::append_str(mut, key.oid(), p_append);
@@ -932,8 +890,8 @@ void ns_oid_view_t::append(
   }
 }
 
-template <KeyT KT>
-void ns_oid_view_t::test_append(const full_key_t<KT>& key, char*& p_append) {
+template <IsFullKey K>
+void ns_oid_view_t::test_append(const K& key, char*& p_append) {
   if (key.dedup_type() == Type::STR) {
     string_key_view_t::test_append_str(key.nspace(), p_append);
     string_key_view_t::test_append_str(key.oid(), p_append);

@@ -126,16 +126,16 @@ class item_iterator_t {
 
   static node_offset_t header_size() { return 0u; }
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   static node_offset_t estimate_insert(
-      const full_key_t<KT>& key, const value_input_t&) {
-    return ns_oid_view_t::estimate_size<KT>(key) + sizeof(node_offset_t);
+      const Key& key, const value_input_t&) {
+    return ns_oid_view_t::estimate_size(key) + sizeof(node_offset_t);
   }
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   static memory_range_t insert_prefix(
       NodeExtentMutable& mut, const item_iterator_t<NODE_TYPE>& iter,
-      const full_key_t<KT>& key, bool is_end,
+      const Key& key, bool is_end,
       node_offset_t size, const char* p_left_bound);
 
   static void update_size(
@@ -148,7 +148,7 @@ class item_iterator_t {
   static node_offset_t erase(
       NodeExtentMutable&, const item_iterator_t<NODE_TYPE>&, const char*);
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   class Appender;
 
  private:
@@ -172,7 +172,7 @@ class item_iterator_t {
 };
 
 template <node_type_t NODE_TYPE>
-template <KeyT KT>
+template <IsFullKey Key>
 class item_iterator_t<NODE_TYPE>::Appender {
  public:
   Appender(NodeExtentMutable* p_mut, char* p_append)
@@ -181,7 +181,7 @@ class item_iterator_t<NODE_TYPE>::Appender {
   bool append(const item_iterator_t<NODE_TYPE>& src, index_t& items);
   char* wrap() { return p_append; }
   std::tuple<NodeExtentMutable*, char*> open_nxt(const key_get_type&);
-  std::tuple<NodeExtentMutable*, char*> open_nxt(const full_key_t<KT>&);
+  std::tuple<NodeExtentMutable*, char*> open_nxt(const Key&);
   void wrap_nxt(char* _p_append);
 
  private:

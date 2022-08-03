@@ -27,16 +27,16 @@ struct NodeLayoutReplayableT {
   using value_t = value_type_t<NODE_TYPE>;
   static constexpr auto FIELD_TYPE = FieldType::FIELD_TYPE;
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   static const value_t* insert(
       NodeExtentMutable& mut,
       const node_stage_t& node_stage,
-      const full_key_t<KT>& key,
+      const Key& key,
       const value_input_t& value,
       position_t& insert_pos,
       match_stage_t& insert_stage,
       node_offset_t& insert_size) {
-    auto p_value = STAGE_T::template proceed_insert<KT, false>(
+    auto p_value = STAGE_T::template proceed_insert<Key, false>(
         mut, node_stage, key, value, insert_pos, insert_stage, insert_size);
     return p_value;
   }
@@ -49,19 +49,19 @@ struct NodeLayoutReplayableT {
     STAGE_T::trim(mut, split_at);
   }
 
-  template <KeyT KT>
+  template <IsFullKey Key>
   static const value_t* split_insert(
       NodeExtentMutable& mut,
       const node_stage_t& node_stage,
       StagedIterator& split_at,
-      const full_key_t<KT>& key,
+      const Key& key,
       const value_input_t& value,
       position_t& insert_pos,
       match_stage_t& insert_stage,
       node_offset_t& insert_size) {
     node_stage_t::update_is_level_tail(mut, node_stage, false);
     STAGE_T::trim(mut, split_at);
-    auto p_value = STAGE_T::template proceed_insert<KT, true>(
+    auto p_value = STAGE_T::template proceed_insert<Key, true>(
         mut, node_stage, key, value, insert_pos, insert_stage, insert_size);
     return p_value;
   }
