@@ -128,7 +128,7 @@ function(distutils_install_cython_module name)
     set(ENV{LDSHARED} \"${PY_LDSHARED}\")
     set(ENV{CPPFLAGS} \"-iquote${CMAKE_SOURCE_DIR}/src/include
                         -D'void0=dead_function\(void\)' \
-                        -D'__Pyx_check_single_interpreter\(ARG\)=ARG \#\# 0' \
+                        -D'__Pyx_check_single_interpreter\(ARG\)=ARG\#\#0' \
                         ${CFLAG_DISABLE_VTA}\")
     set(ENV{LDFLAGS} \"-L${CMAKE_LIBRARY_OUTPUT_DIRECTORY}\")
     set(ENV{CYTHON_BUILD_DIR} \"${CMAKE_CURRENT_BINARY_DIR}\")
