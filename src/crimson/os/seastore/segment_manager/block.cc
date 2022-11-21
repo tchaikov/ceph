@@ -65,20 +65,22 @@ static write_ertr::future<> do_write(
   return device.dma_write(
     offset,
     bptr.c_str(),
-    len
-  ).handle_exception(
-    [FNAME, device_id, offset, len](auto e) -> write_ertr::future<size_t> {
-    ERROR("{} poffset={}~{} got error -- {}",
-          device_id_printer_t{device_id}, offset, len, e);
-    return crimson::ct_error::input_output_error::make();
-  }).then([FNAME, device_id, offset, len](auto result) -> write_ertr::future<> {
-    if (result != len) {
-      ERROR("{} poffset={}~{} write len={} inconsistent",
-            device_id_printer_t{device_id}, offset, len, result);
-      return crimson::ct_error::input_output_error::make();
-    }
-    TRACE("{} poffset={}~{} done", device_id_printer_t{device_id}, offset, len);
-    return write_ertr::now();
+    len).then_wrapped([FNAME, device_id, offset, len](auto fut) -> write_ertr::future<> {
+      try {
+	auto result = fut.get();
+	if (result == len) {
+	  TRACE("{} poffset={}~{} done", device_id_printer_t{device_id}, offset, len);
+	  return write_ertr::now();
+	} else {
+	  ERROR("{} poffset={}~{} write len={} inconsistent",
+		device_id_printer_t{device_id}, offset, len, result);
+	  return crimson::ct_error::input_output_error::make();
+	}
+      } catch (...) {
+	ERROR("{} poffset={}~{} got error -- {}",
+	      device_id_printer_t{device_id}, offset, len, std::current_exception());
+	return crimson::ct_error::input_output_error::make();
+      }
   });
 }
 
@@ -146,25 +148,23 @@ static read_ertr::future<> do_read(
     offset,
     bptr.c_str(),
     len
-  ).handle_exception(
-    //FIXME: this is a little bit tricky, since seastar::future<T>::handle_exception
-    //	returns seastar::future<T>, to return an crimson::ct_error, we have to create
-    //	a seastar::future<T> holding that crimson::ct_error. This is not necessary
-    //	once seastar::future<T>::handle_exception() returns seastar::futurize_t<T>
-    [FNAME, device_id, offset, len](auto e) -> read_ertr::future<size_t>
-  {
-    ERROR("{} poffset={}~{} got error -- {}",
-          device_id_printer_t{device_id}, offset, len, e);
-    return crimson::ct_error::input_output_error::make();
-  }).then([FNAME, device_id, offset, len](auto result) -> read_ertr::future<> {
-    if (result != len) {
-      ERROR("{} poffset={}~{} read len={} inconsistent",
-            device_id_printer_t{device_id}, offset, len, result);
-      return crimson::ct_error::input_output_error::make();
-    }
-    TRACE("{} poffset={}~{} done", device_id_printer_t{device_id}, offset, len);
-    return read_ertr::now();
-  });
+  ).then_wrapped([FNAME, device_id, offset, len](auto fut) -> read_ertr::future<> {
+      try {
+	auto result = fut.get();
+	if (result == len) {
+	  TRACE("{} poffset={}~{} done", device_id_printer_t{device_id}, offset, len);
+	  return read_ertr::now();
+	} else {
+	  ERROR("{} poffset={}~{} read len={} inconsistent",
+		device_id_printer_t{device_id}, offset, len, result);
+	  return crimson::ct_error::input_output_error::make();
+	}
+      } catch (...) {
+	ERROR("{} poffset={}~{} got error -- {}",
+	      device_id_printer_t{device_id}, offset, len, std::current_exception());
+	return crimson::ct_error::input_output_error::make();
+      }
+    });
 }
 
 write_ertr::future<>
