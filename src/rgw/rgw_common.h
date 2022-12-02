@@ -1658,6 +1658,13 @@ inline std::ostream& operator<<(std::ostream& out, const rgw_obj_key &o) {
   return out << o.to_str();
 }
 
+template<> struct fmt::formatter<rgw_obj_key> : fmt::formatter<std::string_view> {
+  template <typename FormatContext>
+  auto format(const rgw_obj_key& key, FormatContext& ctx) const {
+    return formatter<std::string_view>::format(key.to_str(), ctx);
+  }
+};
+
 struct req_init_state {
   /* Keeps [[tenant]:]bucket until we parse the token. */
   std::string url_bucket;
