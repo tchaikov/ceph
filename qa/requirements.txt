@@ -1,0 +1,3 @@
+httplib2
+pytest
+git+https://github.com/ceph/teuthology.git@main#egg=teuthology[coverage,orchestra,test]
