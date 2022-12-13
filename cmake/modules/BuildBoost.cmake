@@ -62,8 +62,6 @@ function(do_build_boost version)
   else()
     list(APPEND boost_features "address-model=32")
   endif()
-  set(BOOST_CXXFLAGS "-fPIC -w") # check on arm, etc <---XXX
-  list(APPEND boost_features "cxxflags=${BOOST_CXXFLAGS}")
 
   set(boost_with_libs)
   foreach(c ${Boost_BUILD_COMPONENTS})
@@ -107,6 +105,7 @@ function(do_build_boost version)
     "using ${toolset}"
     " : "
     " : ${CMAKE_CXX_COMPILER}"
+    " : <compileflags>-fPIC <compileflags>-w"
     " ;\n")
   if(with_python_version)
     find_package(Python3 ${with_python_version} QUIET REQUIRED
