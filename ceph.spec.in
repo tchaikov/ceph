@@ -224,7 +224,7 @@ BuildRequires:	gcc-c++ >= 11
 %if 0%{?suse_version} == 1500
 BuildRequires: gcc11-c++
 %endif
-%if 0%{?rhel} == 8
+%if 0%{?rhel} >= 8
 BuildRequires:	%{gts_prefix}-gcc-c++
 BuildRequires:	%{gts_prefix}-runtime
 BuildRequires:	%{gts_prefix}-libatomic-devel
@@ -353,7 +353,7 @@ BuildRequires:  libubsan
 BuildRequires:  libasan
 BuildRequires:  protobuf-devel
 BuildRequires:  protobuf-compiler
-%if 0%{?rhel} == 8
+%if 0%{?rhel} >= 8
 BuildRequires:  %{gts_prefix}-gcc-plugin-annobin
 BuildRequires:  %{gts_prefix}-libubsan-devel
 BuildRequires:  %{gts_prefix}-libasan-devel
