@@ -136,7 +136,7 @@
 %{!?python3_pkgversion: %global python3_pkgversion 3}
 %{!?python3_version_nodots: %global python3_version_nodots 3}
 %{!?python3_version: %global python3_version 3}
-%{!?gts_prefix: %global gts_prefix gcc-toolset-11}
+%{!?gts_prefix: %global gts_prefix gcc-toolset-13}
 
 %if ! 0%{?suse_version}
 # use multi-threaded xz compression: xz level 7 using ncpus threads
@@ -168,8 +168,8 @@
 # do not provide gcc-annobin.so anymore, despite that they provide annobin.so. but
 # redhat-rpm-config still passes -fplugin=gcc-annobin to the compiler.
 %undefine _annotated_build
-%if 0%{?rhel} == 8 && 0%{?enable_devtoolset11:1}
-%enable_devtoolset11
+%if 0%{?rhel} >= 8 && 0%{?enable_devtoolset13:1}
+%enable_devtoolset13
 %endif
 
 #################################################################################
@@ -226,7 +226,7 @@ BuildRequires: gcc11-c++
 %endif
 %if 0%{?rhel} == 8
 BuildRequires:	%{gts_prefix}-gcc-c++
-BuildRequires:	%{gts_prefix}-build
+BuildRequires:	%{gts_prefix}-runtime
 BuildRequires:	%{gts_prefix}-libatomic-devel
 %endif
 %if 0%{?fedora} || 0%{?rhel} == 9 || 0%{?openEuler}
@@ -354,8 +354,7 @@ BuildRequires:  libasan
 BuildRequires:  protobuf-devel
 BuildRequires:  protobuf-compiler
 %if 0%{?rhel} == 8
-BuildRequires:  %{gts_prefix}-annobin
-BuildRequires:  %{gts_prefix}-annobin-plugin-gcc
+BuildRequires:  %{gts_prefix}-gcc-plugin-annobin
 BuildRequires:  %{gts_prefix}-libubsan-devel
 BuildRequires:  %{gts_prefix}-libasan-devel
 %endif
