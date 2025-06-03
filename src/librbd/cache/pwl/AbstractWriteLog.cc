@@ -661,6 +661,13 @@ void AbstractWriteLog<I>::shut_down(Context *on_finish) {
       Context *next_ctx = override_ctx(r, ctx);
       periodic_stats();
 
+      ceph_assert(m_current_sync_point);
+      if (!m_current_sync_point->earlier_sync_point) {
+        // This is the only sync point, hence no need to wait for the persistence
+        // of prior sync points.
+        m_current_sync_point->prior_persisted_gather_activate();
+      }
+
       std::unique_lock locker(m_lock);
       check_image_cache_state_clean();
       m_wake_up_enabled = false;
