@@ -523,7 +523,7 @@ $extra_conf
 EOF
 	if [ "$lockdep" -eq 1 ] ; then
 		wconf <<EOF
-        lockdep = true
+        lockdep = false
 EOF
 	fi
 	if [ "$cephx" -eq 1 ] ; then

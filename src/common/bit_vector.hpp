@@ -224,10 +224,18 @@ public:
   static void generate_test_instances(std::list<BitVector *> &o);
 private:
   struct NoInitAllocator : public std::allocator<__u32> {
+    using value_type = __u32;
+
+    template<typename U>
+    struct rebind {
+      using other = NoInitAllocator;
+    };
+
     NoInitAllocator() {}
     NoInitAllocator(const std::allocator<__u32>& alloc)
       : std::allocator<__u32>(alloc) {
     }
+    NoInitAllocator(const NoInitAllocator&) = default;
 
     template <class U, class... Args>
     void construct(U* p, Args&&... args) const {

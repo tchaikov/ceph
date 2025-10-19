@@ -913,9 +913,9 @@ namespace _denc {
       } else {
         for (const T& e : s) {
           if constexpr (traits::featured) {
-            denc(e, p, f);
+            denc(static_cast<const T&>(e), p, f);
           } else {
-            denc(e, p);
+            denc(static_cast<const T&>(e), p);
           }
         }
       }
@@ -949,9 +949,9 @@ namespace _denc {
 			      uint64_t f = 0) {
       for (const T& e : s) {
         if constexpr (traits::featured) {
-          denc(e, p, f);
+          denc(static_cast<const T&>(e), p, f);
         } else {
-          denc(e, p);
+          denc(static_cast<const T&>(e), p);
         }
       }
     }

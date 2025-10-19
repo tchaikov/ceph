@@ -98,11 +98,11 @@ namespace ceph::dout {
 template<typename T>
 struct dynamic_marker_t {
   T value;
-  operator T() const { return value; }
+  constexpr operator T() const { return value; }
 };
 
 template<typename T>
-dynamic_marker_t<T> need_dynamic(T&& t) {
+constexpr dynamic_marker_t<T> need_dynamic(T&& t) {
   return dynamic_marker_t<T>{ std::forward<T>(t) };
 }
 
@@ -176,8 +176,15 @@ struct is_dynamic<dynamic_marker_t<T>> : public std::true_type {};
 
 #define ldpp_dout(dpp, v) 						\
   if (decltype(auto) pdpp = (dpp); pdpp) /* workaround -Wnonnull-compare for 'this' */ \
-    dout_impl(pdpp->get_cct(), ceph::dout::need_dynamic(pdpp->get_subsys()), v) \
-      pdpp->gen_prefix(*_dout)
+  do {									\
+    auto _dpp_sub = pdpp->get_subsys();                                 \
+    const bool should_gather = pdpp->get_cct()->_conf->subsys.should_gather(_dpp_sub, v); \
+    if (should_gather) {							\
+      ceph::logging::MutableEntry _dout_e(v, _dpp_sub);                        \
+      auto _dout_cct = pdpp->get_cct();						\
+      std::ostream* _dout = &_dout_e.get_ostream();                     \
+      pdpp->gen_prefix(*_dout);                                         \
+      *_dout
 
 #define lgeneric_subdout(cct, sub, v) dout_impl(cct, ceph_subsys_##sub, v) *_dout
 #define lgeneric_dout(cct, v) dout_impl(cct, ceph_subsys_, v) *_dout

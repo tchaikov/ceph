@@ -41,7 +41,9 @@ typedef int64_t __s64;
 #endif
 #endif /* LINUX_TYPES_H */
 
+#ifndef __bitwise__
 #define __bitwise__
+#endif
 
 typedef __u16 __bitwise__ __le16;
 typedef __u16 __bitwise__ __be16;

@@ -22,6 +22,7 @@
 #ifndef COMMON_BLOOM_FILTER_HPP
 #define COMMON_BLOOM_FILTER_HPP
 
+#include <algorithm>
 #include <cmath>
 
 #include "include/mempool.h"

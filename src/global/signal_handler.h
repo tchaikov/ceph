@@ -21,7 +21,7 @@
 typedef void (*signal_handler_t)(int);
 
 #ifndef HAVE_REENTRANT_STRSIGNAL
-# define sig_str(signum) sys_siglist[signum]
+# define sig_str(signum) strsignal(signum)
 #else
 # define sig_str(signum) strsignal(signum)
 #endif

@@ -20,6 +20,7 @@
 
 #include "common/debug.h"
 #include "common/errno.h"
+#include <sstream>
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_mgr
 
@@ -343,10 +344,23 @@ int PyModule::load(PyThreadState *pMainThreadState)
       string paths = (":" + g_conf().get_val<std::string>("mgr_module_path") +
 		      ":" + get_site_packages());
 #if PY_MAJOR_VERSION >= 3
-      wstring sys_path(Py_GetPath() + wstring(begin(paths), end(paths)));
-      PySys_SetPath(const_cast<wchar_t*>(sys_path.c_str()));
-      dout(10) << "Computed sys.path '"
-	       << string(begin(sys_path), end(sys_path)) << "'" << dendl;
+      // Get sys.path list and append our paths
+      PyObject *sys_path_list = PySys_GetObject("path");  // Borrowed reference
+      if (sys_path_list != nullptr && PyList_Check(sys_path_list)) {
+        // Split paths by ':' and add each to sys.path
+        std::istringstream iss(paths);
+        std::string path_item;
+        while (std::getline(iss, path_item, ':')) {
+          if (!path_item.empty()) {
+            PyObject *py_path = PyUnicode_FromString(path_item.c_str());
+            if (py_path) {
+              PyList_Append(sys_path_list, py_path);
+              Py_DECREF(py_path);
+            }
+          }
+        }
+        dout(10) << "Added paths to sys.path: '" << paths << "'" << dendl;
+      }
 #else
       string sys_path(Py_GetPath() + paths);
       PySys_SetPath(const_cast<char*>(sys_path.c_str()));

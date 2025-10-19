@@ -55,9 +55,13 @@ void PyModuleRegistry::init()
 
   // Let CPython know that we will be calling it back from other
   // threads in future.
+#if PY_VERSION_HEX < 0x03090000
+  // PyEval_InitThreads() is deprecated since Python 3.9 and removed in 3.13
+  // PyEval_ThreadsInitialized() was removed in Python 3.13
   if (! PyEval_ThreadsInitialized()) {
     PyEval_InitThreads();
   }
+#endif
 
   // Drop the GIL and remember the main thread state (current
   // thread state becomes NULL)
