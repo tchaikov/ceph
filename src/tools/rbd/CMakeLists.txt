@@ -12,6 +12,7 @@ set(rbd_srcs
   action/Bench.cc
   action/Children.cc
   action/Clone.cc
+  action/CloneStandalone.cc
   action/Config.cc
   action/Copy.cc
   action/Create.cc

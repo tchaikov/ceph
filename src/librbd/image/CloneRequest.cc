@@ -53,6 +53,11 @@ CloneRequest<I>::CloneRequest(ConfigProxy& config,
 
   m_cct = reinterpret_cast<CephContext *>(m_ioctx.cct());
 
+  // Detect standalone clone: no snapshot name and CEPH_NOSNAP
+  if (m_parent_snap_name.empty() && m_parent_snap_id == CEPH_NOSNAP) {
+    m_is_standalone_clone = true;
+  }
+
   bool default_format_set;
   m_opts.is_set(RBD_IMAGE_OPTION_FORMAT, &default_format_set);
   if (!default_format_set) {
@@ -65,7 +70,8 @@ CloneRequest<I>::CloneRequest(ConfigProxy& config,
                    << parent_snap_id << " clone to "
                    << "pool_id=" << m_ioctx.get_id() << ", "
                    << "name=" << m_name << ", "
-                   << "opts=" << m_opts << dendl;
+                   << "opts=" << m_opts
+                   << (m_is_standalone_clone ? " (standalone clone)" : "") << dendl;
 }
 
 template <typename I>
@@ -130,9 +136,15 @@ void CloneRequest<I>::validate_options() {
 template <typename I>
 void CloneRequest<I>::open_parent() {
   ldout(m_cct, 20) << dendl;
-  ceph_assert(m_parent_snap_name.empty() ^ (m_parent_snap_id == CEPH_NOSNAP));
+  // For standalone clones, both snap_name is empty and snap_id is CEPH_NOSNAP
+  ceph_assert(m_is_standalone_clone ||
+              (m_parent_snap_name.empty() ^ (m_parent_snap_id == CEPH_NOSNAP)));
 
-  if (m_parent_snap_id != CEPH_NOSNAP) {
+  if (m_is_standalone_clone) {
+    // Open parent at HEAD (no snapshot)
+    m_parent_image_ctx = I::create("", m_parent_image_id, nullptr,
+                                   m_parent_io_ctx, false);
+  } else if (m_parent_snap_id != CEPH_NOSNAP) {
     m_parent_image_ctx = I::create("", m_parent_image_id, m_parent_snap_id,
                                    m_parent_io_ctx, true);
   } else {
@@ -177,7 +189,7 @@ void CloneRequest<I>::validate_parent() {
     return;
   }
 
-  if (m_parent_image_ctx->snap_id == CEPH_NOSNAP) {
+  if (m_parent_image_ctx->snap_id == CEPH_NOSNAP && !m_is_standalone_clone) {
     lderr(m_cct) << "image to be cloned must be a snapshot" << dendl;
     m_r_saved = -EINVAL;
     close_parent();
@@ -195,8 +207,12 @@ void CloneRequest<I>::validate_parent() {
   uint64_t p_features = m_parent_image_ctx->features;
   m_size = m_parent_image_ctx->get_image_size(m_parent_image_ctx->snap_id);
 
-  bool snap_protected;
-  int r = m_parent_image_ctx->is_snap_protected(m_parent_image_ctx->snap_id, &snap_protected);
+  bool snap_protected = false;
+  int r = 0;
+  // For standalone clones, skip snapshot protection check since there's no snapshot
+  if (!m_is_standalone_clone) {
+    r = m_parent_image_ctx->is_snap_protected(m_parent_image_ctx->snap_id, &snap_protected);
+  }
   m_parent_image_ctx->snap_lock.put_read();
 
   if ((p_features & RBD_FEATURE_LAYERING) != RBD_FEATURE_LAYERING) {
@@ -216,7 +232,7 @@ void CloneRequest<I>::validate_parent() {
     return;
   }
 
-  if (m_clone_format == 1 && !snap_protected) {
+  if (m_clone_format == 1 && !snap_protected && !m_is_standalone_clone) {
     lderr(m_cct) << "parent snapshot must be protected" << dendl;
     m_r_saved = -EINVAL;
     close_parent();

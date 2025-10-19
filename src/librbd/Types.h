@@ -57,6 +57,11 @@ enum {
 
 typedef std::map<uint64_t, uint64_t> SnapSeqs;
 
+enum ParentImageType {
+  PARENT_TYPE_SNAPSHOT = 0,    // Traditional snapshot-based parent (immutable)
+  PARENT_TYPE_STANDALONE = 1   // Standalone image parent (effectively read-only)
+};
+
 /// Full information about an image's parent.
 struct ParentImageInfo {
   /// Identification of the parent.
@@ -68,6 +73,9 @@ struct ParentImageInfo {
    * If the child image is first shrunk and then enlarged, the common portion
    * will be shorter. */
   uint64_t overlap = 0;
+
+  /// Type of parent (snapshot or standalone)
+  ParentImageType parent_type = PARENT_TYPE_SNAPSHOT;
 };
 
 struct SnapInfo {

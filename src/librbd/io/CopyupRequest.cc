@@ -314,11 +314,25 @@ void CopyupRequest<I>::update_object_maps() {
 
   bool copy_on_read = m_pending_requests.empty();
   uint8_t head_object_map_state = OBJECT_EXISTS;
-  if (copy_on_read && !m_snap_ids.empty() &&
-      m_image_ctx->test_features(RBD_FEATURE_FAST_DIFF,
-                                 m_image_ctx->snap_lock)) {
-    // HEAD is non-dirty since data is tied to first snapshot
-    head_object_map_state = OBJECT_EXISTS_CLEAN;
+
+  // Check if this is a copyup from a standalone parent
+  bool is_standalone_parent = false;
+  {
+    RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+    if (m_image_ctx->parent_md.parent_type == PARENT_TYPE_STANDALONE) {
+      is_standalone_parent = true;
+      // Mark objects copied from standalone parents with OBJECT_COPIEDUP
+      head_object_map_state = OBJECT_COPIEDUP;
+    }
+  }
+
+  if (!is_standalone_parent) {
+    if (copy_on_read && !m_snap_ids.empty() &&
+        m_image_ctx->test_features(RBD_FEATURE_FAST_DIFF,
+                                   m_image_ctx->snap_lock)) {
+      // HEAD is non-dirty since data is tied to first snapshot
+      head_object_map_state = OBJECT_EXISTS_CLEAN;
+    }
   }
 
   auto r_it = m_pending_requests.rbegin();

@@ -3907,18 +3907,27 @@ int child_attach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
               "child_image_id=%s", snap_id, child_image.pool_id,
                child_image.image_id.c_str());
 
+  // For standalone clones (snap_id == CEPH_NOSNAP), we don't need to validate
+  // or update snapshot metadata since there's no snapshot
+  bool is_standalone_clone = (snap_id == CEPH_NOSNAP);
+
   cls_rbd_snap snap;
   std::string snapshot_key;
-  key_from_snap_id(snap_id, &snapshot_key);
-  int r = read_key(hctx, snapshot_key, &snap);
-  if (r < 0) {
-    return r;
-  }
+  int r;
 
-  if (cls::rbd::get_snap_namespace_type(snap.snapshot_namespace) ==
-        cls::rbd::SNAPSHOT_NAMESPACE_TYPE_TRASH) {
-    // cannot attach to a deleted snapshot
-    return -ENOENT;
+  if (!is_standalone_clone) {
+    // Only read and validate snapshot for traditional snapshot-based clones
+    key_from_snap_id(snap_id, &snapshot_key);
+    r = read_key(hctx, snapshot_key, &snap);
+    if (r < 0) {
+      return r;
+    }
+
+    if (cls::rbd::get_snap_namespace_type(snap.snapshot_namespace) ==
+          cls::rbd::SNAPSHOT_NAMESPACE_TYPE_TRASH) {
+      // cannot attach to a deleted snapshot
+      return -ENOENT;
+    }
   }
 
   auto children_key = image::snap_children_key_from_snap_id(snap_id);
@@ -3931,7 +3940,7 @@ int child_attach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   auto it = child_images.insert(child_image);
   if (!it.second) {
-    // child already attached to the snapshot
+    // child already attached to the snapshot/HEAD
     return -EEXIST;
   }
 
@@ -3941,10 +3950,13 @@ int child_attach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return r;
   }
 
-  ++snap.child_count;
-  r = image::snapshot::write(hctx, snapshot_key, std::move(snap));
-  if (r < 0) {
-    return r;
+  // Only update snapshot child count for traditional snapshot-based clones
+  if (!is_standalone_clone) {
+    ++snap.child_count;
+    r = image::snapshot::write(hctx, snapshot_key, std::move(snap));
+    if (r < 0) {
+      return r;
+    }
   }
 
   r = image::set_op_features(hctx, RBD_OPERATION_FEATURE_CLONE_PARENT,
@@ -3980,12 +3992,21 @@ int child_detach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
               "child_image_id=%s", snap_id, child_image.pool_id,
                child_image.image_id.c_str());
 
+  // For standalone clones (snap_id == CEPH_NOSNAP), we don't need to validate
+  // or update snapshot metadata since there's no snapshot
+  bool is_standalone_clone = (snap_id == CEPH_NOSNAP);
+
   cls_rbd_snap snap;
   std::string snapshot_key;
-  key_from_snap_id(snap_id, &snapshot_key);
-  int r = read_key(hctx, snapshot_key, &snap);
-  if (r < 0) {
-    return r;
+  int r;
+
+  if (!is_standalone_clone) {
+    // Only read and validate snapshot for traditional snapshot-based clones
+    key_from_snap_id(snap_id, &snapshot_key);
+    r = read_key(hctx, snapshot_key, &snap);
+    if (r < 0) {
+      return r;
+    }
   }
 
   auto children_key = image::snap_children_key_from_snap_id(snap_id);
@@ -3996,14 +4017,14 @@ int child_detach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return r;
   }
 
-  if (snap.child_count != child_images.size()) {
-    // children and reference count don't match
+  if (!is_standalone_clone && snap.child_count != child_images.size()) {
+    // children and reference count don't match (only check for snapshot-based clones)
     CLS_ERR("children reference count mismatch: %" PRIu64, snap_id);
     return -EINVAL;
   }
 
   if (child_images.erase(child_image) == 0) {
-    // child not attached to the snapshot
+    // child not attached to the snapshot/HEAD
     return -ENOENT;
   }
 
@@ -4017,13 +4038,26 @@ int child_detach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     }
   }
 
-  --snap.child_count;
-  r = image::snapshot::write(hctx, snapshot_key, std::move(snap));
-  if (r < 0) {
-    return r;
+  // Only update snapshot child count for traditional snapshot-based clones
+  if (!is_standalone_clone) {
+    --snap.child_count;
+    r = image::snapshot::write(hctx, snapshot_key, std::move(snap));
+    if (r < 0) {
+      return r;
+    }
   }
 
-  if (snap.child_count == 0) {
+  // Check if we should remove the CLONE_PARENT op feature
+  bool should_check_clone_feature = false;
+  if (is_standalone_clone) {
+    // For standalone clones, check if this was the last child at HEAD
+    should_check_clone_feature = child_images.empty();
+  } else {
+    // For snapshot-based clones, check if this snapshot has no more children
+    should_check_clone_feature = (snap.child_count == 0);
+  }
+
+  if (should_check_clone_feature) {
     auto clone_in_use_lambda = [snap_id](const cls_rbd_snap& snap_meta) {
       if (snap_meta.id != snap_id && snap_meta.child_count > 0) {
         return -EEXIST;
@@ -4066,19 +4100,25 @@ int children_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return -EINVAL;
   }
 
-  CLS_LOG(20, "child_detach snap_id=%" PRIu64, snap_id);
+  CLS_LOG(20, "children_list snap_id=%" PRIu64, snap_id);
 
-  cls_rbd_snap snap;
-  std::string snapshot_key;
-  key_from_snap_id(snap_id, &snapshot_key);
-  int r = read_key(hctx, snapshot_key, &snap);
-  if (r < 0) {
-    return r;
+  // For standalone clones (snap_id == CEPH_NOSNAP), skip snapshot validation
+  bool is_standalone_clone = (snap_id == CEPH_NOSNAP);
+
+  if (!is_standalone_clone) {
+    // Only validate snapshot for traditional snapshot-based clones
+    cls_rbd_snap snap;
+    std::string snapshot_key;
+    key_from_snap_id(snap_id, &snapshot_key);
+    int r = read_key(hctx, snapshot_key, &snap);
+    if (r < 0) {
+      return r;
+    }
   }
 
   auto children_key = image::snap_children_key_from_snap_id(snap_id);
   cls::rbd::ChildImageSpecs child_images;
-  r = read_key(hctx, children_key, &child_images);
+  int r = read_key(hctx, children_key, &child_images);
   if (r == -ENOENT) {
     return r;
   } else if (r < 0) {

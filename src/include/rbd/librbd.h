@@ -375,6 +375,22 @@ CEPH_RBD_API int rbd_clone2(rados_ioctx_t p_ioctx, const char *p_name,
 CEPH_RBD_API int rbd_clone3(rados_ioctx_t p_ioctx, const char *p_name,
 	                    const char *p_snapname, rados_ioctx_t c_ioctx,
 	                    const char *c_name, rbd_image_options_t c_opts);
+/**
+ * Create a standalone clone from a parent image (without requiring a snapshot)
+ *
+ * Creates a new image that shares data with the parent image. The parent
+ * should be treated as read-only after creating standalone clones.
+ *
+ * @param p_ioctx parent image IO context
+ * @param p_name parent image name
+ * @param c_ioctx child image IO context
+ * @param c_name child image name
+ * @param c_opts child image options
+ * @returns 0 on success, negative error code on failure
+ */
+CEPH_RBD_API int rbd_clone_standalone(rados_ioctx_t p_ioctx, const char *p_name,
+                                      rados_ioctx_t c_ioctx, const char *c_name,
+                                      rbd_image_options_t c_opts);
 CEPH_RBD_API int rbd_remove(rados_ioctx_t io, const char *name);
 CEPH_RBD_API int rbd_remove_with_progress(rados_ioctx_t io, const char *name,
 			                  librbd_progress_fn_t cb,

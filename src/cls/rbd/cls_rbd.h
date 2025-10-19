@@ -10,6 +10,12 @@
 #include "common/Formatter.h"
 #include "cls/rbd/cls_rbd_types.h"
 
+/// Parent image type classification
+enum cls_rbd_parent_type {
+  CLS_RBD_PARENT_TYPE_SNAPSHOT = 0,    // Traditional snapshot parent (immutable)
+  CLS_RBD_PARENT_TYPE_STANDALONE = 1   // Standalone image parent (effectively read-only)
+};
+
 /// information about our parent image, if any
 struct cls_rbd_parent {
   int64_t pool_id = -1;
@@ -17,19 +23,22 @@ struct cls_rbd_parent {
   std::string image_id;
   snapid_t snap_id = CEPH_NOSNAP;
   std::optional<uint64_t> head_overlap = std::nullopt;
+  cls_rbd_parent_type parent_type = CLS_RBD_PARENT_TYPE_SNAPSHOT;
 
   cls_rbd_parent() {
   }
   cls_rbd_parent(const cls::rbd::ParentImageSpec& parent_image_spec,
-                 const std::optional<uint64_t>& head_overlap)
+                 const std::optional<uint64_t>& head_overlap,
+                 cls_rbd_parent_type type = CLS_RBD_PARENT_TYPE_SNAPSHOT)
     : pool_id(parent_image_spec.pool_id),
       pool_namespace(parent_image_spec.pool_namespace),
       image_id(parent_image_spec.image_id), snap_id(parent_image_spec.snap_id),
-      head_overlap(head_overlap) {
+      head_overlap(head_overlap), parent_type(type) {
   }
 
   inline bool exists() const {
-    return (pool_id >= 0 && !image_id.empty() && snap_id != CEPH_NOSNAP);
+    // Allow snap_id == CEPH_NOSNAP for standalone clones (cloning from mutable parent)
+    return (pool_id >= 0 && !image_id.empty());
   }
 
   inline bool operator==(const cls_rbd_parent& rhs) const {
@@ -47,7 +56,8 @@ struct cls_rbd_parent {
     uint8_t version = 1;
     if ((features & CEPH_FEATURE_SERVER_NAUTILUS) != 0ULL) {
       // break backwards compatability when using nautilus or later OSDs
-      version = 2;
+      // version 3 adds parent_type field
+      version = 3;
     }
 
     ENCODE_START(version, version, bl);
@@ -62,11 +72,14 @@ struct cls_rbd_parent {
     } else {
       encode(head_overlap, bl);
     }
+    if (version >= 3) {
+      encode(static_cast<uint8_t>(parent_type), bl);
+    }
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(2, bl);
+    DECODE_START(3, bl);
     decode(pool_id, bl);
     if (struct_v >= 2) {
       decode(pool_namespace, bl);
@@ -80,6 +93,11 @@ struct cls_rbd_parent {
     } else {
       decode(head_overlap, bl);
     }
+    if (struct_v >= 3) {
+      uint8_t type;
+      decode(type, bl);
+      parent_type = static_cast<cls_rbd_parent_type>(type);
+    }
     DECODE_FINISH(bl);
   }
 
@@ -91,6 +109,8 @@ struct cls_rbd_parent {
     if (head_overlap) {
       f->dump_unsigned("head_overlap", *head_overlap);
     }
+    f->dump_string("parent_type", parent_type == CLS_RBD_PARENT_TYPE_STANDALONE
+                                   ? "standalone" : "snapshot");
   }
 
   static void generate_test_instances(list<cls_rbd_parent*>& o) {

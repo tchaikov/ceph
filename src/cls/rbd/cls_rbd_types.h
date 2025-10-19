@@ -196,7 +196,8 @@ struct ParentImageSpec {
   }
 
   bool exists() const {
-    return (pool_id >= 0 && !image_id.empty() && snap_id != CEPH_NOSNAP);
+    // Allow snap_id == CEPH_NOSNAP for standalone clones (cloning from mutable parent)
+    return (pool_id >= 0 && !image_id.empty());
   }
 
   bool operator==(const ParentImageSpec& rhs) const {

@@ -918,6 +918,78 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     return 0;
   }
 
+  /*
+   * Standalone clone - clone from a mutable parent image (no snapshot required)
+   * Parent may be in different pool, hence different IoCtx
+   */
+  int clone_standalone(IoCtx& p_ioctx, const char *p_id, const char *p_name,
+                       IoCtx& c_ioctx, const char *c_id, const char *c_name,
+                       ImageOptions& c_opts,
+                       const std::string &non_primary_global_image_id,
+                       const std::string &primary_mirror_uuid)
+  {
+    ceph_assert((p_id == nullptr) ^ (p_name == nullptr));
+
+    CephContext *cct = (CephContext *)p_ioctx.cct();
+
+    uint64_t flatten;
+    if (c_opts.get(RBD_IMAGE_OPTION_FLATTEN, &flatten) == 0) {
+      lderr(cct) << "clone_standalone does not support 'flatten' image option" << dendl;
+      return -EINVAL;
+    }
+
+    int r;
+    std::string parent_id;
+    if (p_id == nullptr) {
+      r = cls_client::dir_get_id(&p_ioctx, RBD_DIRECTORY, p_name,
+                                 &parent_id);
+      if (r < 0) {
+        if (r != -ENOENT) {
+          lderr(cct) << "failed to retrieve parent image id: "
+                     << cpp_strerror(r) << dendl;
+        }
+        return r;
+      }
+    } else {
+      parent_id = p_id;
+    }
+
+    std::string clone_id;
+    if (c_id == nullptr) {
+      clone_id = util::generate_image_id(c_ioctx);
+    } else {
+      clone_id = c_id;
+    }
+
+    ldout(cct, 10) << __func__ << " "
+		   << "c_name=" << c_name << ", "
+		   << "c_id= " << clone_id << ", "
+		   << "c_opts=" << c_opts << dendl;
+
+    ConfigProxy config{reinterpret_cast<CephContext *>(c_ioctx.cct())->_conf};
+    api::Config<>::apply_pool_overrides(c_ioctx, &config);
+
+    ThreadPool *thread_pool;
+    ContextWQ *op_work_queue;
+    ImageCtx::get_thread_pool_instance(cct, &thread_pool, &op_work_queue);
+
+    // For standalone clones, we pass nullptr for snap_name and CEPH_NOSNAP for snap_id
+    // This tells CloneRequest to create a standalone clone
+    C_SaferCond cond;
+    auto *req = image::CloneRequest<>::create(
+      config, p_ioctx, parent_id, "", CEPH_NOSNAP, c_ioctx, c_name,
+      clone_id, c_opts, non_primary_global_image_id, primary_mirror_uuid,
+      op_work_queue, &cond);
+    req->send();
+
+    r = cond.wait();
+    if (r < 0) {
+      return r;
+    }
+
+    return 0;
+  }
+
   int rename(IoCtx& io_ctx, const char *srcname, const char *dstname)
   {
     CephContext *cct = (CephContext *)io_ctx.cct();

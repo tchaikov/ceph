@@ -257,6 +257,52 @@ void PreRemoveRequest<I>::handle_check_group(int r) {
     return;
   }
 
+  check_children();
+}
+
+template <typename I>
+void PreRemoveRequest<I>::check_children() {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 5) << dendl;
+
+  // Check if the image has any children (standalone clones at HEAD)
+  librados::ObjectReadOperation op;
+  cls::rbd::ChildImageSpecs children;
+  librbd::cls_client::children_list_start(&op, CEPH_NOSNAP);
+
+  auto rados_completion = create_rados_callback<
+    PreRemoveRequest<I>, &PreRemoveRequest<I>::handle_check_children>(this);
+  m_out_bl.clear();
+  int r = m_image_ctx->md_ctx.aio_operate(m_image_ctx->header_oid,
+                                          rados_completion, &op, &m_out_bl);
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+template <typename I>
+void PreRemoveRequest<I>::handle_check_children(int r) {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 5) << "r=" << r << dendl;
+
+  cls::rbd::ChildImageSpecs children;
+  if (r == 0) {
+    auto it = m_out_bl.cbegin();
+    r = librbd::cls_client::children_list_finish(&it, &children);
+  }
+
+  if (r < 0 && r != -ENOENT && r != -EOPNOTSUPP) {
+    lderr(cct) << "error listing children: " << cpp_strerror(r) << dendl;
+    finish(r);
+    return;
+  }
+
+  if (!children.empty()) {
+    lderr(cct) << "image has " << children.size()
+               << " child(ren) - not removing" << dendl;
+    finish(-EBUSY);
+    return;
+  }
+
   remove_snapshot();
 }
 

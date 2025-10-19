@@ -84,6 +84,9 @@ private:
   void check_group();
   void handle_check_group(int r);
 
+  void check_children();
+  void handle_check_children(int r);
+
   void remove_snapshot();
   void handle_remove_snapshot(int r);
 

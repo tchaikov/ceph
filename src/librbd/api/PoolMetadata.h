@@ -7,7 +7,9 @@
 #include "include/buffer_fwd.h"
 #include "include/rados/librados_fwd.hpp"
 
+#include <cstdint>
 #include <map>
+#include <string>
 
 namespace librbd {
 

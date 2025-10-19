@@ -307,6 +307,9 @@ cdef extern from "rbd/librbd.h" nogil:
     int rbd_clone3(rados_ioctx_t p_ioctx, const char *p_name,
                    const char *p_snapname, rados_ioctx_t c_ioctx,
                    const char *c_name, rbd_image_options_t c_opts)
+    int rbd_clone_standalone(rados_ioctx_t p_ioctx, const char *p_name,
+                             rados_ioctx_t c_ioctx, const char *c_name,
+                             rbd_image_options_t c_opts)
     int rbd_remove_with_progress(rados_ioctx_t io, const char *name,
                                  librbd_progress_fn_t cb, void *cbdata)
     int rbd_rename(rados_ioctx_t src_io_ctx, const char *srcname,
@@ -1206,6 +1209,71 @@ class RBD(object):
             rbd_image_options_destroy(opts)
         if ret < 0:
             raise make_ex(ret, 'error creating clone')
+
+    def clone_standalone(self, p_ioctx, p_name, c_ioctx, c_name,
+                        features=None, order=None, stripe_unit=None, stripe_count=None,
+                        data_pool=None):
+        """
+        Clone a mutable parent rbd image into a COW sparse child (no snapshot required).
+
+        :param p_ioctx: the parent context that represents the parent image
+        :type ioctx: :class:`rados.Ioctx`
+        :param p_name: the parent image name
+        :type name: str
+        :param c_ioctx: the child context that represents the new clone
+        :type ioctx: :class:`rados.Ioctx`
+        :param c_name: the clone (child) name
+        :type name: str
+        :param features: bitmask of features to enable; if set, must include layering
+        :type features: int
+        :param order: the image is split into (2**order) byte objects
+        :type order: int
+        :param stripe_unit: stripe unit in bytes (default None to let librbd decide)
+        :type stripe_unit: int
+        :param stripe_count: objects to stripe over before looping
+        :type stripe_count: int
+        :param data_pool: optional separate pool for data blocks
+        :type data_pool: str
+        :raises: :class:`TypeError`
+        :raises: :class:`InvalidArgument`
+        :raises: :class:`ImageExists`
+        :raises: :class:`FunctionNotSupported`
+        :raises: :class:`ArgumentOutOfRange`
+        """
+        p_name = cstr(p_name, 'p_name')
+        c_name = cstr(c_name, 'c_name')
+        data_pool = cstr(data_pool, 'data_pool', opt=True)
+        cdef:
+            rados_ioctx_t _p_ioctx = convert_ioctx(p_ioctx)
+            rados_ioctx_t _c_ioctx = convert_ioctx(c_ioctx)
+            char *_p_name = p_name
+            char *_c_name = c_name
+            rbd_image_options_t opts
+
+        rbd_image_options_create(&opts)
+        try:
+            if features is not None:
+                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_FEATURES,
+                                             features)
+            if order is not None:
+                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_ORDER,
+                                             order)
+            if stripe_unit is not None:
+                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_STRIPE_UNIT,
+                                             stripe_unit)
+            if stripe_count is not None:
+                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_STRIPE_COUNT,
+                                             stripe_count)
+            if data_pool is not None:
+                rbd_image_options_set_string(opts, RBD_IMAGE_OPTION_DATA_POOL,
+                                             data_pool)
+            with nogil:
+                ret = rbd_clone_standalone(_p_ioctx, _p_name,
+                                           _c_ioctx, _c_name, opts)
+        finally:
+            rbd_image_options_destroy(opts)
+        if ret < 0:
+            raise make_ex(ret, 'error creating standalone clone')
 
     def list(self, ioctx):
         """

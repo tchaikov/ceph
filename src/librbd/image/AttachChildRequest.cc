@@ -34,6 +34,8 @@ AttachChildRequest<I>::AttachChildRequest(
 
 template <typename I>
 void AttachChildRequest<I>::send() {
+  ldout(m_cct, 0) << "***** ATTACH_CHILD_REQUEST SEND: clone_format="
+                  << m_clone_format << ", parent_snap_id=" << m_parent_snap_id << dendl;
   if (m_clone_format == 1) {
     v1_add_child();
   } else {
@@ -43,6 +45,7 @@ void AttachChildRequest<I>::send() {
 
 template <typename I>
 void AttachChildRequest<I>::v1_add_child() {
+  ldout(m_cct, 0) << "***** V1_ADD_CHILD CALLED: snap_id=" << m_parent_snap_id << dendl;
   ldout(m_cct, 15) << dendl;
 
   librados::ObjectWriteOperation op;
@@ -92,9 +95,16 @@ void AttachChildRequest<I>::handle_v1_refresh(int r) {
 
   bool snap_protected = false;
   if (r == 0) {
-    RWLock::RLocker snap_locker(m_parent_image_ctx->snap_lock);
-    r = m_parent_image_ctx->is_snap_protected(m_parent_snap_id,
-                                              &snap_protected);
+    // For standalone clones (snap_id == CEPH_NOSNAP), skip protection check
+    // since there's no snapshot to protect
+    if (m_parent_snap_id != CEPH_NOSNAP) {
+      RWLock::RLocker snap_locker(m_parent_image_ctx->snap_lock);
+      r = m_parent_image_ctx->is_snap_protected(m_parent_snap_id,
+                                                &snap_protected);
+    } else {
+      // Standalone clone - no snapshot, protection check not applicable
+      snap_protected = true;  // Treat as "protected" to pass validation
+    }
   }
 
   if (r < 0 || !snap_protected) {
@@ -174,6 +184,7 @@ void AttachChildRequest<I>::handle_v2_set_op_feature(int r) {
 
 template <typename I>
 void AttachChildRequest<I>::v2_child_attach() {
+  ldout(m_cct, 0) << "***** V2_CHILD_ATTACH CALLED: snap_id=" << m_parent_snap_id << dendl;
   ldout(m_cct, 15) << dendl;
 
   librados::ObjectWriteOperation op;

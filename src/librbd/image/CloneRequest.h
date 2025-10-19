@@ -123,6 +123,7 @@ private:
   bufferlist m_out_bl;
   uint64_t m_size;
   int m_r_saved = 0;
+  bool m_is_standalone_clone = false;
 
   void validate_options();
 

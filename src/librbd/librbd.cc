@@ -569,6 +569,19 @@ namespace librbd {
     return r;
   }
 
+  int RBD::clone_standalone(IoCtx& p_ioctx, const char *p_name,
+                            IoCtx& c_ioctx, const char *c_name, ImageOptions& c_opts)
+  {
+    TracepointProvider::initialize<tracepoint_traits>(get_cct(p_ioctx));
+    tracepoint(librbd, clone_standalone_enter, p_ioctx.get_pool_name().c_str(),
+               p_ioctx.get_id(), p_name, c_ioctx.get_pool_name().c_str(),
+               c_ioctx.get_id(), c_name, c_opts.opts);
+    int r = librbd::clone_standalone(p_ioctx, nullptr, p_name, c_ioctx,
+                                     nullptr, c_name, c_opts, "", "");
+    tracepoint(librbd, clone_standalone_exit, r);
+    return r;
+  }
+
   int RBD::remove(IoCtx& io_ctx, const char *name)
   {
     TracepointProvider::initialize<tracepoint_traits>(get_cct(io_ctx));
@@ -3218,6 +3231,22 @@ extern "C" int rbd_clone3(rados_ioctx_t p_ioctx, const char *p_name,
   int r = librbd::clone(p_ioc, nullptr, p_name, p_snap_name, c_ioc, nullptr,
                         c_name, c_opts_, "", "");
   tracepoint(librbd, clone3_exit, r);
+  return r;
+}
+
+extern "C" int rbd_clone_standalone(rados_ioctx_t p_ioctx, const char *p_name,
+                                    rados_ioctx_t c_ioctx, const char *c_name,
+                                    rbd_image_options_t c_opts)
+{
+  librados::IoCtx p_ioc, c_ioc;
+  librados::IoCtx::from_rados_ioctx_t(p_ioctx, p_ioc);
+  librados::IoCtx::from_rados_ioctx_t(c_ioctx, c_ioc);
+  TracepointProvider::initialize<tracepoint_traits>(get_cct(p_ioc));
+  tracepoint(librbd, clone_standalone_enter, p_ioc.get_pool_name().c_str(), p_ioc.get_id(), p_name, c_ioc.get_pool_name().c_str(), c_ioc.get_id(), c_name, c_opts);
+  librbd::ImageOptions c_opts_(c_opts);
+  int r = librbd::clone_standalone(p_ioc, nullptr, p_name, c_ioc, nullptr,
+                                   c_name, c_opts_, "", "");
+  tracepoint(librbd, clone_standalone_exit, r);
   return r;
 }
 
