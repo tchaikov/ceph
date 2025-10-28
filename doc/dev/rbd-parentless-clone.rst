@@ -4,11 +4,11 @@ RBD Standalone (Parentless) Cloning
 
 **Project Status: ✅ COMPLETED and PRODUCTION READY**
 
-**Last Updated**: 2025-10-17
+**Last Updated**: 2025-10-28
 
 **Implementation**: COMPLETE - All phases finished and tested
 **Integration Testing**: PASSED - 9/9 tests successful
-**Bugs Fixed**: 7 critical bugs identified and resolved
+**Bugs Fixed**: 8 bugs identified and resolved (7 critical, 1 high-priority)
 **Ready For**: Production deployment and upstream submission
 
 Overview
@@ -439,7 +439,7 @@ Phase 4: CLI and API (✅ COMPLETED)
   ✅ **VERIFIED**: Existing commands work with standalone clones:
 
   * ``rbd info`` - Shows parent relationship with @ suffix (no snapshot)
-  * ``rbd children`` - Lists standalone clone children (via CEPH_NOSNAP tracking)
+  * ``rbd children`` - Lists standalone clone children (requires Bug 8 fix from 2025-10-28)
   * ``rbd flatten`` - Flattens standalone clones correctly
   * ``rbd rm`` - Blocked when children exist, succeeds when no children
 
@@ -464,8 +464,8 @@ Phase 4: CLI and API (✅ COMPLETED)
 Implementation Challenges and Resolutions
 """"""""""""""""""""""""""""""""""""""""""
 
-During implementation and integration testing (2025-10-17), **7 critical bugs** were
-identified and fixed:
+During implementation and integration testing (2025-10-17 to 2025-10-28), **8 bugs** were
+identified and fixed (7 critical, 1 high-priority):
 
 **Bug 1: Null Pointer String Construction** (``src/librbd/internal.cc:980``)
   * **Issue**: Passing nullptr for snap_name parameter causing crash
@@ -511,10 +511,26 @@ identified and fixed:
   * **Discovery**: Found during integration testing when parent deletion succeeded despite children
   * **Resolution**: Modified children_list() to handle CEPH_NOSNAP like child_attach/child_detach
 
+**Bug 8: list_descendants Missing HEAD Children** (``src/librbd/api/Image.cc:329-348``) **HIGH**
+  * **Issue**: list_descendants() only iterated over actual snapshots, never checked CEPH_NOSNAP (HEAD)
+  * **Impact**: ``rbd children`` command returned empty results for standalone clones
+  * **Fix**: Added ``snap_ids.push_back(CEPH_NOSNAP)`` to include HEAD in iteration
+  * **Severity**: HIGH - standalone clone children were invisible to users
+  * **Discovery**: Found during post-integration testing (2025-10-28)
+  * **Resolution**: Modified list_descendants() at line 338 to append CEPH_NOSNAP to snap_ids vector
+  * **Testing**: Verified with vstart cluster - ``rbd children`` now correctly lists standalone clones
+  * **Details**:
+
+    * When listing children from HEAD, function only checked ``ictx->snaps`` (actual snapshots)
+    * Standalone clones attached to HEAD (snap_id=CEPH_NOSNAP) were never queried
+    * Children were persisted correctly in ``snap_children_000000000000head`` key
+    * Fix enables both direct children and multi-level descendants listing
+
 **Key Learning**: All three cls_rbd child tracking functions (child_attach, child_detach,
 children_list) needed the same CEPH_NOSNAP handling. Bug 7 was the most subtle - child
 tracking worked, but parent deletion protection didn't work because children_list couldn't
-read the children.
+read the children. Bug 8 was discovered later and affected the client-side listing - children
+were tracked correctly in the OSD, but the librbd API couldn't discover them.
 
 **Testing Evidence**:
 
@@ -523,6 +539,26 @@ After Bug 7 fix::
     bin/rbd rm testpool/parent
     2025-10-17 14:16:51.834: image has 1 child(ren) - not removing
     → Parent deletion correctly BLOCKED ✓
+
+After Bug 8 fix (2025-10-28)::
+
+    # Before fix: rbd children returned empty (but children existed in OMAP)
+    bin/rados -c ceph.conf -p testpool getomapval rbd_header.108286236b73 snap_children_000000000000head /tmp/test.dump
+    → OMAP key exists, children persisted ✓
+
+    bin/rbd -c ceph.conf children testpool/parent1
+    → (empty - BUG: children not listed)
+
+    # After fix: rbd children correctly lists standalone clones
+    bin/rbd -c ceph.conf children testpool/parent1
+    testpool/child1
+    → Standalone clone correctly LISTED ✓
+
+    # Multi-level descendants also work
+    bin/rbd -c ceph.conf children --descendants testpool/parent1
+    testpool/child1
+    testpool/grandchild1
+    → Multi-level clones correctly LISTED ✓
 
 Integration Testing Results
 """""""""""""""""""""""""""
@@ -602,7 +638,7 @@ verified, no critical bugs remaining.
 Files Modified
 """"""""""""""
 
-**Core Implementation** (9 files):
+**Core Implementation** (10 files):
 
 1. ``src/librbd/internal.cc`` (lines 977-1027)
    * Added clone_standalone() internal implementation
@@ -634,27 +670,31 @@ Files Modified
 9. ``src/librbd/image/PreRemoveRequest.h``
    * Added check_children() and handle_check_children() declarations
 
+10. ``src/librbd/api/Image.cc`` (line 338)
+    * Bug 8 fix: list_descendants() includes CEPH_NOSNAP when iterating snap_ids
+    * Enables ``rbd children`` command to list standalone clones
+
 **CLI and API** (4 files):
 
-10. ``src/include/rbd/librbd.h`` (lines 391-393)
+11. ``src/include/rbd/librbd.h`` (lines 391-393)
     * Added rbd_clone_standalone() C API declaration
 
-11. ``src/include/rbd/librbd.hpp`` (lines 100-104)
+12. ``src/include/rbd/librbd.hpp`` (lines 100-104)
     * Added C++ API wrapper declaration
 
-12. ``src/tools/rbd/action/CloneStandalone.cc`` (complete file)
+13. ``src/tools/rbd/action/CloneStandalone.cc`` (complete file)
     * Full CLI implementation for clone-standalone command
     * Line 70: Force clone format 2
 
-13. ``src/tools/rbd/CMakeLists.txt``
+14. ``src/tools/rbd/CMakeLists.txt``
     * Added CloneStandalone.cc to build
 
-14. ``src/pybind/rbd/rbd.pyx`` (lines 1293-1344)
+15. ``src/pybind/rbd/rbd.pyx`` (lines 1293-1344)
     * Python bindings for clone_standalone()
 
 **Build Artifacts**:
 
-* ``lib/librbd.so`` - RBD client library with all fixes
+* ``lib/librbd.so`` - RBD client library with all fixes (including Bug 8)
 * ``lib/libcls_rbd.so`` - OSD class library with children_list fix
 * ``bin/rbd`` - CLI tool with clone-standalone command
 
@@ -663,8 +703,9 @@ Files Modified
 * ``build/STANDALONE_CLONE_INTEGRATION_TEST_REPORT.md`` - Test results
 * ``build/STANDALONE_CLONE_FINAL_REPORT.md`` - Implementation summary
 * ``build/STANDALONE_CLONE_CRITICAL_FINDINGS.md`` - Bug investigation details
+* ``doc/dev/rbd-parentless-clone.rst`` - This document
 
-**Total Changes**: 14 source files modified, 7 bugs fixed, 100% test pass rate
+**Total Changes**: 15 source files modified, 8 bugs fixed, 100% test pass rate
 
 Post-MVP: Future Enhancements
 """"""""""""""""""""""""""""""
@@ -1372,10 +1413,10 @@ Managing Parent-Child Relationships
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ::
 
-    # List children (including standalone)
+    # List children (including standalone) - Fixed in Bug 8 (2025-10-28)
     $ rbd children rbd/parent
-    rbd/child1 (standalone)
-    rbd/child2 (standalone)
+    rbd/child1
+    rbd/child2
 
     # Get parent info for child image
     $ rbd info rbd/child

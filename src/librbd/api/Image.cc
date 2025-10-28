@@ -335,6 +335,7 @@ int Image<I>::list_descendants(
     snap_ids.push_back(ictx->snap_id);
   } else {
     snap_ids = ictx->snaps;
+    snap_ids.push_back(CEPH_NOSNAP);  // Add HEAD to check for standalone clones
   }
   for (auto snap_id : snap_ids) {
     cls::rbd::ParentImageSpec parent_spec{ictx->md_ctx.get_id(),
