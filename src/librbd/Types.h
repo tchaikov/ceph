@@ -58,8 +58,25 @@ enum {
 typedef std::map<uint64_t, uint64_t> SnapSeqs;
 
 enum ParentImageType {
-  PARENT_TYPE_SNAPSHOT = 0,    // Traditional snapshot-based parent (immutable)
-  PARENT_TYPE_STANDALONE = 1   // Standalone image parent (effectively read-only)
+  PARENT_TYPE_SNAPSHOT = 0,           // Traditional snapshot-based parent (immutable)
+  PARENT_TYPE_STANDALONE = 1,         // Local standalone image parent (same cluster)
+  PARENT_TYPE_REMOTE_STANDALONE = 2   // Remote standalone image parent (different cluster)
+};
+
+/// Remote cluster connection information for cross-cluster parents
+struct RemoteParentSpec {
+  std::string cluster_name;
+  std::vector<std::string> mon_hosts;
+  std::string keyring;  // Base64-encoded
+
+  RemoteParentSpec() = default;
+  RemoteParentSpec(const std::string& name, const std::vector<std::string>& mons,
+                   const std::string& key)
+    : cluster_name(name), mon_hosts(mons), keyring(key) {}
+
+  bool empty() const {
+    return cluster_name.empty() && mon_hosts.empty() && keyring.empty();
+  }
 };
 
 /// Full information about an image's parent.
@@ -74,8 +91,13 @@ struct ParentImageInfo {
    * will be shorter. */
   uint64_t overlap = 0;
 
-  /// Type of parent (snapshot or standalone)
+  /// Type of parent (snapshot, local standalone, or remote standalone)
   ParentImageType parent_type = PARENT_TYPE_SNAPSHOT;
+
+  /// Remote cluster information (for REMOTE_STANDALONE parent type)
+  std::string remote_cluster_name;
+  std::vector<std::string> remote_mon_hosts;
+  std::string remote_keyring;  // Base64-encoded keyring
 };
 
 struct SnapInfo {

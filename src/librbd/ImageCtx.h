@@ -131,6 +131,7 @@ namespace librbd {
     ParentImageInfo parent_md;
     ImageCtx *parent;
     ImageCtx *child = nullptr;
+    std::unique_ptr<librados::Rados> remote_parent_cluster;  // RADOS connection for remote parent
     MigrationInfo migration_info;
     cls::rbd::GroupSpec group_spec;
     uint64_t stripe_unit, stripe_count;

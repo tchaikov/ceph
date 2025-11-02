@@ -32,6 +32,7 @@
 #include "librbd/Operations.h"
 #include "librbd/Types.h"
 #include "librbd/Utils.h"
+#include "librbd/RemoteClusterUtils.h"
 #include "librbd/api/Config.h"
 #include "librbd/api/Image.h"
 #include "librbd/exclusive_lock/AutomaticPolicy.h"
@@ -980,6 +981,142 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
       config, p_ioctx, parent_id, "", CEPH_NOSNAP, c_ioctx, c_name,
       clone_id, c_opts, non_primary_global_image_id, primary_mirror_uuid,
       op_work_queue, &cond);
+    req->send();
+
+    r = cond.wait();
+    if (r < 0) {
+      return r;
+    }
+
+    return 0;
+  }
+
+  int clone_standalone_remote(IoCtx& p_ioctx, const char *p_id, const char *p_name,
+                              IoCtx& c_ioctx, const char *c_id, const char *c_name,
+                              ImageOptions& c_opts,
+                              const std::string &non_primary_global_image_id,
+                              const std::string &primary_mirror_uuid,
+                              const std::string &remote_cluster_conf,
+                              const std::string &remote_keyring,
+                              const std::string &remote_client_name)
+  {
+    ceph_assert((p_id == nullptr) ^ (p_name == nullptr));
+
+    CephContext *cct = (CephContext *)p_ioctx.cct();
+
+    uint64_t flatten;
+    if (c_opts.get(RBD_IMAGE_OPTION_FLATTEN, &flatten) == 0) {
+      lderr(cct) << "clone_standalone_remote does not support 'flatten' image option" << dendl;
+      return -EINVAL;
+    }
+
+    // Validate remote_client_name to prevent path traversal attacks
+    if (remote_client_name.empty()) {
+      lderr(cct) << "remote_client_name cannot be empty" << dendl;
+      return -EINVAL;
+    }
+    if (remote_client_name.find('/') != std::string::npos ||
+        remote_client_name.find("..") != std::string::npos) {
+      lderr(cct) << "remote_client_name contains invalid characters (path traversal attempt)" << dendl;
+      return -EINVAL;
+    }
+    // Validate it matches expected Ceph client name format (client.*)
+    if (remote_client_name.find("client.") != 0) {
+      lderr(cct) << "remote_client_name must start with 'client.' (got: "
+                 << remote_client_name << ")" << dendl;
+      return -EINVAL;
+    }
+    // Additional check: ensure reasonable length (prevent buffer issues)
+    if (remote_client_name.length() > 256) {
+      lderr(cct) << "remote_client_name too long (max 256 characters)" << dendl;
+      return -EINVAL;
+    }
+
+    // Parse remote cluster configuration
+    std::vector<std::string> remote_mon_hosts;
+    std::string cluster_name;
+    int r = util::parse_mon_hosts_from_config(remote_cluster_conf, remote_mon_hosts, cluster_name);
+    if (r < 0) {
+      lderr(cct) << "failed to parse remote cluster configuration: "
+                 << cpp_strerror(r) << dendl;
+      return r;
+    }
+
+    // Read and encode keyring
+    std::string encoded_keyring;
+    if (!remote_keyring.empty()) {
+      r = util::read_and_encode_keyring(remote_keyring, remote_client_name, encoded_keyring);
+      if (r < 0) {
+        lderr(cct) << "failed to read remote cluster keyring: "
+                   << cpp_strerror(r) << dendl;
+        return r;
+      }
+    } else {
+      // Try to find keyring in same directory as conf file
+      std::string keyring_path = remote_cluster_conf;
+      size_t slash_pos = keyring_path.find_last_of('/');
+      if (slash_pos != std::string::npos) {
+        keyring_path = keyring_path.substr(0, slash_pos + 1);
+      } else {
+        keyring_path = "";
+      }
+      keyring_path += "ceph." + remote_client_name + ".keyring";
+
+      r = util::read_and_encode_keyring(keyring_path, remote_client_name, encoded_keyring);
+      if (r < 0) {
+        lderr(cct) << "failed to read remote cluster keyring from " << keyring_path
+                   << ": " << cpp_strerror(r) << dendl;
+        return r;
+      }
+    }
+
+    // Get parent image ID
+    std::string parent_id;
+    if (p_id == nullptr) {
+      r = cls_client::dir_get_id(&p_ioctx, RBD_DIRECTORY, p_name,
+                                 &parent_id);
+      if (r < 0) {
+        if (r != -ENOENT) {
+          lderr(cct) << "failed to retrieve parent image id: "
+                     << cpp_strerror(r) << dendl;
+        }
+        return r;
+      }
+    } else {
+      parent_id = p_id;
+    }
+
+    std::string clone_id;
+    if (c_id == nullptr) {
+      clone_id = util::generate_image_id(c_ioctx);
+    } else {
+      clone_id = c_id;
+    }
+
+    ldout(cct, 10) << __func__ << " "
+                   << "c_name=" << c_name << ", "
+                   << "c_id= " << clone_id << ", "
+                   << "c_opts=" << c_opts << ", "
+                   << "remote_cluster=" << cluster_name << ", "
+                   << "remote_monitors=" << remote_mon_hosts.size() << dendl;
+
+    // Construct RemoteParentSpec
+    RemoteParentSpec remote_parent_spec(cluster_name, remote_mon_hosts, encoded_keyring);
+
+    ConfigProxy config{reinterpret_cast<CephContext *>(c_ioctx.cct())->_conf};
+    api::Config<>::apply_pool_overrides(c_ioctx, &config);
+
+    ThreadPool *thread_pool;
+    ContextWQ *op_work_queue;
+    ImageCtx::get_thread_pool_instance(cct, &thread_pool, &op_work_queue);
+
+    // For remote standalone clones, we pass empty snap_name and CEPH_NOSNAP for snap_id
+    // Along with RemoteParentSpec to tell CloneRequest this is a remote standalone clone
+    C_SaferCond cond;
+    auto *req = image::CloneRequest<>::create(
+      config, p_ioctx, parent_id, "", CEPH_NOSNAP, c_ioctx, c_name,
+      clone_id, c_opts, non_primary_global_image_id, primary_mirror_uuid,
+      remote_parent_spec, op_work_queue, &cond);
     req->send();
 
     r = cond.wait();

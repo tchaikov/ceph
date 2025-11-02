@@ -12,8 +12,9 @@
 
 /// Parent image type classification
 enum cls_rbd_parent_type {
-  CLS_RBD_PARENT_TYPE_SNAPSHOT = 0,    // Traditional snapshot parent (immutable)
-  CLS_RBD_PARENT_TYPE_STANDALONE = 1   // Standalone image parent (effectively read-only)
+  CLS_RBD_PARENT_TYPE_SNAPSHOT = 0,           // Traditional snapshot parent (immutable)
+  CLS_RBD_PARENT_TYPE_STANDALONE = 1,         // Local standalone image parent (same cluster)
+  CLS_RBD_PARENT_TYPE_REMOTE_STANDALONE = 2   // Remote standalone image parent (different cluster)
 };
 
 /// information about our parent image, if any
@@ -24,6 +25,11 @@ struct cls_rbd_parent {
   snapid_t snap_id = CEPH_NOSNAP;
   std::optional<uint64_t> head_overlap = std::nullopt;
   cls_rbd_parent_type parent_type = CLS_RBD_PARENT_TYPE_SNAPSHOT;
+
+  // Remote cluster information (for REMOTE_STANDALONE parent type)
+  std::string remote_cluster_name;      // Optional: name/ID of remote cluster
+  std::vector<std::string> remote_mon_hosts;  // Monitor addresses for remote cluster
+  std::string remote_keyring;           // Base64-encoded keyring for authentication
 
   cls_rbd_parent() {
   }
@@ -45,7 +51,11 @@ struct cls_rbd_parent {
     return (pool_id == rhs.pool_id &&
             pool_namespace == rhs.pool_namespace &&
             image_id == rhs.image_id &&
-            snap_id == rhs.snap_id);
+            snap_id == rhs.snap_id &&
+            parent_type == rhs.parent_type &&
+            remote_cluster_name == rhs.remote_cluster_name &&
+            remote_mon_hosts == rhs.remote_mon_hosts &&
+            remote_keyring == rhs.remote_keyring);
   }
   inline bool operator!=(const cls_rbd_parent& rhs) const {
     return !(*this == rhs);
@@ -57,7 +67,8 @@ struct cls_rbd_parent {
     if ((features & CEPH_FEATURE_SERVER_NAUTILUS) != 0ULL) {
       // break backwards compatability when using nautilus or later OSDs
       // version 3 adds parent_type field
-      version = 3;
+      // version 4 adds remote cluster fields
+      version = 4;
     }
 
     ENCODE_START(version, version, bl);
@@ -75,11 +86,16 @@ struct cls_rbd_parent {
     if (version >= 3) {
       encode(static_cast<uint8_t>(parent_type), bl);
     }
+    if (version >= 4) {
+      encode(remote_cluster_name, bl);
+      encode(remote_mon_hosts, bl);
+      encode(remote_keyring, bl);
+    }
     ENCODE_FINISH(bl);
   }
 
   void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(3, bl);
+    DECODE_START(4, bl);
     decode(pool_id, bl);
     if (struct_v >= 2) {
       decode(pool_namespace, bl);
@@ -98,6 +114,11 @@ struct cls_rbd_parent {
       decode(type, bl);
       parent_type = static_cast<cls_rbd_parent_type>(type);
     }
+    if (struct_v >= 4) {
+      decode(remote_cluster_name, bl);
+      decode(remote_mon_hosts, bl);
+      decode(remote_keyring, bl);
+    }
     DECODE_FINISH(bl);
   }
 
@@ -109,8 +130,32 @@ struct cls_rbd_parent {
     if (head_overlap) {
       f->dump_unsigned("head_overlap", *head_overlap);
     }
-    f->dump_string("parent_type", parent_type == CLS_RBD_PARENT_TYPE_STANDALONE
-                                   ? "standalone" : "snapshot");
+    std::string type_str;
+    switch (parent_type) {
+      case CLS_RBD_PARENT_TYPE_SNAPSHOT:
+        type_str = "snapshot";
+        break;
+      case CLS_RBD_PARENT_TYPE_STANDALONE:
+        type_str = "standalone";
+        break;
+      case CLS_RBD_PARENT_TYPE_REMOTE_STANDALONE:
+        type_str = "remote_standalone";
+        break;
+      default:
+        type_str = "unknown";
+    }
+    f->dump_string("parent_type", type_str);
+    if (!remote_cluster_name.empty()) {
+      f->dump_string("remote_cluster_name", remote_cluster_name);
+    }
+    if (!remote_mon_hosts.empty()) {
+      f->open_array_section("remote_mon_hosts");
+      for (const auto& mon : remote_mon_hosts) {
+        f->dump_string("mon", mon);
+      }
+      f->close_section();
+    }
+    // Don't dump keyring for security reasons
   }
 
   static void generate_test_instances(list<cls_rbd_parent*>& o) {

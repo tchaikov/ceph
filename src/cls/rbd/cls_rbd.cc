@@ -1820,6 +1820,12 @@ int parent_attach(cls_method_context_t hctx, bufferlist *in, bufferlist *out) {
   uint64_t parent_overlap;
   bool reattach = false;
 
+  // Optional fields for remote parent support
+  uint8_t parent_type_raw = CLS_RBD_PARENT_TYPE_SNAPSHOT;
+  std::string remote_cluster_name;
+  std::vector<std::string> remote_mon_hosts;
+  std::string remote_keyring;
+
   auto iter = in->cbegin();
   try {
     decode(parent_image_spec, iter);
@@ -1827,13 +1833,62 @@ int parent_attach(cls_method_context_t hctx, bufferlist *in, bufferlist *out) {
     if (!iter.end()) {
       decode(reattach, iter);
     }
+    // Check for extended remote parent fields (backward compatible)
+    if (!iter.end()) {
+      decode(parent_type_raw, iter);
+      decode(remote_cluster_name, iter);
+      decode(remote_mon_hosts, iter);
+      decode(remote_keyring, iter);
+    }
   } catch (const buffer::error &err) {
     CLS_LOG(20, "cls_rbd::parent_attach: invalid decode");
     return -EINVAL;
   }
 
-  int r = image::parent::attach(hctx, {parent_image_spec, parent_overlap},
-                                reattach);
+  // Validate remote metadata field sizes to prevent resource exhaustion
+  if (!remote_cluster_name.empty()) {
+    if (remote_cluster_name.size() > 256) {
+      CLS_LOG(1, "cls_rbd::parent_attach: remote_cluster_name too large: %zu bytes",
+              remote_cluster_name.size());
+      return -EINVAL;
+    }
+
+    if (remote_mon_hosts.size() > 64) {
+      CLS_LOG(1, "cls_rbd::parent_attach: too many remote monitors: %zu",
+              remote_mon_hosts.size());
+      return -EINVAL;
+    }
+
+    for (const auto& host : remote_mon_hosts) {
+      if (host.size() > 256) {
+        CLS_LOG(1, "cls_rbd::parent_attach: remote monitor address too long: %zu bytes",
+                host.size());
+        return -EINVAL;
+      }
+    }
+
+    if (remote_keyring.size() > 4096) {
+      CLS_LOG(1, "cls_rbd::parent_attach: remote_keyring too large: %zu bytes",
+              remote_keyring.size());
+      return -EINVAL;
+    }
+  }
+
+  // Validate parent_type enum value
+  if (parent_type_raw > CLS_RBD_PARENT_TYPE_REMOTE_STANDALONE) {
+    CLS_LOG(1, "cls_rbd::parent_attach: invalid parent_type: %u",
+            (unsigned int)parent_type_raw);
+    return -EINVAL;
+  }
+
+  // Construct cls_rbd_parent with all fields
+  cls_rbd_parent parent(parent_image_spec, parent_overlap,
+                        static_cast<cls_rbd_parent_type>(parent_type_raw));
+  parent.remote_cluster_name = remote_cluster_name;
+  parent.remote_mon_hosts = remote_mon_hosts;
+  parent.remote_keyring = remote_keyring;
+
+  int r = image::parent::attach(hctx, parent, reattach);
   if (r < 0) {
     return r;
   }

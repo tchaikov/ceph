@@ -462,6 +462,40 @@ int parent_attach(librados::IoCtx *ioctx, const std::string &oid,
   return ioctx->operate(oid, &op);
 }
 
+// Overload for remote standalone parent with cluster information
+void parent_attach(librados::ObjectWriteOperation* op,
+                   const cls::rbd::ParentImageSpec& parent_image_spec,
+                   uint64_t parent_overlap, bool reattach,
+                   cls_rbd_parent_type parent_type,
+                   const std::string& remote_cluster_name,
+                   const std::vector<std::string>& remote_mon_hosts,
+                   const std::string& remote_keyring) {
+  bufferlist in_bl;
+  encode(parent_image_spec, in_bl);
+  encode(parent_overlap, in_bl);
+  encode(reattach, in_bl);
+  // Extended fields for remote parent support
+  encode(static_cast<uint8_t>(parent_type), in_bl);
+  encode(remote_cluster_name, in_bl);
+  encode(remote_mon_hosts, in_bl);
+  encode(remote_keyring, in_bl);
+  op->exec("rbd", "parent_attach", in_bl);
+}
+
+int parent_attach(librados::IoCtx *ioctx, const std::string &oid,
+                  const cls::rbd::ParentImageSpec& parent_image_spec,
+                  uint64_t parent_overlap, bool reattach,
+                  cls_rbd_parent_type parent_type,
+                  const std::string& remote_cluster_name,
+                  const std::vector<std::string>& remote_mon_hosts,
+                  const std::string& remote_keyring) {
+  librados::ObjectWriteOperation op;
+  parent_attach(&op, parent_image_spec, parent_overlap, reattach,
+                parent_type, remote_cluster_name, remote_mon_hosts,
+                remote_keyring);
+  return ioctx->operate(oid, &op);
+}
+
 void parent_detach(librados::ObjectWriteOperation* op) {
   bufferlist in_bl;
   op->exec("rbd", "parent_detach", in_bl);

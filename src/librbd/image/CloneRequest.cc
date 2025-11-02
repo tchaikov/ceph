@@ -74,6 +74,56 @@ CloneRequest<I>::CloneRequest(ConfigProxy& config,
                    << (m_is_standalone_clone ? " (standalone clone)" : "") << dendl;
 }
 
+// Constructor for remote standalone clone
+template <typename I>
+CloneRequest<I>::CloneRequest(ConfigProxy& config,
+                              IoCtx& parent_io_ctx,
+                              const std::string& parent_image_id,
+                              const std::string& parent_snap_name,
+                              uint64_t parent_snap_id,
+                              IoCtx &c_ioctx,
+			      const std::string &c_name,
+			      const std::string &c_id,
+			      ImageOptions c_options,
+			      const std::string &non_primary_global_image_id,
+			      const std::string &primary_mirror_uuid,
+                              const RemoteParentSpec& remote_parent_spec,
+			      ContextWQ *op_work_queue, Context *on_finish)
+  : m_config(config), m_parent_io_ctx(parent_io_ctx),
+    m_parent_image_id(parent_image_id), m_parent_snap_name(parent_snap_name),
+    m_parent_snap_id(parent_snap_id), m_ioctx(c_ioctx), m_name(c_name),
+    m_id(c_id), m_opts(c_options),
+    m_non_primary_global_image_id(non_primary_global_image_id),
+    m_primary_mirror_uuid(primary_mirror_uuid),
+    m_remote_parent_spec(remote_parent_spec),
+    m_op_work_queue(op_work_queue), m_on_finish(on_finish),
+    m_use_p_features(true) {
+
+  m_cct = reinterpret_cast<CephContext *>(m_ioctx.cct());
+
+  // Detect standalone clone: no snapshot name and CEPH_NOSNAP
+  if (m_parent_snap_name.empty() && m_parent_snap_id == CEPH_NOSNAP) {
+    m_is_standalone_clone = true;
+  }
+
+  bool default_format_set;
+  m_opts.is_set(RBD_IMAGE_OPTION_FORMAT, &default_format_set);
+  if (!default_format_set) {
+    m_opts.set(RBD_IMAGE_OPTION_FORMAT, static_cast<uint64_t>(2));
+  }
+
+  ldout(m_cct, 20) << "parent_pool_id=" << parent_io_ctx.get_id() << ", "
+                   << "parent_image_id=" << parent_image_id << ", "
+		   << "parent_snap=" << parent_snap_name << "/"
+                   << parent_snap_id << " clone to "
+                   << "pool_id=" << m_ioctx.get_id() << ", "
+                   << "name=" << m_name << ", "
+                   << "opts=" << m_opts
+                   << (m_is_standalone_clone ? " (standalone clone)" : "")
+                   << (!remote_parent_spec.empty() ? " (remote parent)" : "")
+                   << dendl;
+}
+
 template <typename I>
 void CloneRequest<I>::send() {
   ldout(m_cct, 20) << dendl;
@@ -360,8 +410,19 @@ void CloneRequest<I>::attach_parent() {
 
   auto ctx = create_context_callback<
     CloneRequest<I>, &CloneRequest<I>::handle_attach_parent>(this);
-  auto req = AttachParentRequest<I>::create(
-    *m_imctx, m_pspec, m_size, false, ctx);
+
+  AttachParentRequest<I>* req;
+  if (!m_remote_parent_spec.empty()) {
+    // Create remote standalone parent attachment
+    ldout(m_cct, 10) << "attaching remote parent from cluster: "
+                     << m_remote_parent_spec.cluster_name << dendl;
+    req = AttachParentRequest<I>::create(
+      *m_imctx, m_pspec, m_size, false, m_remote_parent_spec, ctx);
+  } else {
+    // Create local parent attachment (snapshot or local standalone)
+    req = AttachParentRequest<I>::create(
+      *m_imctx, m_pspec, m_size, false, ctx);
+  }
   req->send();
 }
 

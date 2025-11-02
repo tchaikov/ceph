@@ -8,6 +8,7 @@
 #include "common/WorkQueue.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/Utils.h"
+#include "librbd/RemoteClusterUtils.h"
 #include "librbd/image/CloseRequest.h"
 #include "librbd/image/OpenRequest.h"
 #include "librbd/io/ObjectDispatcher.h"
@@ -116,12 +117,59 @@ void RefreshParentRequest<I>::send_open_parent() {
   ldout(cct, 10) << this << " " << __func__ << dendl;
 
   librados::IoCtx parent_io_ctx;
-  int r = util::create_ioctx(m_child_image_ctx.md_ctx, "parent image",
-                             m_parent_md.spec.pool_id,
-                             m_parent_md.spec.pool_namespace, &parent_io_ctx);
-  if (r < 0) {
-    send_complete(r);
-    return;
+  int r;
+
+  // Check if parent is in remote cluster
+  if (m_parent_md.parent_type == PARENT_TYPE_REMOTE_STANDALONE) {
+    ldout(cct, 10) << "opening remote parent in cluster: "
+                   << m_parent_md.remote_cluster_name << dendl;
+
+    // Establish remote cluster connection proactively (not lazily)
+    // This avoids slow-start on first I/O that needs the parent
+    m_child_image_ctx.remote_parent_cluster.reset(new librados::Rados());
+
+    r = util::connect_to_remote_cluster(
+      cct,
+      m_parent_md.remote_cluster_name,
+      m_parent_md.remote_mon_hosts,
+      m_parent_md.remote_keyring,
+      "client.admin",
+      *m_child_image_ctx.remote_parent_cluster);
+
+    if (r < 0) {
+      lderr(cct) << "failed to connect to remote cluster: "
+                 << cpp_strerror(r) << dendl;
+      m_child_image_ctx.remote_parent_cluster.reset();
+      send_complete(r);
+      return;
+    }
+
+    ldout(cct, 10) << "successfully connected to remote cluster" << dendl;
+
+    // Create IoCtx from remote cluster
+    r = m_child_image_ctx.remote_parent_cluster->ioctx_create2(
+      m_parent_md.spec.pool_id, parent_io_ctx);
+    if (r < 0) {
+      lderr(cct) << "failed to create ioctx for remote parent pool: "
+                 << cpp_strerror(r) << dendl;
+      // Clean up remote cluster connection to prevent resource leak
+      m_child_image_ctx.remote_parent_cluster.reset();
+      send_complete(r);
+      return;
+    }
+
+    if (!m_parent_md.spec.pool_namespace.empty()) {
+      parent_io_ctx.set_namespace(m_parent_md.spec.pool_namespace);
+    }
+  } else {
+    // Local parent - use existing code path
+    r = util::create_ioctx(m_child_image_ctx.md_ctx, "parent image",
+                           m_parent_md.spec.pool_id,
+                           m_parent_md.spec.pool_namespace, &parent_io_ctx);
+    if (r < 0) {
+      send_complete(r);
+      return;
+    }
   }
 
   std::string image_name;

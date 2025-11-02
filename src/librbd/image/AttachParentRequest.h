@@ -29,6 +29,16 @@ public:
                                    on_finish);
   }
 
+  static AttachParentRequest* create(ImageCtxT& image_ctx,
+                                     const cls::rbd::ParentImageSpec& pspec,
+                                     uint64_t parent_overlap,
+                                     bool reattach,
+                                     const RemoteParentSpec& remote_parent_spec,
+                                     Context* on_finish) {
+    return new AttachParentRequest(image_ctx, pspec, parent_overlap, reattach,
+                                   remote_parent_spec, on_finish);
+  }
+
   AttachParentRequest(ImageCtxT& image_ctx,
                       const cls::rbd::ParentImageSpec& pspec,
                       uint64_t parent_overlap, bool reattach,
@@ -36,6 +46,16 @@ public:
     : m_image_ctx(image_ctx), m_parent_image_spec(pspec),
       m_parent_overlap(parent_overlap), m_reattach(reattach),
       m_on_finish(on_finish) {
+  }
+
+  AttachParentRequest(ImageCtxT& image_ctx,
+                      const cls::rbd::ParentImageSpec& pspec,
+                      uint64_t parent_overlap, bool reattach,
+                      const RemoteParentSpec& remote_parent_spec,
+                      Context* on_finish)
+    : m_image_ctx(image_ctx), m_parent_image_spec(pspec),
+      m_parent_overlap(parent_overlap), m_reattach(reattach),
+      m_remote_parent_spec(remote_parent_spec), m_on_finish(on_finish) {
   }
 
   void send();
@@ -60,6 +80,7 @@ private:
   cls::rbd::ParentImageSpec m_parent_image_spec;
   uint64_t m_parent_overlap;
   bool m_reattach;
+  RemoteParentSpec m_remote_parent_spec;  // Empty if not a remote parent
   Context* m_on_finish;
 
   bool m_legacy_parent = false;

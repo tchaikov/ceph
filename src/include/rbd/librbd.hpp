@@ -235,6 +235,11 @@ public:
 	     IoCtx& c_ioctx, const char *c_name, ImageOptions& opts);
   int clone_standalone(IoCtx& p_ioctx, const char *p_name,
                        IoCtx& c_ioctx, const char *c_name, ImageOptions& opts);
+  int clone_standalone_remote(IoCtx& p_ioctx, const char *p_name,
+                               IoCtx& c_ioctx, const char *c_name, ImageOptions& opts,
+                               const std::string& remote_cluster_conf,
+                               const std::string& remote_keyring,
+                               const std::string& remote_client_name);
   int remove(IoCtx& io_ctx, const char *name);
   int remove_with_progress(IoCtx& io_ctx, const char *name, ProgressContext& pctx);
   int rename(IoCtx& src_io_ctx, const char *srcname, const char *destname);

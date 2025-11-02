@@ -391,6 +391,12 @@ CEPH_RBD_API int rbd_clone3(rados_ioctx_t p_ioctx, const char *p_name,
 CEPH_RBD_API int rbd_clone_standalone(rados_ioctx_t p_ioctx, const char *p_name,
                                       rados_ioctx_t c_ioctx, const char *c_name,
                                       rbd_image_options_t c_opts);
+CEPH_RBD_API int rbd_clone_standalone_remote(rados_ioctx_t p_ioctx, const char *p_name,
+                                              rados_ioctx_t c_ioctx, const char *c_name,
+                                              rbd_image_options_t c_opts,
+                                              const char *remote_cluster_conf,
+                                              const char *remote_keyring,
+                                              const char *remote_client_name);
 CEPH_RBD_API int rbd_remove(rados_ioctx_t io, const char *name);
 CEPH_RBD_API int rbd_remove_with_progress(rados_ioctx_t io, const char *name,
 			                  librbd_progress_fn_t cb,

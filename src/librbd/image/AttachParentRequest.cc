@@ -31,8 +31,21 @@ void AttachParentRequest<I>::attach_parent() {
 
   librados::ObjectWriteOperation op;
   if (!m_legacy_parent) {
-    librbd::cls_client::parent_attach(&op, m_parent_image_spec,
-                                      m_parent_overlap, m_reattach);
+    // Check if this is a remote standalone parent
+    if (!m_remote_parent_spec.empty()) {
+      ldout(cct, 10) << "attaching remote standalone parent: "
+                     << m_remote_parent_spec.cluster_name << dendl;
+      librbd::cls_client::parent_attach(
+          &op, m_parent_image_spec, m_parent_overlap, m_reattach,
+          CLS_RBD_PARENT_TYPE_REMOTE_STANDALONE,
+          m_remote_parent_spec.cluster_name,
+          m_remote_parent_spec.mon_hosts,
+          m_remote_parent_spec.keyring);
+    } else {
+      // Local parent (snapshot or standalone)
+      librbd::cls_client::parent_attach(&op, m_parent_image_spec,
+                                        m_parent_overlap, m_reattach);
+    }
   } else {
     librbd::cls_client::set_parent(&op, m_parent_image_spec, m_parent_overlap);
   }
