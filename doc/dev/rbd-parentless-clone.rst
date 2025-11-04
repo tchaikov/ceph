@@ -1961,52 +1961,789 @@ Backward Compatibility
 
 No migration path needed - this is a new feature, not a replacement.
 
-Appendix C: S3-Backed Parent (Future Work)
--------------------------------------------
+Appendix C: S3 Back-fill with Distributed Locking (Phase 3 - Planned)
+-----------------------------------------------------------------------
 
-**Note**: This appendix describes future work that is **out of scope** for Phase 2.
-This is included for reference and planning purposes only.
+**Project Status: 📋 DESIGN PHASE**
+
+**Last Updated**: 2025-11-04
 
 Overview
 ^^^^^^^^
 
-After Phase 2 is complete, the remote cluster parent infrastructure can be extended to support
-S3-backed parent images. This would enable:
+Phase 3 extends the standalone clone feature to support **S3-backed parent images**. When a
+child image attempts to read a parent object that doesn't exist in RADOS, the system can
+automatically fetch it from S3 storage and write it back to the parent image, creating a
+transparent read-through cache.
 
-* Cross-cluster image sharing using S3 storage
-* Local parent acts as read cache for remote S3-backed images
-* Geographic distribution of base images
-* Cost optimization through S3 storage
+This enables:
 
-Architecture Concept
-^^^^^^^^^^^^^^^^^^^^
+* **Sparse parent images**: Parent images with objects stored in S3 instead of RADOS
+* **Cost optimization**: Store cold data in S3, hot data in RADOS
+* **Geographic distribution**: Distribute base images via S3, populate locally on demand
+* **Hybrid storage**: Mix RADOS and S3 storage transparently
+
+**Key Innovation**: Using RADOS distributed locks (``cls_lock``) to coordinate concurrent
+S3 fetches from multiple children, ensuring each object is fetched only once.
+
+Motivation
+^^^^^^^^^^
+
+In the current implementation (Phase 1-2), parent images must have all objects present in
+RADOS. This creates challenges for:
+
+* **Large base images**: Storing complete golden images in every cluster
+* **Infrequently accessed data**: Wasting RADOS capacity on cold objects
+* **Cross-region distribution**: Replicating large images across geographic boundaries
+* **Cost at scale**: RADOS storage is more expensive than S3 for cold data
+
+Phase 3 solves these problems by allowing parent objects to be stored in S3, fetching them
+on-demand only when children need them.
+
+Architecture
+^^^^^^^^^^^^
 
 .. code-block:: none
 
-    ┌─────────────────────────────────────────────────────────┐
-    │                    Local Cluster                        │
-    │                                                          │
-    │  ┌──────────────┐         ┌──────────────┐             │
-    │  │ Child Image  │────────>│ Parent Cache │             │
-    │  │   (RBD)      │ copyup  │  (RBD)       │             │
-    │  └──────────────┘         └──────┬───────┘             │
-    │                                   │ fetch from S3       │
-    └───────────────────────────────────┼─────────────────────┘
-                                        │
-                                        ▼
-                         ┌──────────────────────────┐
-                         │   Remote Cluster (S3)    │
-                         │  ┌────────────────────┐  │
-                         │  │  S3-backed Image   │  │
-                         │  └────────────────────┘  │
-                         └──────────────────────────┘
+    ┌────────────────────────────────────────────────────────────────┐
+    │                    Local Cluster                               │
+    │                                                                 │
+    │  ┌──────────────┐                      ┌──────────────┐       │
+    │  │  Child A     │─────copy-on-write───>│ Parent Image │       │
+    │  └──────────────┘                      │  (Sparse)    │       │
+    │                                         └──────┬───────┘       │
+    │  ┌──────────────┐                             │                │
+    │  │  Child B     │─────copy-on-write───────────┘                │
+    │  └──────────────┘         │                                    │
+    │                            │                                    │
+    │  ┌──────────────┐         │ Object missing (-ENOENT)           │
+    │  │  Child C     │─────────┘                                    │
+    │  └──────────────┘         │                                    │
+    │                            ▼                                    │
+    │                   ┌────────────────┐                           │
+    │                   │ Distributed    │ Child A: LOCK_EXCLUSIVE   │
+    │                   │ Lock (cls_lock)│ Child B: -EBUSY (wait)    │
+    │                   └────────┬───────┘ Child C: -EBUSY (wait)    │
+    │                            │                                    │
+    │                            │ Lock acquired                      │
+    │                            ▼                                    │
+    └────────────────────────────┼────────────────────────────────────┘
+                                 │
+                                 │ Fetch from S3
+                                 ▼
+                  ┌──────────────────────────────┐
+                  │         S3 Storage           │
+                  │  ┌────────────────────────┐  │
+                  │  │ Object:                │  │
+                  │  │ rbd_data.{prefix}.123  │  │
+                  │  └────────────────────────┘  │
+                  └──────────────┬───────────────┘
+                                 │
+                                 │ Data returned
+                                 ▼
+    ┌────────────────────────────┼────────────────────────────────────┐
+    │                            │                                    │
+    │                   ┌────────▼───────┐                           │
+    │                   │ Write to Parent│ (write_full operation)    │
+    │                   │ Object in RADOS│                           │
+    │                   └────────┬───────┘                           │
+    │                            │                                    │
+    │                            │ Write complete                     │
+    │                            ▼                                    │
+    │                   ┌────────────────┐                           │
+    │                   │ Unlock Object  │                           │
+    │                   └────────┬───────┘                           │
+    │                            │                                    │
+    │  ┌──────────────┐         │                                    │
+    │  │  Child A     │◄────────┘ Continue copyup with S3 data       │
+    │  └──────────────┘                                              │
+    │                                                                 │
+    │  ┌──────────────┐         ┌──────────────┐                    │
+    │  │  Child B     │────────>│ Parent Object│ Retry read → Success│
+    │  └──────────────┘         │ (now exists) │                    │
+    │                            └──────────────┘                    │
+    │  ┌──────────────┐                 │                            │
+    │  │  Child C     │─────────────────┘ Retry read → Success       │
+    │  └──────────────┘                                              │
+    │                                                                 │
+    └─────────────────────────────────────────────────────────────────┘
 
-Additional Implementation Phases
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+**Key Components:**
 
-* **Phase 7**: S3 client integration
-* **Phase 8**: Local read cache layer
-* **Phase 9**: Cross-cluster coordination
-* **Phase 10**: Advanced S3 features (multi-region, CDN)
+1. **S3 Object Fetcher**: libcurl-based HTTP client with AWS Signature V4
+2. **Distributed Lock**: RADOS ``cls_lock`` for object-level coordination
+3. **Write-back Cache**: Parent image serves as RADOS cache for S3 objects
+4. **Retry Logic**: Exponential backoff for lock contention
 
-**This work is deferred pending MVP completion and available resources.**
+Core Concepts
+^^^^^^^^^^^^^
+
+**S3 Back-fill Trigger Conditions**
+
+S3 back-fill is triggered when ALL of the following conditions are met:
+
+1. **Parent read returns -ENOENT**: Object doesn't exist in parent's RADOS pool
+2. **Parent type is standalone**: ``parent_type`` is ``PARENT_TYPE_STANDALONE`` or ``PARENT_TYPE_REMOTE_STANDALONE``
+3. **S3 configuration exists**: Parent image metadata contains complete S3 config (bucket, endpoint, credentials)
+
+**S3 Configuration Storage**
+
+Stored in parent image's header metadata::
+
+    s3.enabled = "true"
+    s3.bucket = "my-golden-images"
+    s3.endpoint = "https://s3.amazonaws.com"
+    s3.region = "us-west-2"
+    s3.access_key = "AKIAIOSFODNN7EXAMPLE"
+    s3.secret_key = "base64(encrypted_key)"  # Encrypted using cluster key
+    s3.prefix = ""                            # Optional prefix within bucket
+    s3.timeout_ms = "30000"                   # 30 second timeout
+    s3.retry_count = "3"                      # S3 request retries
+
+**Object Naming Convention**
+
+S3 objects use the same naming as RADOS objects::
+
+    S3 Key: {prefix}/rbd_data.{image_block_name_prefix}.{object_number}
+
+    Example:
+    S3 Key:    rbd_data.106286b8f643.0000000000000000
+    RADOS OID: rbd_data.106286b8f643.0000000000000000
+
+    (Direct 1:1 mapping)
+
+Distributed Locking Strategy
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**The Critical Challenge**: When multiple children concurrently read the same missing parent
+object, how to ensure only ONE S3 fetch occurs?
+
+**Solution**: Use RADOS object-level distributed locks (``cls_lock``) to coordinate.
+
+**Lock Protocol**::
+
+    Lock Name:    "s3_fetch_lock"
+    Lock Type:    LOCK_EXCLUSIVE
+    Lock Cookie:  "{instance_id}_{object_number}"
+    Lock Timeout: 30 seconds (auto-release on crash)
+
+**Lock Acquisition Flow**:
+
+1. **Child A** attempts to read parent object → -ENOENT
+2. **Child A** tries ``cls_lock::lock(parent_object, "s3_fetch_lock", EXCLUSIVE)`` → **SUCCESS**
+3. **Child A** fetches from S3, writes to parent object, unlocks
+4. **Child B** attempts to read parent object → -ENOENT
+5. **Child B** tries ``cls_lock::lock(parent_object, "s3_fetch_lock", EXCLUSIVE)`` → **-EBUSY**
+6. **Child B** waits 1 second, retries reading parent object → **SUCCESS** (Child A wrote it)
+7. **Child C** (concurrent with B) → also gets -EBUSY → waits → reads successfully
+
+**Result**: Only Child A fetches from S3. Children B and C read from RADOS parent.
+
+Detailed Implementation Flow
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Step-by-Step Execution** (``src/librbd/io/CopyupRequest.cc``)::
+
+    1. CopyupRequest::read_from_parent()
+       └─> ImageRequest::aio_read(parent_image)
+
+    2. CopyupRequest::handle_read_from_parent(r)
+       ├─> if (r == 0) → Success, continue normal copyup
+       ├─> if (r == -ENOENT && !should_fetch_from_s3()) → Error
+       └─> if (r == -ENOENT && should_fetch_from_s3()) → fetch_from_s3_with_lock()
+
+    3. fetch_from_s3_with_lock()
+       ├─> Construct lock cookie: "{instance_id}_{object_no}"
+       ├─> ObjectWriteOperation lock_op
+       ├─> rados::cls::lock::lock(&lock_op, "s3_fetch_lock", LOCK_EXCLUSIVE,
+       │                          cookie, "", "S3 fetch in progress",
+       │                          utime_t(30,0), 0)
+       └─> parent_ioctx.aio_operate(parent_oid, lock_op) → handle_lock_parent_object()
+
+    4. handle_lock_parent_object(r)
+       ├─> if (r == 0) → Lock acquired!
+       │   ├─> m_s3_lock_acquired = true
+       │   └─> fetch_from_s3_async()
+       │
+       └─> if (r == -EBUSY || r == -EEXIST) → Lock held by another child
+           ├─> Log: "Another child is fetching, will retry"
+           └─> retry_read_from_parent()
+
+    5a. fetch_from_s3_async() [Lock holder path]
+        ├─> Get S3Config from parent metadata
+        ├─> Construct S3 object key
+        ├─> S3ObjectFetcher::async_fetch(s3_config, key, &m_s3_data) → handle_s3_fetch()
+
+    6a. handle_s3_fetch(r)
+        ├─> if (r < 0) → S3 fetch failed
+        │   ├─> unlock_parent_object()
+        │   └─> finish(r)
+        │
+        └─> if (r == 0) → S3 fetch succeeded
+            └─> write_back_to_parent()
+
+    7a. write_back_to_parent()
+        ├─> ObjectWriteOperation write_op
+        ├─> write_op.write_full(m_s3_data)
+        └─> parent_ioctx.aio_operate(parent_oid, write_op) → handle_write_back_to_parent()
+
+    8a. handle_write_back_to_parent(r)
+        ├─> unlock_parent_object()
+        ├─> if (r < 0) → Write failed, finish(r)
+        └─> if (r == 0) → Write succeeded
+            ├─> m_copyup_data = m_s3_data (use S3 data directly)
+            └─> update_object_maps() → Continue normal copyup
+
+    5b. retry_read_from_parent() [Lock contention path]
+        ├─> if (m_s3_retry_count >= m_s3_max_retries) → finish(-ETIMEDOUT)
+        ├─> m_s3_retry_count++
+        ├─> delay_ms = 1000 * (1 << (m_s3_retry_count - 1))  // Exponential backoff
+        └─> Schedule read_from_parent() after delay_ms
+
+    6b. [Back to step 1 - retry read, object may now exist]
+
+Retry and Backoff Strategy
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Exponential Backoff on Lock Contention**:
+
+.. list-table:: Retry Schedule
+   :header-rows: 1
+   :widths: 10 15 15 50
+
+   * - Retry #
+     - Delay (ms)
+     - Cumulative Time
+     - Action
+   * - 0
+     - 0
+     - 0s
+     - Initial read → -ENOENT, try lock
+   * - —
+     - —
+     - —
+     - **If lock acquired**: Fetch from S3 → Write to parent → Success
+   * - —
+     - —
+     - —
+     - **If lock busy (-EBUSY)**: Another child is fetching
+   * - 1
+     - 1000
+     - 1s
+     - Retry read from parent
+   * - 2
+     - 2000
+     - 3s
+     - Retry read from parent
+   * - 3
+     - 4000
+     - 7s
+     - Retry read from parent
+   * - 4
+     - 8000
+     - 15s
+     - Retry read from parent
+   * - 5
+     - 16000
+     - 31s
+     - Retry read from parent (last attempt)
+   * - —
+     - —
+     - —
+     - If still -ENOENT → Return -ETIMEDOUT
+
+**Timeout Configuration**:
+
+* **Lock timeout**: 30 seconds (prevents deadlock if lock holder crashes)
+* **Retry timeout**: 31 seconds (5 retries with exponential backoff)
+* **S3 fetch timeout**: 30 seconds (single HTTP request timeout)
+
+**Rationale**:
+
+* Lock holder has up to 30 seconds to fetch from S3 and write to parent
+* Lock waiters retry for up to 31 seconds, which covers lock holder's maximum time
+* If object still doesn't exist after 31 seconds, S3 fetch likely failed
+
+Concurrency Scenarios
+^^^^^^^^^^^^^^^^^^^^^
+
+**Scenario 1: Single Child**::
+
+    Child A: Read parent → -ENOENT → Lock (success) → S3 fetch → Write parent → Unlock
+    Result: Object populated in parent (6-10 seconds depending on S3 latency)
+
+**Scenario 2: Two Children, Same Object**::
+
+    T=0s   Child A: Read parent → -ENOENT
+    T=0s   Child A: Lock parent object → SUCCESS
+    T=1s   Child B: Read parent → -ENOENT
+    T=1s   Child B: Lock parent object → -EBUSY
+    T=2s   Child A: S3 fetch completes
+    T=3s   Child A: Write to parent completes
+    T=3s   Child A: Unlock
+    T=3s   Child B: Retry read parent → SUCCESS (object now exists)
+
+    Result:
+    - Only 1 S3 request (Child A)
+    - Child B reads from RADOS parent (fast)
+    - Total time: Child A ~6s, Child B ~4s
+
+**Scenario 3: Ten Children, Same Object**::
+
+    T=0s   Child 1: Lock → SUCCESS → Start S3 fetch
+    T=0s   Child 2-10: Lock → -EBUSY → Wait (staggered backoff)
+    T=6s   Child 1: S3 fetch → Write parent → Unlock
+    T=7s   Child 2: Retry → Read parent → SUCCESS
+    T=8s   Child 3: Retry → Read parent → SUCCESS
+    ...
+    T=15s  Child 10: Retry → Read parent → SUCCESS
+
+    Result:
+    - Only 1 S3 request (Child 1)
+    - 9 children read from RADOS
+    - S3 bandwidth savings: 9x
+    - S3 cost savings: 9x
+
+Edge Cases and Error Handling
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table:: Edge Case Handling
+   :header-rows: 1
+   :widths: 30 50 20
+
+   * - Scenario
+     - Handling
+     - Recovery Time
+   * - Lock holder crashes
+     - Lock auto-expires after 30s, next child can acquire
+     - 30 seconds
+   * - S3 fetch fails
+     - Lock holder unlocks, returns error; other children retry and also fail
+     - Immediate
+   * - Parent write fails
+     - Lock holder unlocks, returns error; other children retry S3 fetch
+     - Immediate
+   * - Network partition
+     - Lock timeout ensures eventual recovery
+     - 30 seconds
+   * - High lock contention
+     - Exponential backoff prevents thundering herd
+     - 1-31 seconds
+   * - Partial S3 data
+     - Retry S3 fetch (up to 3 times)
+     - 30-90 seconds
+   * - Corrupted S3 object
+     - Checksum validation fails, return -EIO
+     - Immediate
+
+**Error Codes Returned to Client**:
+
+* ``-ENOENT``: Object not found in parent or S3
+* ``-ETIMEDOUT``: Lock contention timeout (couldn't read after 31s)
+* ``-EIO``: S3 fetch or parent write I/O error
+* ``-EACCES``: S3 authentication failure
+* ``-EHOSTUNREACH``: S3 endpoint unreachable
+* ``-EINVAL``: Invalid S3 configuration
+
+New Components
+^^^^^^^^^^^^^^
+
+**S3ObjectFetcher** (``src/librbd/S3ObjectFetcher.{h,cc}``)::
+
+    class S3ObjectFetcher {
+    public:
+      void async_fetch(
+        const S3Config& config,
+        const std::string& object_key,
+        bufferlist* data,
+        Context* on_finish);
+
+    private:
+      std::string generate_signature_v4(
+        const std::string& string_to_sign,
+        const std::string& secret_key,
+        const std::string& region,
+        const std::string& service);
+
+      void build_http_request(
+        const std::string& method,
+        const std::string& url,
+        const std::map<std::string, std::string>& headers);
+
+      void handle_http_response(int r);
+    };
+
+**S3Config Structure** (``src/librbd/Types.h``)::
+
+    struct S3Config {
+      bool enabled = false;
+      std::string bucket;
+      std::string endpoint;
+      std::string region;
+      std::string access_key;
+      std::string secret_key;  // Base64-encoded, encrypted
+      uint32_t timeout_ms = 30000;
+      uint32_t max_retries = 3;
+      std::string prefix;
+
+      bool is_valid() const;
+      void decrypt_secret_key(const std::string& cluster_key);
+    };
+
+**CopyupRequest Extensions** (``src/librbd/io/CopyupRequest.h``)::
+
+    template <typename I>
+    class CopyupRequest {
+    private:
+      // S3 back-fill members
+      bool m_s3_lock_acquired;
+      uint32_t m_s3_retry_count;
+      uint32_t m_s3_max_retries;
+      bufferlist m_s3_data;
+      std::string m_parent_oid;
+      librados::IoCtx m_parent_ioctx;
+
+      // S3 back-fill methods
+      bool should_fetch_from_s3();
+      void fetch_from_s3_with_lock();
+      void handle_lock_parent_object(int r);
+      void retry_read_from_parent();
+      void fetch_from_s3_async();
+      void handle_s3_fetch(int r);
+      void write_back_to_parent();
+      void handle_write_back_to_parent(int r);
+      void unlock_parent_object();
+      std::string construct_s3_object_key(uint64_t object_no);
+    };
+
+Configuration Options
+^^^^^^^^^^^^^^^^^^^^^
+
+**Ceph Configuration** (``ceph.conf``)::
+
+    [client]
+    # Enable S3 back-fill feature
+    rbd_s3_fetch_enabled = true
+
+    # S3 HTTP request timeout (milliseconds)
+    rbd_s3_fetch_timeout_ms = 30000
+
+    # Parent object lock timeout (seconds)
+    rbd_s3_parent_lock_timeout = 30
+
+    # Maximum retries on lock contention
+    rbd_s3_lock_retry_max = 5
+
+    # Initial retry delay (milliseconds)
+    rbd_s3_lock_retry_delay_ms = 1000
+
+**Parent Image Metadata** (set via ``rbd metadata set``)::
+
+    # Enable S3 back-fill for this parent
+    $ rbd metadata set mypool/parent s3.enabled true
+
+    # S3 bucket configuration
+    $ rbd metadata set mypool/parent s3.bucket my-golden-images
+    $ rbd metadata set mypool/parent s3.endpoint https://s3.us-west-2.amazonaws.com
+    $ rbd metadata set mypool/parent s3.region us-west-2
+
+    # S3 credentials (access key in plaintext, secret key encrypted)
+    $ rbd metadata set mypool/parent s3.access_key AKIAIOSFODNN7EXAMPLE
+    $ rbd metadata set mypool/parent s3.secret_key <encrypted-key>
+
+    # Optional: S3 prefix and timeouts
+    $ rbd metadata set mypool/parent s3.prefix golden-images/centos7
+    $ rbd metadata set mypool/parent s3.timeout_ms 60000
+
+Implementation Plan
+^^^^^^^^^^^^^^^^^^^
+
+**Phase 3.1: S3 Back-fill with Distributed Locking** (6-8 weeks)
+
+**Week 1-2: S3 Client Infrastructure**
+
+* ``src/librbd/S3ObjectFetcher.{h,cc}``
+
+  * S3Config structure
+  * AWS Signature V4 implementation
+  * libcurl async HTTP request wrapper
+  * Error handling and retry logic
+  * Unit tests
+
+**Week 3: Parent Metadata Extensions**
+
+* ``src/librbd/Types.h``
+
+  * Add S3Config to ImageCtx
+
+* ``src/librbd/image/RefreshParentRequest.cc``
+
+  * Load S3 config from parent metadata on child open
+  * Validate S3 configuration completeness
+  * Cache S3Config in parent ImageCtx
+
+* CLI tools for S3 metadata management
+
+**Week 4-5: CopyupRequest Integration + Distributed Locking**
+
+* ``src/librbd/io/CopyupRequest.{h,cc}``
+
+  * ``should_fetch_from_s3()`` - Check S3 back-fill conditions
+  * ``fetch_from_s3_with_lock()`` - Attempt parent object lock
+  * ``handle_lock_parent_object()`` - Handle lock result
+  * ``retry_read_from_parent()`` - Retry on lock contention
+  * ``fetch_from_s3_async()`` - Async S3 fetch
+  * ``handle_s3_fetch()`` - Handle S3 response
+  * ``write_back_to_parent()`` - Write to parent cache
+  * ``handle_write_back_to_parent()`` - Handle write result
+  * ``unlock_parent_object()`` - Release lock
+
+**Week 6-7: Testing**
+
+* ``tests/librbd/test_S3ObjectFetcher.cc``
+
+  * S3 signature generation tests
+  * HTTP request building tests
+  * Error scenario tests
+  * Retry logic tests
+
+* ``tests/librbd/io/test_CopyupRequest.cc``
+
+  * S3 back-fill basic flow
+  * Distributed lock acquire/release
+  * Multi-child concurrency tests
+  * Lock timeout tests
+  * Retry logic validation
+  * Edge case handling
+
+* Integration tests
+
+  * Real S3 environment testing
+  * Multi-child concurrent stress test
+  * Network failure simulation
+  * Performance benchmarking
+
+**Week 8: Documentation and Optimization**
+
+* Update this document with implementation details
+* Create S3 back-fill configuration guide
+* Write troubleshooting guide
+* Performance tuning recommendations
+
+Performance Expectations
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Benchmark Scenario**: 10 children concurrently reading 100 missing parent objects (4MB each)
+
+.. list-table:: Performance Comparison
+   :header-rows: 1
+   :widths: 25 25 25 25
+
+   * - Metric
+     - Without Locking (Naive)
+     - With Distributed Locking
+     - Improvement
+   * - Total S3 requests
+     - 1,000 (10 children × 100 objects)
+     - 100 (1 per object)
+     - **10x reduction**
+   * - Total S3 egress
+     - 4,000 MB
+     - 400 MB
+     - **10x reduction**
+   * - Avg latency (first child)
+     - ~5s (S3 fetch)
+     - ~6s (S3 + write-back)
+     - -20% (acceptable)
+   * - Avg latency (other 9 children)
+     - ~5s (each fetches from S3)
+     - ~2s (wait + RADOS read)
+     - **60% improvement**
+   * - Total completion time
+     - ~5s (all parallel)
+     - ~8s (first fetches, others wait)
+     - -60% (but 9x cost savings)
+
+**Cost Analysis** (AWS S3 us-west-2 pricing):
+
+* S3 GET request: $0.0004 per 1,000 requests
+* S3 data transfer out: $0.09 per GB
+* RADOS read: Negligible (local cluster)
+
+**Example Savings** (1,000 objects × 4MB, 10 children):
+
+* Naive approach: 10,000 S3 requests, 40 GB egress = **$3.60**
+* Distributed locking: 1,000 S3 requests, 4 GB egress = **$0.36**
+* **Savings: 90%** ($3.24 saved)
+
+At scale (100 children, 10,000 objects, 1TB total):
+
+* Naive approach: 1,000,000 S3 requests, 100 TB egress = **$9,000**
+* Distributed locking: 10,000 S3 requests, 1 TB egress = **$90**
+* **Savings: 99%** ($8,910 saved)
+
+Usage Examples
+^^^^^^^^^^^^^^
+
+**Step 1: Prepare Parent Image with S3 Metadata**::
+
+    # Create parent image (sparse, most objects don't exist in RADOS)
+    $ rbd create mypool/golden-image --size 100G
+
+    # Configure S3 back-fill
+    $ rbd metadata set mypool/golden-image s3.enabled true
+    $ rbd metadata set mypool/golden-image s3.bucket my-golden-images
+    $ rbd metadata set mypool/golden-image s3.endpoint https://s3.us-west-2.amazonaws.com
+    $ rbd metadata set mypool/golden-image s3.region us-west-2
+    $ rbd metadata set mypool/golden-image s3.access_key AKIAIOSFODNN7EXAMPLE
+    $ rbd metadata set mypool/golden-image s3.secret_key <encrypted-key>
+
+**Step 2: Create Standalone Clones**::
+
+    # Clone from S3-backed parent
+    $ rbd clone-standalone mypool/golden-image mypool/instance-001
+    $ rbd clone-standalone mypool/golden-image mypool/instance-002
+    $ rbd clone-standalone mypool/golden-image mypool/instance-003
+
+**Step 3: Use Clones** (S3 back-fill happens transparently)::
+
+    # First access to object 0
+    instance-001: Read object 0 → Parent -ENOENT → Lock acquired → S3 fetch → Write parent → Copyup
+
+    # Concurrent access by other instances
+    instance-002: Read object 0 → Parent -ENOENT → Lock busy → Wait 1s → Read parent → SUCCESS (RADOS)
+    instance-003: Read object 0 → Parent -ENOENT → Lock busy → Wait 2s → Read parent → SUCCESS (RADOS)
+
+    # Subsequent accesses (object now in parent RADOS)
+    instance-004: Read object 0 → Read parent → SUCCESS (immediate, no S3 fetch)
+
+**Step 4: Monitor S3 Back-fill Activity**::
+
+    # Check parent object existence
+    $ rados -p mypool ls | grep rbd_data.{parent_prefix}
+
+    # Check for active locks (debug)
+    $ rados -p mypool lock info rbd_data.{parent_prefix}.0000000000000000
+
+    # View S3 back-fill statistics (future feature)
+    $ rbd perf image iostat mypool/golden-image
+    s3_fetch_total: 1234
+    s3_fetch_success: 1200
+    s3_fetch_failed: 34
+    s3_bytes_fetched: 4.8 GB
+
+Limitations and Constraints
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Phase 3.1 Limitations**:
+
+* **Parent immutability still required**: S3 back-fill doesn't change the fundamental
+  assumption that parent images must be immutable after children are created. We're
+  only filling in missing objects, not modifying existing ones.
+
+* **No automatic S3 upload**: This feature only supports **reading** from S3. There's
+  no mechanism to automatically upload parent objects to S3.
+
+* **Lock granularity is object-level**: Each object has its own lock. Cannot lock
+  multiple objects atomically.
+
+* **S3 credentials in metadata**: S3 credentials stored in parent image metadata
+  (encrypted). Consider security implications.
+
+* **Network dependency**: Children must have network access to S3 endpoint.
+
+* **Performance impact on first access**: First child to access an object experiences
+  S3 latency (~5-10s). Subsequent children benefit from RADOS cache.
+
+**Security Considerations**:
+
+* S3 credentials stored in parent image metadata (base64-encoded + encrypted)
+* Only users with access to parent image metadata can view credentials
+* Consider encrypting parent pool if credential sensitivity is high
+* Rotate S3 credentials periodically
+* Use IAM roles with minimal permissions (read-only access to specific bucket/prefix)
+
+**Operational Notes**:
+
+* Monitor S3 fetch failure rates (may indicate S3 outage or auth issues)
+* Monitor lock contention and retry rates (may indicate high concurrency)
+* Monitor S3 egress costs (should be significantly lower than naive approach)
+* Parent objects populated via S3 back-fill persist in RADOS (act as cache)
+* Consider parent pool replication level (higher replication = better cache durability)
+
+Future Enhancements
+^^^^^^^^^^^^^^^^^^^
+
+**Phase 3.2: Advanced S3 Features** (3-4 weeks)
+
+* **Background prefetch**: Proactively fetch hot objects from S3 before first access
+* **LRU/LFU cache management**: Automatically evict cold parent objects to save RADOS space
+* **S3 multipart download**: For large objects (>100MB), use parallel chunk downloads
+* **Connection pooling**: Reuse HTTP connections across multiple S3 fetches
+* **Metrics and monitoring**: Detailed statistics on S3 fetch rates, cache hit ratios, costs
+
+**Phase 3.3: Multi-region and CDN** (4-6 weeks)
+
+* **Multi-region S3 support**: Automatic region failover if primary S3 endpoint fails
+* **CloudFront/CDN integration**: Fetch from CDN edge locations for lower latency
+* **Intelligent tiering**: Automatically tier parent objects between RADOS, S3 Standard, S3 Glacier
+
+**Phase 3.4: RGW Integration** (Future)
+
+* **Direct RGW backend**: Use local Ceph RGW instead of external S3
+* **Zero-copy optimization**: Avoid data copy between RGW and RADOS
+* **Unified management**: Single Ceph cluster manages both RADOS and object storage
+
+Testing Strategy
+^^^^^^^^^^^^^^^^
+
+**Unit Tests**:
+
+* S3 signature V4 generation (test vectors from AWS documentation)
+* HTTP request building and header formatting
+* S3Config validation (missing fields, invalid values)
+* Lock cookie generation (uniqueness, format)
+* Retry delay calculation (exponential backoff formula)
+
+**Integration Tests**:
+
+* Basic S3 back-fill flow (single child)
+* Multi-child concurrency (2, 5, 10 children)
+* Lock timeout handling (simulate lock holder crash)
+* S3 fetch failure (404, 403, network timeout)
+* Parent write failure (permission denied, out of space)
+* Lock contention heavy load (100 concurrent children)
+
+**Stress Tests**:
+
+* 1000 children reading 10,000 objects concurrently
+* Network partition during S3 fetch
+* S3 endpoint degradation (high latency, packet loss)
+* RADOS cluster degradation (slow OSDs)
+
+**Performance Tests**:
+
+* Measure S3 fetch latency distribution
+* Measure lock acquisition time
+* Measure retry overhead
+* Compare bandwidth usage vs naive approach
+* Validate 10x cost reduction claim
+
+Backward Compatibility
+^^^^^^^^^^^^^^^^^^^^^^
+
+* **Old clients**: Ignore S3 metadata, behave as if parent objects don't exist (-ENOENT)
+* **Traditional snapshot clones**: Completely unchanged, no S3 back-fill support
+* **Local standalone clones**: Still supported, S3 back-fill is optional feature
+* **Remote standalone clones**: Can enable S3 back-fill independently
+
+No migration path needed - this is an optional feature, not a replacement.
+
+References
+^^^^^^^^^^
+
+* Ceph ``cls_lock`` documentation: ``src/cls/lock/cls_lock.h``
+* AWS S3 Signature Version 4: https://docs.aws.amazon.com/general/latest/gr/signature-version-4.html
+* RBD Layering (snapshot-based clones): :doc:`rbd-layering`
+* Phase 1 (Standalone clones): This document, main sections
+* Phase 2 (Remote cluster clones): Appendix B
