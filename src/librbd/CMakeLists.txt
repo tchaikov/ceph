@@ -24,6 +24,7 @@ set(librbd_internal_srcs
   TrashWatcher.cc
   Utils.cc
   RemoteClusterUtils.cc
+  S3ObjectFetcher.cc
   Watcher.cc
   api/Config.cc
   api/DiffIterate.cc

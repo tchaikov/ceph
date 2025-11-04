@@ -7649,6 +7649,57 @@ static std::vector<Option> get_rbd_mirror_options() {
                           "mgr_stats_threshold.")
     .set_min_max((int64_t)PerfCountersBuilder::PRIO_DEBUGONLY,
                  (int64_t)PerfCountersBuilder::PRIO_CRITICAL + 1),
+
+    // S3 back-fill options for standalone clones
+    Option("rbd_s3_fetch_enabled", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .set_description("enable S3 back-fill for standalone clone parents")
+    .set_long_description("When enabled, child images of standalone clone parents "
+                          "can automatically fetch missing parent objects from S3 "
+                          "storage and write them back to the parent RADOS pool."),
+
+    Option("rbd_s3_fetch_timeout_ms", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(30000)
+    .set_min(1000)
+    .set_description("S3 HTTP request timeout in milliseconds")
+    .set_long_description("Maximum time to wait for an S3 HTTP GET request to "
+                          "complete before aborting and retrying."),
+
+    Option("rbd_s3_fetch_max_retries", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(3)
+    .set_min(0)
+    .set_max(10)
+    .set_description("maximum number of S3 fetch retry attempts")
+    .set_long_description("Number of times to retry fetching an object from S3 "
+                          "on timeout or transient network errors. Uses exponential "
+                          "backoff (1s, 2s, 4s, ...)."),
+
+    Option("rbd_s3_parent_lock_timeout", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(30)
+    .set_min(10)
+    .set_max(300)
+    .set_description("parent object lock timeout in seconds for S3 back-fill")
+    .set_long_description("Maximum time a child can hold an exclusive lock on a "
+                          "parent object while fetching from S3. The lock "
+                          "automatically expires after this timeout to prevent "
+                          "deadlocks if the lock holder crashes."),
+
+    Option("rbd_s3_lock_retry_max", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(5)
+    .set_min(1)
+    .set_max(20)
+    .set_description("maximum lock contention retries for S3 back-fill")
+    .set_long_description("When a child image fails to acquire the parent object "
+                          "lock (because another child is fetching from S3), it "
+                          "will retry reading from parent this many times with "
+                          "exponential backoff before giving up."),
+
+    Option("rbd_s3_verify_ssl", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .set_description("verify SSL certificates for S3 connections")
+    .set_long_description("When enabled, SSL/TLS certificates from S3 endpoints "
+                          "will be verified. Disable only for testing with "
+                          "self-signed certificates."),
   });
 }
 
