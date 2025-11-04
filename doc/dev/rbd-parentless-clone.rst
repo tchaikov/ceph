@@ -2458,23 +2458,44 @@ Configuration Options
 Implementation Plan
 ^^^^^^^^^^^^^^^^^^^
 
-**Phase 3.1: S3 Back-fill with Distributed Locking** (6-8 weeks)
+**Phase 3.1: S3 Back-fill with Raw Image Format** (4-5 weeks)
 
-**Week 1-2: S3 Client Infrastructure**
+**REVISED SCOPE**: Focusing on raw image format only (1:1 object mapping) with
+anonymous S3 access. Export-diff and qcow2 formats deferred to Phase 3.2+.
 
-* ``src/librbd/S3ObjectFetcher.{h,cc}``
+**Week 1: S3 Client Infrastructure** ✅ **COMPLETED** (2025-11-04)
 
-  * S3Config structure
-  * AWS Signature V4 implementation
-  * libcurl async HTTP request wrapper
-  * Error handling and retry logic
-  * Unit tests
+* ``src/librbd/S3ObjectFetcher.{h,cc}`` ✅
 
-**Week 3: Parent Metadata Extensions**
+  * libcurl-based HTTP client for anonymous S3 GET requests
+  * Synchronous fetch with completion callback
+  * Configurable timeout (default: 30 seconds)
+  * Automatic retry with exponential backoff (default: 3 retries)
+  * Error handling: -ENOENT (404), -EACCES (403), -ETIMEDOUT, -EIO
+  * SSL certificate verification (configurable)
+  * Redirect following and low-speed timeout protection
+
+* ``src/common/options.cc`` ✅
+
+  * ``rbd_s3_fetch_enabled`` (bool, default: true)
+  * ``rbd_s3_fetch_timeout_ms`` (uint, default: 30000)
+  * ``rbd_s3_fetch_max_retries`` (uint, default: 3)
+  * ``rbd_s3_parent_lock_timeout`` (uint, default: 30)
+  * ``rbd_s3_lock_retry_max`` (uint, default: 5)
+  * ``rbd_s3_verify_ssl`` (bool, default: true)
+
+* ``src/librbd/CMakeLists.txt`` ✅
+
+  * Added S3ObjectFetcher.cc to build
+
+* **Commit**: 897854dcc01 "librbd: Add S3ObjectFetcher for anonymous S3 access"
+
+**Week 2: S3 Configuration and Metadata** 🔄 **IN PROGRESS**
 
 * ``src/librbd/Types.h``
 
-  * Add S3Config to ImageCtx
+  * Add S3Config structure (bucket, endpoint, prefix, timeout)
+  * Add S3Config to parent ImageCtx
 
 * ``src/librbd/image/RefreshParentRequest.cc``
 
@@ -2482,53 +2503,64 @@ Implementation Plan
   * Validate S3 configuration completeness
   * Cache S3Config in parent ImageCtx
 
-* CLI tools for S3 metadata management
+* CLI support via existing ``rbd metadata set`` commands
 
-**Week 4-5: CopyupRequest Integration + Distributed Locking**
+**Week 3: CopyupRequest S3 Detection and Locking** ⏳ **PENDING**
 
 * ``src/librbd/io/CopyupRequest.{h,cc}``
 
-  * ``should_fetch_from_s3()`` - Check S3 back-fill conditions
-  * ``fetch_from_s3_with_lock()`` - Attempt parent object lock
-  * ``handle_lock_parent_object()`` - Handle lock result
-  * ``retry_read_from_parent()`` - Retry on lock contention
-  * ``fetch_from_s3_async()`` - Async S3 fetch
-  * ``handle_s3_fetch()`` - Handle S3 response
-  * ``write_back_to_parent()`` - Write to parent cache
-  * ``handle_write_back_to_parent()`` - Handle write result
-  * ``unlock_parent_object()`` - Release lock
+  * ``should_fetch_from_s3()`` - Check if S3 back-fill should trigger
+  * ``fetch_from_s3_with_lock()`` - Attempt exclusive lock on parent object
+  * ``handle_lock_parent_object()`` - Handle lock acquisition result
+  * ``retry_read_from_parent()`` - Retry with exponential backoff on lock busy
+  * ``unlock_parent_object()`` - Release parent object lock
 
-**Week 6-7: Testing**
+**Week 4: CopyupRequest S3 Fetch and Write-back** ⏳ **PENDING**
+
+* ``src/librbd/io/CopyupRequest.{h,cc}``
+
+  * ``fetch_from_s3_raw()`` - Fetch object from S3 (raw format)
+  * ``handle_s3_fetch()`` - Process S3 fetch result
+  * ``write_back_to_parent()`` - Write S3 data to parent RADOS pool
+  * ``handle_write_back_to_parent()`` - Complete copyup with S3 data
+
+**Week 5: Testing and Documentation** ⏳ **PENDING**
 
 * ``tests/librbd/test_S3ObjectFetcher.cc``
 
-  * S3 signature generation tests
-  * HTTP request building tests
-  * Error scenario tests
-  * Retry logic tests
+  * HTTP GET from public S3 bucket
+  * HTTP error handling (404, 403, 5xx)
+  * Timeout and retry logic
+  * Data integrity verification
 
-* ``tests/librbd/io/test_CopyupRequest.cc``
+* ``tests/librbd/io/test_CopyupRequest_s3.cc``
 
-  * S3 back-fill basic flow
-  * Distributed lock acquire/release
-  * Multi-child concurrency tests
-  * Lock timeout tests
-  * Retry logic validation
-  * Edge case handling
+  * Single child S3 back-fill flow
+  * Multi-child concurrent access (distributed locking)
+  * Lock timeout handling
+  * S3 fetch failure scenarios
+  * Parent write failure scenarios
 
-* Integration tests
+* ``doc/dev/rbd-parentless-clone.rst``
 
-  * Real S3 environment testing
-  * Multi-child concurrent stress test
-  * Network failure simulation
-  * Performance benchmarking
+  * Usage examples for raw format
+  * Configuration documentation
+  * Troubleshooting guide
 
-**Week 8: Documentation and Optimization**
+**Phase 3.2: Export-diff Format Support** ⏳ **FUTURE** (3-4 weeks)
 
-* Update this document with implementation details
-* Create S3 back-fill configuration guide
-* Write troubleshooting guide
-* Performance tuning recommendations
+* Reuse ``src/tools/rbd/action/Import.cc`` parser for export-diff format
+* Add S3ExportDiffReader class
+* Support sparse images efficiently
+* Handle incremental diff streams
+
+**Phase 3.3: Advanced Features** ⏳ **FUTURE** (4-6 weeks)
+
+* qcow2 format support (requires external library)
+* Background prefetch for sequential access
+* S3 connection pooling
+* Authenticated S3 access (AWS Signature V4)
+* Multi-region failover
 
 Performance Expectations
 ^^^^^^^^^^^^^^^^^^^^^^^^
