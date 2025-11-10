@@ -1070,18 +1070,47 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
       }
     }
 
-    // Get parent image ID
+    // Get parent image ID - must connect to REMOTE cluster for remote clones
     std::string parent_id;
     if (p_id == nullptr) {
-      r = cls_client::dir_get_id(&p_ioctx, RBD_DIRECTORY, p_name,
+      // Connect to remote cluster to look up parent image
+      librados::Rados remote_cluster;
+      r = util::connect_to_remote_cluster(cct, cluster_name, remote_mon_hosts,
+                                           encoded_keyring, remote_client_name,
+                                           remote_cluster);
+      if (r < 0) {
+        lderr(cct) << "failed to connect to remote cluster: "
+                   << cpp_strerror(r) << dendl;
+        return r;
+      }
+
+      // Create IoCtx for parent pool in remote cluster
+      std::string parent_pool_name = p_ioctx.get_pool_name();
+      librados::IoCtx remote_parent_ioctx;
+      r = remote_cluster.ioctx_create(parent_pool_name.c_str(), remote_parent_ioctx);
+      if (r < 0) {
+        lderr(cct) << "failed to create IoCtx for parent pool '"
+                   << parent_pool_name << "' in remote cluster: "
+                   << cpp_strerror(r) << dendl;
+        remote_cluster.shutdown();
+        return r;
+      }
+
+      // Look up parent image ID in REMOTE cluster
+      r = cls_client::dir_get_id(&remote_parent_ioctx, RBD_DIRECTORY, p_name,
                                  &parent_id);
       if (r < 0) {
         if (r != -ENOENT) {
-          lderr(cct) << "failed to retrieve parent image id: "
+          lderr(cct) << "failed to retrieve parent image id from remote cluster: "
                      << cpp_strerror(r) << dendl;
         }
+        remote_cluster.shutdown();
         return r;
       }
+
+      remote_cluster.shutdown();
+      ldout(cct, 10) << "successfully retrieved parent image id from remote cluster: "
+                     << parent_id << dendl;
     } else {
       parent_id = p_id;
     }
