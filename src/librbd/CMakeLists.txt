@@ -168,11 +168,12 @@ target_link_libraries(librbd PRIVATE
   rbd_types
   journal
   librados
-  cls_rbd_client 
-  cls_lock_client 
-  cls_journal_client 
+  cls_rbd_client
+  cls_lock_client
+  cls_journal_client
   ceph-common
   pthread
+  CURL::libcurl
   ${CMAKE_DL_LIBS}
   ${EXTRALIBS} ${GSSAPI_LIBRARIES})
 if(HAVE_UDEV)
