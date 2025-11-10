@@ -12,15 +12,19 @@
 #include "librbd/ImageCtx.h"
 #include "librbd/ObjectMap.h"
 #include "librbd/Utils.h"
+#include "librbd/S3ObjectFetcher.h"
 #include "librbd/deep_copy/ObjectCopyRequest.h"
 #include "librbd/io/AioCompletion.h"
 #include "librbd/io/ImageRequest.h"
 #include "librbd/io/ObjectRequest.h"
 #include "librbd/io/ReadResult.h"
+#include "cls/lock/cls_lock_client.h"
 
 #include <boost/bind.hpp>
 #include <boost/lambda/bind.hpp>
 #include <boost/lambda/construct.hpp>
+#include <iomanip>
+#include <sstream>
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
@@ -163,6 +167,15 @@ void CopyupRequest<I>::read_from_parent() {
     return;
   }
 
+  // For standalone clones with S3 back-fill enabled, check if parent object
+  // exists in RADOS before reading. If it doesn't exist, fetch from S3 directly.
+  // This avoids the sparse-read conversion that would prevent S3 back-fill.
+  if (should_fetch_from_s3()) {
+    ldout(cct, 15) << "S3 back-fill enabled, checking parent object existence" << dendl;
+    check_parent_object_exists();
+    return;
+  }
+
   auto comp = AioCompletion::create_and_start<
     CopyupRequest<I>,
     &CopyupRequest<I>::handle_read_from_parent>(
@@ -181,6 +194,10 @@ template <typename I>
 void CopyupRequest<I>::handle_read_from_parent(int r) {
   auto cct = m_image_ctx->cct;
   ldout(cct, 20) << "oid=" << m_oid << ", r=" << r << dendl;
+
+  // Note: S3 back-fill is now handled in read_from_parent() by checking
+  // object existence before reading. This avoids the sparse-read conversion
+  // that would prevent S3 back-fill from being triggered.
 
   m_image_ctx->snap_lock.get_read();
   m_lock.Lock();
@@ -631,6 +648,410 @@ void CopyupRequest<I>::compute_deep_copy_snap_ids() {
           extents, parent_overlap);
       return overlap > 0;
     });
+}
+
+template <typename I>
+bool CopyupRequest<I>::should_fetch_from_s3() {
+  auto cct = m_image_ctx->cct;
+
+  // Check if S3 back-fill feature is enabled globally
+  if (!cct->_conf.template get_val<bool>("rbd_s3_fetch_enabled")) {
+    ldout(cct, 20) << "S3 fetch disabled by config" << dendl;
+    return false;
+  }
+
+  // Check if we have a parent image
+  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+  if (m_image_ctx->parent == nullptr) {
+    return false;
+  }
+
+  // Check if parent is a standalone clone (not snapshot-based)
+  if (m_image_ctx->parent_md.parent_type != PARENT_TYPE_STANDALONE &&
+      m_image_ctx->parent_md.parent_type != PARENT_TYPE_REMOTE_STANDALONE) {
+    ldout(cct, 20) << "parent is not standalone, S3 fetch not applicable" << dendl;
+    return false;
+  }
+
+  // Check if parent has S3 configuration
+  if (!m_image_ctx->parent->s3_config.is_valid()) {
+    ldout(cct, 20) << "parent S3 config invalid or missing" << dendl;
+    return false;
+  }
+
+  ldout(cct, 15) << "S3 back-fill conditions met for parent object" << dendl;
+  return true;
+}
+
+template <typename I>
+void CopyupRequest<I>::check_parent_object_exists() {
+  auto cct = m_image_ctx->cct;
+
+  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+  if (m_image_ctx->parent == nullptr) {
+    ldout(cct, 5) << "parent detached during existence check" << dendl;
+    m_image_ctx->op_work_queue->queue(
+      util::create_context_callback<
+        CopyupRequest<I>, &CopyupRequest<I>::handle_read_from_parent>(this),
+      -ENOENT);
+    return;
+  }
+
+  // Get parent object name
+  std::string parent_oid = m_image_ctx->parent->get_object_name(m_object_no);
+  librados::IoCtx parent_ioctx = m_image_ctx->parent->data_ctx;
+
+  ldout(cct, 15) << "checking existence of parent object: " << parent_oid << dendl;
+
+  // Use stat to check if object exists
+  using klass = CopyupRequest<I>;
+  librados::AioCompletion *rados_completion =
+    util::create_rados_callback<klass, &klass::handle_check_parent_object_exists>(this);
+
+  int r = parent_ioctx.aio_stat(parent_oid, rados_completion, nullptr, nullptr);
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+template <typename I>
+void CopyupRequest<I>::handle_check_parent_object_exists(int r) {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 15) << "parent object existence check result: r=" << r << dendl;
+
+  if (r == -ENOENT) {
+    // Object doesn't exist in RADOS, fetch from S3
+    ldout(cct, 15) << "parent object not in RADOS, fetching from S3" << dendl;
+    fetch_from_s3_with_lock();
+  } else if (r < 0) {
+    // Stat failed for other reason, fall back to normal read
+    // (which will handle the error appropriately)
+    ldout(cct, 10) << "parent object stat failed: " << cpp_strerror(r)
+                   << ", falling back to normal read" << dendl;
+    do_read_from_parent();
+  } else {
+    // Object exists in RADOS, do normal read
+    ldout(cct, 15) << "parent object exists in RADOS, reading normally" << dendl;
+    do_read_from_parent();
+  }
+}
+
+template <typename I>
+void CopyupRequest<I>::do_read_from_parent() {
+  auto cct = m_image_ctx->cct;
+  RWLock::RLocker snap_locker(m_image_ctx->snap_lock);
+  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+
+  if (m_image_ctx->parent == nullptr) {
+    ldout(cct, 5) << "parent detached" << dendl;
+    m_image_ctx->op_work_queue->queue(
+      util::create_context_callback<
+        CopyupRequest<I>, &CopyupRequest<I>::handle_read_from_parent>(this),
+      -ENOENT);
+    return;
+  }
+
+  auto comp = AioCompletion::create_and_start<
+    CopyupRequest<I>,
+    &CopyupRequest<I>::handle_read_from_parent>(
+      this, util::get_image_ctx(m_image_ctx->parent), AIO_TYPE_READ);
+
+  ldout(cct, 20) << "oid=" << m_oid << ", "
+                 << "completion=" << comp << ", "
+                 << "extents=" << m_image_extents
+                 << dendl;
+  ImageRequest<I>::aio_read(m_image_ctx->parent, comp,
+                            std::move(m_image_extents),
+                            ReadResult{&m_copyup_data}, 0, m_trace);
+}
+
+template <typename I>
+void CopyupRequest<I>::fetch_from_s3_with_lock() {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 15) << "attempting to lock parent object for S3 fetch" << dendl;
+
+  // Store parent IoCtx and OID for later use
+  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+  if (m_image_ctx->parent == nullptr) {
+    ldout(cct, 5) << "parent detached during S3 fetch setup" << dendl;
+    finish(-ENOENT);
+    return;
+  }
+
+  m_parent_ioctx = m_image_ctx->parent->data_ctx;
+  m_parent_oid = m_image_ctx->parent->get_object_name(m_object_no);
+
+  ldout(cct, 15) << "parent oid: " << m_parent_oid << dendl;
+
+  // Construct lock cookie (unique per child instance and object)
+  std::string lock_cookie = m_image_ctx->id + "_" + stringify(m_object_no);
+
+  // Attempt to acquire exclusive lock on parent object
+  // This prevents multiple children from fetching the same object from S3
+  librados::ObjectWriteOperation lock_op;
+
+  // Using cls_lock for distributed locking
+  // Lock name: "s3_fetch_lock", type: LOCK_EXCLUSIVE
+  // Duration: 30 seconds (auto-expires if holder crashes)
+  uint32_t lock_timeout = cct->_conf.template get_val<uint64_t>("rbd_s3_parent_lock_timeout");
+
+  // Note: cls::lock::lock() expects utime_t for duration
+  utime_t lock_duration(lock_timeout, 0);
+
+  rados::cls::lock::lock(&lock_op, "s3_fetch_lock", LOCK_EXCLUSIVE,
+                        lock_cookie, "s3_fetch", "S3 fetch in progress",
+                        lock_duration, 0);
+
+  // Send lock operation
+  using klass = CopyupRequest<I>;
+  librados::AioCompletion *rados_completion =
+    util::create_rados_callback<klass, &klass::handle_lock_parent_object>(this);
+
+  int r = m_parent_ioctx.aio_operate(m_parent_oid, rados_completion, &lock_op);
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+template <typename I>
+void CopyupRequest<I>::handle_lock_parent_object(int r) {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 15) << "lock result: r=" << r << dendl;
+
+  if (r == 0) {
+    // Lock acquired successfully!
+    m_s3_lock_acquired = true;
+    ldout(cct, 10) << "acquired S3 fetch lock, proceeding to fetch from S3" << dendl;
+
+    // Fetch object from S3
+    fetch_from_s3_async();
+
+  } else if (r == -EBUSY || r == -EEXIST) {
+    // Lock is held by another child - they're fetching from S3
+    ldout(cct, 10) << "lock busy, another child is fetching from S3, will retry" << dendl;
+    retry_read_from_parent();
+
+  } else {
+    // Lock operation failed for other reason
+    lderr(cct) << "failed to acquire S3 fetch lock: " << cpp_strerror(r) << dendl;
+    finish(r);
+  }
+}
+
+template <typename I>
+void CopyupRequest<I>::retry_read_from_parent() {
+  auto cct = m_image_ctx->cct;
+
+  m_s3_retry_count++;
+  uint32_t max_retries = cct->_conf.template get_val<uint64_t>("rbd_s3_lock_retry_max");
+
+  if (m_s3_retry_count > max_retries) {
+    lderr(cct) << "exceeded maximum S3 lock retries (" << max_retries
+               << "), giving up" << dendl;
+    finish(-ETIMEDOUT);
+    return;
+  }
+
+  // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+  uint32_t delay_ms = 1000 * (1 << (m_s3_retry_count - 1));
+
+  ldout(cct, 10) << "retry #" << m_s3_retry_count << " after " << delay_ms
+                 << "ms (another child may be writing parent object)" << dendl;
+
+  // Schedule retry after delay - retry by reading from parent again
+  // The retry will go through read_from_parent() which may find the object
+  // (written by the other child) or trigger S3 fetch again
+  read_from_parent();
+}
+
+template <typename I>
+std::string CopyupRequest<I>::construct_s3_object_key(uint64_t object_no) {
+  auto cct = m_image_ctx->cct;
+
+  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+  if (m_image_ctx->parent == nullptr) {
+    lderr(cct) << "parent detached during S3 key construction" << dendl;
+    return "";
+  }
+
+  // Get parent object name (this already includes the full RADOS object name)
+  // For example: "rbd_data.1087432560df.0000000000000001"
+  std::string parent_object_name = m_image_ctx->parent->get_object_name(object_no);
+
+  // S3 object key should match the RADOS object name exactly (1:1 mapping)
+  return parent_object_name;
+}
+
+template <typename I>
+void CopyupRequest<I>::fetch_from_s3_async() {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 10) << "starting S3 fetch for object " << m_object_no << dendl;
+
+  // Get S3 configuration from parent
+  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+  if (m_image_ctx->parent == nullptr) {
+    ldout(cct, 5) << "parent detached during S3 fetch" << dendl;
+    unlock_parent_object();
+    finish(-ENOENT);
+    return;
+  }
+
+  const S3Config& s3_config = m_image_ctx->parent->s3_config;
+
+  // Validate S3 configuration
+  if (!s3_config.is_valid()) {
+    lderr(cct) << "invalid S3 configuration" << dendl;
+    unlock_parent_object();
+    finish(-EINVAL);
+    return;
+  }
+
+  // Construct S3 object key
+  std::string object_key = construct_s3_object_key(m_object_no);
+  if (object_key.empty()) {
+    lderr(cct) << "failed to construct S3 object key" << dendl;
+    unlock_parent_object();
+    finish(-EINVAL);
+    return;
+  }
+
+  // Build full S3 URL
+  std::string s3_url = s3_config.build_url(object_key);
+
+  ldout(cct, 10) << "S3 URL: " << s3_url << dendl;
+
+  parent_locker.unlock();
+
+  // Create S3 fetcher and fetch object
+  S3ObjectFetcher fetcher(cct);
+
+  auto ctx = util::create_context_callback<
+    CopyupRequest<I>, &CopyupRequest<I>::handle_s3_fetch>(this);
+
+  fetcher.fetch(s3_url, &m_s3_data, ctx);
+}
+
+template <typename I>
+void CopyupRequest<I>::handle_s3_fetch(int r) {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 10) << "S3 fetch result: r=" << r << ", bytes=" << m_s3_data.length() << dendl;
+
+  if (r < 0) {
+    lderr(cct) << "failed to fetch object from S3: " << cpp_strerror(r) << dendl;
+    unlock_parent_object();
+    finish(r);
+    return;
+  }
+
+  // Validate we got data
+  if (m_s3_data.length() == 0) {
+    ldout(cct, 5) << "warning: S3 object exists but is empty" << dendl;
+  }
+
+  ldout(cct, 10) << "successfully fetched " << m_s3_data.length()
+                 << " bytes from S3, writing back to parent" << dendl;
+
+  // Write S3 data back to parent RADOS pool
+  write_back_to_parent();
+}
+
+template <typename I>
+void CopyupRequest<I>::write_back_to_parent() {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 10) << "writing " << m_s3_data.length()
+                 << " bytes to parent object: " << m_parent_oid << dendl;
+
+  // Create write operation to write full object to parent
+  librados::ObjectWriteOperation write_op;
+  write_op.write_full(m_s3_data);
+
+  // Submit async write operation
+  using klass = CopyupRequest<I>;
+  librados::AioCompletion *rados_completion =
+    util::create_rados_callback<klass, &klass::handle_write_back_to_parent>(this);
+
+  int r = m_parent_ioctx.aio_operate(m_parent_oid, rados_completion, &write_op);
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+template <typename I>
+void CopyupRequest<I>::handle_write_back_to_parent(int r) {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 10) << "write-back result: r=" << r << dendl;
+
+  // Always unlock the parent object when we're done
+  unlock_parent_object();
+
+  if (r < 0) {
+    lderr(cct) << "failed to write S3 data to parent object: "
+               << cpp_strerror(r) << dendl;
+    finish(r);
+    return;
+  }
+
+  ldout(cct, 10) << "successfully wrote S3 data to parent, "
+                 << "continuing with normal copyup using S3 data" << dendl;
+
+  // Use the S3 data for the copyup operation
+  // Copy S3 data to copyup buffer
+  m_copyup_data = m_s3_data;
+
+  // Clear S3 data buffer to free memory
+  m_s3_data.clear();
+
+  // Continue with normal copyup flow
+  // We've successfully populated the parent object, so now we can
+  // proceed with the object map update and copyup to child
+  m_image_ctx->snap_lock.get_read();
+  m_lock.Lock();
+  m_copyup_is_zero = m_copyup_data.is_zero();
+  m_copyup_required = is_copyup_required();
+  disable_append_requests();
+
+  if (!m_copyup_required) {
+    m_lock.Unlock();
+    m_image_ctx->snap_lock.put_read();
+    ldout(cct, 20) << "copyup not required after S3 fetch" << dendl;
+    finish(0);
+    return;
+  }
+
+  // Copyup is required - populate snapshot IDs if data is not all zeros
+  if (!m_copyup_is_zero) {
+    m_snap_ids.insert(m_snap_ids.end(), m_image_ctx->snaps.rbegin(),
+                      m_image_ctx->snaps.rend());
+  }
+
+  m_lock.Unlock();
+  m_image_ctx->snap_lock.put_read();
+
+  // Continue to update object maps and then copyup
+  update_object_maps();
+}
+
+template <typename I>
+void CopyupRequest<I>::unlock_parent_object() {
+  if (!m_s3_lock_acquired) {
+    return;
+  }
+
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 15) << "unlocking parent object" << dendl;
+
+  // Construct the same lock cookie we used to acquire the lock
+  std::string lock_cookie = m_image_ctx->id + "_" + stringify(m_object_no);
+
+  // Release the lock
+  librados::ObjectWriteOperation unlock_op;
+  rados::cls::lock::unlock(&unlock_op, "s3_fetch_lock", lock_cookie);
+
+  // Fire and forget - we don't wait for completion
+  int r = m_parent_ioctx.operate(m_parent_oid, &unlock_op);
+  if (r < 0) {
+    ldout(cct, 5) << "warning: failed to unlock parent object: "
+                  << cpp_strerror(r) << dendl;
+  }
+
+  m_s3_lock_acquired = false;
 }
 
 } // namespace io

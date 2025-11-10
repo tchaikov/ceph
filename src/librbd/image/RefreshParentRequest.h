@@ -88,6 +88,8 @@ private:
   void send_close_parent();
   Context *handle_close_parent(int *result);
 
+  void load_parent_s3_config();
+
   void send_reset_existence_cache();
   Context *handle_reset_existence_cache(int *result);
 

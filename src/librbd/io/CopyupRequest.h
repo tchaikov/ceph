@@ -102,6 +102,14 @@ private:
   WriteRequests m_restart_requests;
   bool m_append_request_permitted = true;
 
+  // S3 back-fill members
+  bool m_s3_lock_acquired = false;
+  uint32_t m_s3_retry_count = 0;
+  uint32_t m_s3_max_retries = 5;  // From config: rbd_s3_lock_retry_max
+  ceph::bufferlist m_s3_data;
+  std::string m_parent_oid;
+  librados::IoCtx m_parent_ioctx;
+
   void read_from_parent();
   void handle_read_from_parent(int r);
 
@@ -125,6 +133,21 @@ private:
   bool is_deep_copy() const;
 
   void compute_deep_copy_snap_ids();
+
+  // S3 back-fill methods
+  bool should_fetch_from_s3();
+  void check_parent_object_exists();
+  void handle_check_parent_object_exists(int r);
+  void do_read_from_parent();
+  void fetch_from_s3_with_lock();
+  void handle_lock_parent_object(int r);
+  void retry_read_from_parent();
+  void fetch_from_s3_async();
+  void handle_s3_fetch(int r);
+  void write_back_to_parent();
+  void handle_write_back_to_parent(int r);
+  void unlock_parent_object();
+  std::string construct_s3_object_key(uint64_t object_no);
 };
 
 } // namespace io

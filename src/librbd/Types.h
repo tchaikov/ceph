@@ -79,6 +79,57 @@ struct RemoteParentSpec {
   }
 };
 
+/// S3 configuration for S3-backed parent images
+struct S3Config {
+  bool enabled = false;
+  std::string bucket;
+  std::string endpoint;
+  std::string region;
+  std::string access_key;
+  std::string secret_key;  // Base64-encoded, encrypted
+  uint32_t timeout_ms = 30000;
+  uint32_t max_retries = 3;
+  std::string prefix;
+
+  S3Config() = default;
+
+  /// Check if S3 configuration is valid (all required fields present)
+  bool is_valid() const {
+    return enabled &&
+           !bucket.empty() &&
+           !endpoint.empty();
+    // Note: access_key and secret_key are optional for anonymous access
+    // region and prefix are also optional
+  }
+
+  /// Check if this is anonymous access (no credentials)
+  bool is_anonymous() const {
+    return access_key.empty() && secret_key.empty();
+  }
+
+  /// Build full S3 URL for an object key
+  std::string build_url(const std::string& object_key) const {
+    std::string url = endpoint;
+    if (url.back() != '/') {
+      url += '/';
+    }
+    url += bucket;
+    url += '/';
+    if (!prefix.empty()) {
+      url += prefix;
+      if (url.back() != '/') {
+        url += '/';
+      }
+    }
+    url += object_key;
+    return url;
+  }
+
+  bool empty() const {
+    return !enabled || bucket.empty() || endpoint.empty();
+  }
+};
+
 /// Full information about an image's parent.
 struct ParentImageInfo {
   /// Identification of the parent.

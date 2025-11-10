@@ -132,6 +132,7 @@ namespace librbd {
     ImageCtx *parent;
     ImageCtx *child = nullptr;
     std::unique_ptr<librados::Rados> remote_parent_cluster;  // RADOS connection for remote parent
+    S3Config s3_config;  // S3 configuration for S3-backed parent images
     MigrationInfo migration_info;
     cls::rbd::GroupSpec group_spec;
     uint64_t stripe_unit, stripe_count;

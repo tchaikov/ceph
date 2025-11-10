@@ -7667,8 +7667,7 @@ static std::vector<Option> get_rbd_mirror_options() {
 
     Option("rbd_s3_fetch_max_retries", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(3)
-    .set_min(0)
-    .set_max(10)
+    .set_min_max(0, 10)
     .set_description("maximum number of S3 fetch retry attempts")
     .set_long_description("Number of times to retry fetching an object from S3 "
                           "on timeout or transient network errors. Uses exponential "
@@ -7676,8 +7675,7 @@ static std::vector<Option> get_rbd_mirror_options() {
 
     Option("rbd_s3_parent_lock_timeout", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(30)
-    .set_min(10)
-    .set_max(300)
+    .set_min_max(10, 300)
     .set_description("parent object lock timeout in seconds for S3 back-fill")
     .set_long_description("Maximum time a child can hold an exclusive lock on a "
                           "parent object while fetching from S3. The lock "
@@ -7686,8 +7684,7 @@ static std::vector<Option> get_rbd_mirror_options() {
 
     Option("rbd_s3_lock_retry_max", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(5)
-    .set_min(1)
-    .set_max(20)
+    .set_min_max(1, 20)
     .set_description("maximum lock contention retries for S3 back-fill")
     .set_long_description("When a child image fails to acquire the parent object "
                           "lock (because another child is fetching from S3), it "

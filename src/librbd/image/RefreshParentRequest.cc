@@ -9,6 +9,7 @@
 #include "librbd/ImageCtx.h"
 #include "librbd/Utils.h"
 #include "librbd/RemoteClusterUtils.h"
+#include "librbd/internal.h"
 #include "librbd/image/CloseRequest.h"
 #include "librbd/image/OpenRequest.h"
 #include "librbd/io/ObjectDispatcher.h"
@@ -211,9 +212,91 @@ Context *RefreshParentRequest<I>::handle_open_parent(int *result) {
     // image already closed by open state machine
     delete m_parent_image_ctx;
     m_parent_image_ctx = nullptr;
+  } else {
+    // Parent opened successfully - load S3 configuration if available
+    load_parent_s3_config();
   }
 
   return m_on_finish;
+}
+
+template <typename I>
+void RefreshParentRequest<I>::load_parent_s3_config() {
+  ceph_assert(m_parent_image_ctx != nullptr);
+
+  CephContext *cct = m_child_image_ctx.cct;
+  ldout(cct, 10) << this << " " << __func__ << dendl;
+
+  // Load S3 configuration from parent image metadata
+  // Metadata keys: s3.enabled, s3.bucket, s3.endpoint, s3.region,
+  //                s3.access_key, s3.secret_key, s3.prefix,
+  //                s3.timeout_ms, s3.max_retries
+
+  S3Config& s3_config = m_parent_image_ctx->s3_config;
+
+  // Helper lambda to get metadata value
+  auto get_metadata = [this, cct](const std::string& key, std::string& value) -> bool {
+    int r = librbd::metadata_get(m_parent_image_ctx, key, &value);
+    if (r < 0 && r != -ENOENT) {
+      ldout(cct, 5) << "warning: failed to read " << key << ": "
+                    << cpp_strerror(r) << dendl;
+      return false;
+    }
+    return (r == 0);
+  };
+
+  // Read s3.enabled
+  std::string enabled_str;
+  if (!get_metadata("s3.enabled", enabled_str)) {
+    ldout(cct, 15) << "S3 not configured for parent image" << dendl;
+    return;
+  }
+
+  s3_config.enabled = (enabled_str == "true" || enabled_str == "1");
+  if (!s3_config.enabled) {
+    ldout(cct, 15) << "S3 disabled for parent image" << dendl;
+    return;
+  }
+
+  // Read required fields
+  get_metadata("s3.bucket", s3_config.bucket);
+  get_metadata("s3.endpoint", s3_config.endpoint);
+
+  // Read optional fields
+  get_metadata("s3.region", s3_config.region);
+  get_metadata("s3.access_key", s3_config.access_key);
+  get_metadata("s3.secret_key", s3_config.secret_key);
+  get_metadata("s3.prefix", s3_config.prefix);
+
+  std::string timeout_str, retries_str;
+  if (get_metadata("s3.timeout_ms", timeout_str)) {
+    try {
+      s3_config.timeout_ms = std::stoul(timeout_str);
+    } catch (...) {
+      ldout(cct, 5) << "warning: invalid s3.timeout_ms value: " << timeout_str << dendl;
+    }
+  }
+
+  if (get_metadata("s3.max_retries", retries_str)) {
+    try {
+      s3_config.max_retries = std::stoul(retries_str);
+    } catch (...) {
+      ldout(cct, 5) << "warning: invalid s3.max_retries value: " << retries_str << dendl;
+    }
+  }
+
+  // Validate configuration
+  if (s3_config.is_valid()) {
+    ldout(cct, 10) << "loaded S3 configuration for parent: "
+                   << "bucket=" << s3_config.bucket
+                   << ", endpoint=" << s3_config.endpoint
+                   << ", prefix=" << s3_config.prefix
+                   << ", anonymous=" << s3_config.is_anonymous()
+                   << dendl;
+  } else {
+    ldout(cct, 5) << "warning: incomplete S3 configuration for parent image" << dendl;
+    s3_config.enabled = false;
+  }
 }
 
 template <typename I>

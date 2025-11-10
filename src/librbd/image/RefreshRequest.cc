@@ -482,6 +482,16 @@ Context *RefreshRequest<I>::handle_v2_get_parent(int *result) {
     return m_on_finish;
   }
 
+  // Determine parent type based on snap_id
+  // CEPH_NOSNAP indicates a standalone clone (cloning from mutable parent)
+  if (m_parent_md.spec.snap_id == CEPH_NOSNAP) {
+    m_parent_md.parent_type = PARENT_TYPE_STANDALONE;
+    ldout(cct, 15) << "parent is standalone clone (snap_id=NOSNAP)" << dendl;
+  } else {
+    m_parent_md.parent_type = PARENT_TYPE_SNAPSHOT;
+    ldout(cct, 15) << "parent is snapshot-based clone" << dendl;
+  }
+
   if ((m_features & RBD_FEATURE_MIGRATING) != 0) {
     ldout(cct, 1) << "migrating feature set" << dendl;
     send_get_migration_header();
