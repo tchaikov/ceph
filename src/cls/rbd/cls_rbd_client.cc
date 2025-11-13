@@ -398,13 +398,14 @@ int parent_get_finish(bufferlist::const_iterator* it,
     decode(*parent_image_spec, *it);
 
     // Try to decode additional remote parent metadata (backward compatible)
-    if (!it->end()) {
+    // Only decode if parent exists - OSD only encodes these fields when parent.exists()
+    if (parent_image_spec->exists() && !it->end()) {
       decode(*parent_type, *it);
       decode(*remote_cluster_name, *it);
       decode(*remote_mon_hosts, *it);
       decode(*remote_keyring, *it);
     } else {
-      // Older OSD - no remote parent metadata available
+      // No parent, or older OSD - no remote parent metadata available
       *parent_type = 0; // CLS_RBD_PARENT_TYPE_SNAPSHOT
       remote_cluster_name->clear();
       remote_mon_hosts->clear();
