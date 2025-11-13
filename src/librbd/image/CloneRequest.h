@@ -131,6 +131,8 @@ private:
   std::string m_parent_snap_name;
   uint64_t m_parent_snap_id;
   ImageCtxT *m_parent_image_ctx;
+  std::unique_ptr<librados::Rados> m_remote_parent_cluster;
+  std::unique_ptr<librados::IoCtx> m_remote_parent_io_ctx;
 
   IoCtx &m_ioctx;
   std::string m_name;
@@ -142,6 +144,7 @@ private:
   const std::string m_non_primary_global_image_id;
   const std::string m_primary_mirror_uuid;
   NoOpProgressContext m_no_op;
+  RemoteParentSpec m_remote_parent_spec;  // Empty for local clones
   ContextWQ *m_op_work_queue;
   Context *m_on_finish;
 
@@ -155,9 +158,11 @@ private:
   uint64_t m_size;
   int m_r_saved = 0;
   bool m_is_standalone_clone = false;
-  RemoteParentSpec m_remote_parent_spec;  // Empty for local clones
 
   void validate_options();
+
+  void connect_remote_parent();
+  void handle_connect_remote_parent(int r);
 
   void open_parent();
   void handle_open_parent(int r);

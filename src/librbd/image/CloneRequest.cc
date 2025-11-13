@@ -8,6 +8,7 @@
 #include "include/ceph_assert.h"
 #include "librbd/ImageState.h"
 #include "librbd/Utils.h"
+#include "librbd/RemoteClusterUtils.h"
 #include "librbd/image/AttachChildRequest.h"
 #include "librbd/image/AttachParentRequest.h"
 #include "librbd/image/CloneRequest.h"
@@ -180,6 +181,66 @@ void CloneRequest<I>::validate_options() {
     return;
   }
 
+  // For cross-cluster clones, connect to remote cluster first
+  if (!m_remote_parent_spec.empty()) {
+    connect_remote_parent();
+  } else {
+    open_parent();
+  }
+}
+
+template <typename I>
+void CloneRequest<I>::connect_remote_parent() {
+  ldout(m_cct, 20) << "connecting to remote cluster: "
+                   << m_remote_parent_spec.cluster_name << dendl;
+
+  ceph_assert(!m_remote_parent_spec.empty());
+
+  // Create remote cluster connection
+  m_remote_parent_cluster.reset(new librados::Rados());
+
+  // Use "client.admin" as the default client name (same as RefreshParentRequest)
+  int r = util::connect_to_remote_cluster(
+    m_cct,
+    m_remote_parent_spec.cluster_name,
+    m_remote_parent_spec.mon_hosts,
+    m_remote_parent_spec.keyring,
+    "client.admin",
+    *m_remote_parent_cluster);
+
+  if (r < 0) {
+    lderr(m_cct) << "failed to connect to remote cluster: "
+                 << cpp_strerror(r) << dendl;
+    m_remote_parent_cluster.reset();
+    complete(r);
+    return;
+  }
+
+  // Create IoCtx for parent pool in remote cluster
+  std::string parent_pool_name = m_parent_io_ctx.get_pool_name();
+  m_remote_parent_io_ctx.reset(new librados::IoCtx());
+  r = m_remote_parent_cluster->ioctx_create(parent_pool_name.c_str(),
+                                            *m_remote_parent_io_ctx);
+  if (r < 0) {
+    lderr(m_cct) << "failed to create IoCtx for parent pool '"
+                 << parent_pool_name << "' in remote cluster: "
+                 << cpp_strerror(r) << dendl;
+    m_remote_parent_io_ctx.reset();
+    m_remote_parent_cluster.reset();
+    complete(r);
+    return;
+  }
+
+  // Set namespace if needed
+  std::string parent_namespace = m_parent_io_ctx.get_namespace();
+  if (!parent_namespace.empty()) {
+    m_remote_parent_io_ctx->set_namespace(parent_namespace);
+  }
+
+  ldout(m_cct, 10) << "successfully connected to remote cluster: "
+                   << m_remote_parent_spec.cluster_name << ", pool: "
+                   << parent_pool_name << dendl;
+
   open_parent();
 }
 
@@ -190,16 +251,20 @@ void CloneRequest<I>::open_parent() {
   ceph_assert(m_is_standalone_clone ||
               (m_parent_snap_name.empty() ^ (m_parent_snap_id == CEPH_NOSNAP)));
 
+  // Use remote IoCtx if we connected to a remote cluster, otherwise use local IoCtx
+  librados::IoCtx& parent_io_ctx = m_remote_parent_io_ctx ?
+                                   *m_remote_parent_io_ctx : m_parent_io_ctx;
+
   if (m_is_standalone_clone) {
     // Open parent at HEAD (no snapshot)
     m_parent_image_ctx = I::create("", m_parent_image_id, nullptr,
-                                   m_parent_io_ctx, false);
+                                   parent_io_ctx, false);
   } else if (m_parent_snap_id != CEPH_NOSNAP) {
     m_parent_image_ctx = I::create("", m_parent_image_id, m_parent_snap_id,
-                                   m_parent_io_ctx, true);
+                                   parent_io_ctx, true);
   } else {
     m_parent_image_ctx = I::create("", m_parent_image_id,
-                                   m_parent_snap_name.c_str(), m_parent_io_ctx,
+                                   m_parent_snap_name.c_str(), parent_io_ctx,
                                    true);
   }
 
