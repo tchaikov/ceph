@@ -94,6 +94,12 @@ void remove_parent(librados::ObjectWriteOperation *op);
 void parent_get_start(librados::ObjectReadOperation* op);
 int parent_get_finish(bufferlist::const_iterator* it,
                       cls::rbd::ParentImageSpec* parent_image_spec);
+int parent_get_finish(bufferlist::const_iterator* it,
+                      cls::rbd::ParentImageSpec* parent_image_spec,
+                      uint8_t* parent_type,
+                      std::string* remote_cluster_name,
+                      std::vector<std::string>* remote_mon_hosts,
+                      std::string* remote_keyring);
 int parent_get(librados::IoCtx* ioctx, const std::string &oid,
                cls::rbd::ParentImageSpec* parent_image_spec);
 

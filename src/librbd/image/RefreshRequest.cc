@@ -452,8 +452,13 @@ Context *RefreshRequest<I>::handle_v2_get_parent(int *result) {
 
   auto it = m_out_bl.cbegin();
   if (!m_legacy_parent) {
+    uint8_t parent_type_raw = 0;
     if (*result == 0) {
-      *result = cls_client::parent_get_finish(&it, &m_parent_md.spec);
+      *result = cls_client::parent_get_finish(&it, &m_parent_md.spec,
+                                              &parent_type_raw,
+                                              &m_parent_md.remote_cluster_name,
+                                              &m_parent_md.remote_mon_hosts,
+                                              &m_parent_md.remote_keyring);
     }
 
     std::optional<uint64_t> parent_overlap;
@@ -465,10 +470,35 @@ Context *RefreshRequest<I>::handle_v2_get_parent(int *result) {
       m_parent_md.overlap = *parent_overlap;
       m_head_parent_overlap = true;
     }
+
+    // Set parent type from OSD response (newer OSDs) or infer from snap_id (older OSDs)
+    if (*result == 0) {
+      if (parent_type_raw != 0) {
+        // Newer OSD returned parent type - convert from OSD enum to librbd enum
+        m_parent_md.parent_type = static_cast<ParentImageType>(parent_type_raw);
+        ldout(cct, 15) << "parent type from OSD: " << (int)parent_type_raw << dendl;
+      } else if (m_parent_md.spec.snap_id == CEPH_NOSNAP) {
+        // Older OSD - infer from snap_id (same logic as before)
+        m_parent_md.parent_type = PARENT_TYPE_STANDALONE;
+        ldout(cct, 15) << "parent is standalone clone (snap_id=NOSNAP, inferred)" << dendl;
+      } else {
+        m_parent_md.parent_type = PARENT_TYPE_SNAPSHOT;
+        ldout(cct, 15) << "parent is snapshot-based clone (inferred)" << dendl;
+      }
+    }
   } else if (*result == 0) {
     *result = cls_client::get_parent_finish(&it, &m_parent_md.spec,
                                             &m_parent_md.overlap);
     m_head_parent_overlap = true;
+
+    // Legacy parent API - infer parent type from snap_id
+    if (m_parent_md.spec.snap_id == CEPH_NOSNAP) {
+      m_parent_md.parent_type = PARENT_TYPE_STANDALONE;
+      ldout(cct, 15) << "parent is standalone clone (snap_id=NOSNAP, legacy)" << dendl;
+    } else {
+      m_parent_md.parent_type = PARENT_TYPE_SNAPSHOT;
+      ldout(cct, 15) << "parent is snapshot-based clone (legacy)" << dendl;
+    }
   }
 
   if (*result == -EOPNOTSUPP && !m_legacy_parent) {
@@ -480,16 +510,6 @@ Context *RefreshRequest<I>::handle_v2_get_parent(int *result) {
     lderr(cct) << "failed to retrieve parent: " << cpp_strerror(*result)
                << dendl;
     return m_on_finish;
-  }
-
-  // Determine parent type based on snap_id
-  // CEPH_NOSNAP indicates a standalone clone (cloning from mutable parent)
-  if (m_parent_md.spec.snap_id == CEPH_NOSNAP) {
-    m_parent_md.parent_type = PARENT_TYPE_STANDALONE;
-    ldout(cct, 15) << "parent is standalone clone (snap_id=NOSNAP)" << dendl;
-  } else {
-    m_parent_md.parent_type = PARENT_TYPE_SNAPSHOT;
-    ldout(cct, 15) << "parent is snapshot-based clone" << dendl;
   }
 
   if ((m_features & RBD_FEATURE_MIGRATING) != 0) {

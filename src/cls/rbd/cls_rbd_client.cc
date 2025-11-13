@@ -388,6 +388,34 @@ int parent_get_finish(bufferlist::const_iterator* it,
   return 0;
 }
 
+int parent_get_finish(bufferlist::const_iterator* it,
+                      cls::rbd::ParentImageSpec* parent_image_spec,
+                      uint8_t* parent_type,
+                      std::string* remote_cluster_name,
+                      std::vector<std::string>* remote_mon_hosts,
+                      std::string* remote_keyring) {
+  try {
+    decode(*parent_image_spec, *it);
+
+    // Try to decode additional remote parent metadata (backward compatible)
+    if (!it->end()) {
+      decode(*parent_type, *it);
+      decode(*remote_cluster_name, *it);
+      decode(*remote_mon_hosts, *it);
+      decode(*remote_keyring, *it);
+    } else {
+      // Older OSD - no remote parent metadata available
+      *parent_type = 0; // CLS_RBD_PARENT_TYPE_SNAPSHOT
+      remote_cluster_name->clear();
+      remote_mon_hosts->clear();
+      remote_keyring->clear();
+    }
+  } catch (const buffer::error &) {
+    return -EBADMSG;
+  }
+  return 0;
+}
+
 int parent_get(librados::IoCtx* ioctx, const std::string &oid,
                cls::rbd::ParentImageSpec* parent_image_spec) {
   librados::ObjectReadOperation op;

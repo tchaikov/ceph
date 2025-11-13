@@ -1749,6 +1749,14 @@ int parent_get(cls_method_context_t hctx, bufferlist *in, bufferlist *out) {
     parent.pool_id, parent.pool_namespace, parent.image_id,
     parent.snap_id};
   encode(parent_image_spec, *out);
+
+  // Encode parent type and remote cluster metadata for cross-cluster support
+  // This is backward compatible - older clients will ignore extra data
+  encode(static_cast<uint8_t>(parent.parent_type), *out);
+  encode(parent.remote_cluster_name, *out);
+  encode(parent.remote_mon_hosts, *out);
+  encode(parent.remote_keyring, *out);
+
   return 0;
 }
 
