@@ -186,6 +186,7 @@ struct ParentImageSpec {
   std::string pool_namespace;
   std::string image_id;
   snapid_t snap_id = CEPH_NOSNAP;
+  std::string pool_name;  // Pool name for remote parents (pool IDs are cluster-specific)
 
   ParentImageSpec() {
   }
@@ -204,7 +205,8 @@ struct ParentImageSpec {
     return ((pool_id == rhs.pool_id) &&
             (pool_namespace == rhs.pool_namespace) &&
             (image_id == rhs.image_id) &&
-            (snap_id == rhs.snap_id));
+            (snap_id == rhs.snap_id) &&
+            (pool_name == rhs.pool_name));
   }
 
   bool operator!=(const ParentImageSpec& rhs) const {

@@ -213,20 +213,24 @@ std::ostream& operator<<(std::ostream& os, const MirrorImageStatus& status) {
 }
 
 void ParentImageSpec::encode(bufferlist& bl) const {
-  ENCODE_START(1, 1, bl);
+  ENCODE_START(2, 1, bl);
   encode(pool_id, bl);
   encode(pool_namespace, bl);
   encode(image_id, bl);
   encode(snap_id, bl);
+  encode(pool_name, bl);  // v2: pool name for remote parents
   ENCODE_FINISH(bl);
 }
 
 void ParentImageSpec::decode(bufferlist::const_iterator& bl) {
-  DECODE_START(1, bl);
+  DECODE_START(2, bl);
   decode(pool_id, bl);
   decode(pool_namespace, bl);
   decode(image_id, bl);
   decode(snap_id, bl);
+  if (struct_v >= 2) {
+    decode(pool_name, bl);
+  }
   DECODE_FINISH(bl);
 }
 
@@ -235,6 +239,7 @@ void ParentImageSpec::dump(Formatter *f) const {
   f->dump_string("pool_namespace", pool_namespace);
   f->dump_string("image_id", image_id);
   f->dump_unsigned("snap_id", snap_id);
+  f->dump_string("pool_name", pool_name);
 }
 
 void ParentImageSpec::generate_test_instances(std::list<ParentImageSpec*>& o) {

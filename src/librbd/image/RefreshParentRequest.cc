@@ -148,15 +148,31 @@ void RefreshParentRequest<I>::send_open_parent() {
     ldout(cct, 10) << "successfully connected to remote cluster" << dendl;
 
     // Create IoCtx from remote cluster
-    r = m_child_image_ctx.remote_parent_cluster->ioctx_create2(
-      m_parent_md.spec.pool_id, parent_io_ctx);
-    if (r < 0) {
-      lderr(cct) << "failed to create ioctx for remote parent pool: "
-                 << cpp_strerror(r) << dendl;
-      // Clean up remote cluster connection to prevent resource leak
-      m_child_image_ctx.remote_parent_cluster.reset();
-      send_complete(r);
-      return;
+    // Use pool name instead of pool ID for remote parents (pool IDs are cluster-specific)
+    if (!m_parent_md.spec.pool_name.empty()) {
+      r = m_child_image_ctx.remote_parent_cluster->ioctx_create(
+        m_parent_md.spec.pool_name.c_str(), parent_io_ctx);
+      if (r < 0) {
+        lderr(cct) << "failed to create ioctx for remote parent pool '"
+                   << m_parent_md.spec.pool_name << "': "
+                   << cpp_strerror(r) << dendl;
+        // Clean up remote cluster connection to prevent resource leak
+        m_child_image_ctx.remote_parent_cluster.reset();
+        send_complete(r);
+        return;
+      }
+    } else {
+      // Fallback to pool_id if pool_name not available (backward compatibility)
+      r = m_child_image_ctx.remote_parent_cluster->ioctx_create2(
+        m_parent_md.spec.pool_id, parent_io_ctx);
+      if (r < 0) {
+        lderr(cct) << "failed to create ioctx for remote parent pool: "
+                   << cpp_strerror(r) << dendl;
+        // Clean up remote cluster connection to prevent resource leak
+        m_child_image_ctx.remote_parent_cluster.reset();
+        send_complete(r);
+        return;
+      }
     }
 
     if (!m_parent_md.spec.pool_namespace.empty()) {

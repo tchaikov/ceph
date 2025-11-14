@@ -289,6 +289,8 @@ void CloneRequest<I>::handle_open_parent(int r) {
   m_parent_snap_id = m_parent_image_ctx->snap_id;
   m_pspec = {m_parent_io_ctx.get_id(), m_parent_io_ctx.get_namespace(),
              m_parent_image_id, m_parent_snap_id};
+  // Set pool name for cross-cluster clones (pool IDs are cluster-specific)
+  m_pspec.pool_name = m_parent_io_ctx.get_pool_name();
   validate_parent();
 }
 
