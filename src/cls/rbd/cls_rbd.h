@@ -25,6 +25,7 @@ struct cls_rbd_parent {
   snapid_t snap_id = CEPH_NOSNAP;
   std::optional<uint64_t> head_overlap = std::nullopt;
   cls_rbd_parent_type parent_type = CLS_RBD_PARENT_TYPE_SNAPSHOT;
+  std::string pool_name;                // Pool name for remote parents (pool IDs are cluster-specific)
 
   // Remote cluster information (for REMOTE_STANDALONE parent type)
   std::string remote_cluster_name;      // Optional: name/ID of remote cluster
@@ -39,7 +40,8 @@ struct cls_rbd_parent {
     : pool_id(parent_image_spec.pool_id),
       pool_namespace(parent_image_spec.pool_namespace),
       image_id(parent_image_spec.image_id), snap_id(parent_image_spec.snap_id),
-      head_overlap(head_overlap), parent_type(type) {
+      head_overlap(head_overlap), parent_type(type),
+      pool_name(parent_image_spec.pool_name) {
   }
 
   inline bool exists() const {
@@ -53,6 +55,7 @@ struct cls_rbd_parent {
             image_id == rhs.image_id &&
             snap_id == rhs.snap_id &&
             parent_type == rhs.parent_type &&
+            pool_name == rhs.pool_name &&
             remote_cluster_name == rhs.remote_cluster_name &&
             remote_mon_hosts == rhs.remote_mon_hosts &&
             remote_keyring == rhs.remote_keyring);
@@ -67,7 +70,7 @@ struct cls_rbd_parent {
     if ((features & CEPH_FEATURE_SERVER_NAUTILUS) != 0ULL) {
       // break backwards compatability when using nautilus or later OSDs
       // version 3 adds parent_type field
-      // version 4 adds remote cluster fields
+      // version 4 adds remote cluster fields (including pool_name)
       version = 4;
     }
 
@@ -90,6 +93,7 @@ struct cls_rbd_parent {
       encode(remote_cluster_name, bl);
       encode(remote_mon_hosts, bl);
       encode(remote_keyring, bl);
+      encode(pool_name, bl);
     }
     ENCODE_FINISH(bl);
   }
@@ -118,6 +122,7 @@ struct cls_rbd_parent {
       decode(remote_cluster_name, bl);
       decode(remote_mon_hosts, bl);
       decode(remote_keyring, bl);
+      decode(pool_name, bl);
     }
     DECODE_FINISH(bl);
   }
@@ -145,6 +150,9 @@ struct cls_rbd_parent {
         type_str = "unknown";
     }
     f->dump_string("parent_type", type_str);
+    if (!pool_name.empty()) {
+      f->dump_string("pool_name", pool_name);
+    }
     if (!remote_cluster_name.empty()) {
       f->dump_string("remote_cluster_name", remote_cluster_name);
     }
