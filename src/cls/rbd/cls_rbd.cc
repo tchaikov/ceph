@@ -1748,6 +1748,7 @@ int parent_get(cls_method_context_t hctx, bufferlist *in, bufferlist *out) {
   cls::rbd::ParentImageSpec parent_image_spec{
     parent.pool_id, parent.pool_namespace, parent.image_id,
     parent.snap_id};
+  parent_image_spec.pool_name = parent.pool_name;
   encode(parent_image_spec, *out);
 
   // Encode parent type and remote cluster metadata only if parent exists
