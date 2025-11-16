@@ -441,7 +441,7 @@ int Image<I>::list_descendants(
 
   for (auto& child_image : child_images) {
     images->push_back({
-      child_image.pool_id, "", child_image.pool_namespace,
+      child_image.pool_id, child_image.pool_name, child_image.pool_namespace,
       child_image.image_id, "", false});
     if (!child_max_level || *child_max_level > 0) {
       IoCtx ioctx;
@@ -472,8 +472,17 @@ int Image<I>::list_descendants(
       r = util::create_ioctx(ictx->md_ctx, "child image", image.pool_id,
                              image.pool_namespace, &child_io_ctx);
       if (r == -ENOENT) {
-        image.pool_name = "";
-        image.image_name = "";
+        // Pool doesn't exist locally - this is a cross-cluster child
+        // If pool_name is already set, keep it and mark image_name as remote
+        if (!image.pool_name.empty()) {
+          ldout(cct, 10) << "cross-cluster child: pool_name=" << image.pool_name
+                        << ", image_id=" << image.image_id << dendl;
+          image.image_name = image.image_id + " (remote)";
+          image.trash = false;
+        } else {
+          image.pool_name = "";
+          image.image_name = "";
+        }
         continue;
       } else if (r < 0) {
         return r;
@@ -511,11 +520,25 @@ int Image<I>::list_descendants(
 
     auto it = child_image_id_to_info.find(image.image_id);
     if (it == child_image_id_to_info.end()) {
-          lderr(cct) << "error looking up name for image id "
-                     << image.image_id << " in pool "
-                     << child_io_ctx.get_pool_name()
-                     << (image.pool_namespace.empty() ?
-                          "" : "/" + image.pool_namespace) << dendl;
+      // Image not found in this pool
+      // Check if this is a cross-cluster child (pool_name was pre-populated)
+      if (!image.pool_name.empty() &&
+          image.pool_name != child_io_ctx.get_pool_name()) {
+        // Pool names don't match - this is definitely a cross-cluster child
+        // The pool_id collision is just a coincidence
+        ldout(cct, 10) << "cross-cluster child (pool_id collision): "
+                       << "pool_name=" << image.pool_name
+                       << ", image_id=" << image.image_id << dendl;
+        image.image_name = image.image_id + " (remote)";
+        image.trash = false;
+        continue;
+      }
+
+      lderr(cct) << "error looking up name for image id "
+                 << image.image_id << " in pool "
+                 << child_io_ctx.get_pool_name()
+                 << (image.pool_namespace.empty() ?
+                      "" : "/" + image.pool_namespace) << dendl;
       return -ENOENT;
     }
 

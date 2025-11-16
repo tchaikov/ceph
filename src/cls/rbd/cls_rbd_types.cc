@@ -249,19 +249,23 @@ void ParentImageSpec::generate_test_instances(std::list<ParentImageSpec*>& o) {
 }
 
 void ChildImageSpec::encode(bufferlist &bl) const {
-  ENCODE_START(2, 1, bl);
+  ENCODE_START(3, 1, bl);
   encode(pool_id, bl);
   encode(image_id, bl);
   encode(pool_namespace, bl);
+  encode(pool_name, bl);  // v3: pool name for cross-cluster children
   ENCODE_FINISH(bl);
 }
 
 void ChildImageSpec::decode(bufferlist::const_iterator &it) {
-  DECODE_START(2, it);
+  DECODE_START(3, it);
   decode(pool_id, it);
   decode(image_id, it);
   if (struct_v >= 2) {
     decode(pool_namespace, it);
+  }
+  if (struct_v >= 3) {
+    decode(pool_name, it);
   }
   DECODE_FINISH(it);
 }
@@ -270,6 +274,7 @@ void ChildImageSpec::dump(Formatter *f) const {
   f->dump_int("pool_id", pool_id);
   f->dump_string("pool_namespace", pool_namespace);
   f->dump_string("image_id", image_id);
+  f->dump_string("pool_name", pool_name);
 }
 
 void ChildImageSpec::generate_test_instances(std::list<ChildImageSpec*> &o) {

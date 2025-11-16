@@ -226,6 +226,7 @@ struct ChildImageSpec {
   int64_t pool_id = -1;
   std::string pool_namespace;
   std::string image_id;
+  std::string pool_name;  // Pool name for cross-cluster children (pool IDs are cluster-specific)
 
   ChildImageSpec() {}
   ChildImageSpec(int64_t pool_id, const std::string& pool_namespace,
@@ -242,7 +243,8 @@ struct ChildImageSpec {
   inline bool operator==(const ChildImageSpec& rhs) const {
     return (pool_id == rhs.pool_id &&
             pool_namespace == rhs.pool_namespace &&
-            image_id == rhs.image_id);
+            image_id == rhs.image_id &&
+            pool_name == rhs.pool_name);
   }
   inline bool operator<(const ChildImageSpec& rhs) const {
     if (pool_id != rhs.pool_id) {

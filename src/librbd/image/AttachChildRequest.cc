@@ -187,11 +187,14 @@ void AttachChildRequest<I>::v2_child_attach() {
   ldout(m_cct, 0) << "***** V2_CHILD_ATTACH CALLED: snap_id=" << m_parent_snap_id << dendl;
   ldout(m_cct, 15) << dendl;
 
+  cls::rbd::ChildImageSpec child_spec{
+    m_image_ctx->md_ctx.get_id(),
+    m_image_ctx->md_ctx.get_namespace(),
+    m_image_ctx->id};
+  child_spec.pool_name = m_image_ctx->md_ctx.get_pool_name();
+
   librados::ObjectWriteOperation op;
-  cls_client::child_attach(&op, m_parent_snap_id,
-                           {m_image_ctx->md_ctx.get_id(),
-                            m_image_ctx->md_ctx.get_namespace(),
-                            m_image_ctx->id});
+  cls_client::child_attach(&op, m_parent_snap_id, child_spec);
 
   using klass = AttachChildRequest<I>;
   auto aio_comp = create_rados_callback<
