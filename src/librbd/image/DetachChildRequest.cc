@@ -10,6 +10,7 @@
 #include "librbd/ImageCtx.h"
 #include "librbd/ImageState.h"
 #include "librbd/Operations.h"
+#include "librbd/RemoteClusterUtils.h"
 #include "librbd/Utils.h"
 #include "librbd/journal/DisabledPolicy.h"
 #include <string>
@@ -39,8 +40,10 @@ void DetachChildRequest<I>::send() {
     // use oldest snapshot or HEAD for parent spec
     if (!m_image_ctx.snap_info.empty()) {
       m_parent_spec = m_image_ctx.snap_info.begin()->second.parent.spec;
+      m_parent_info = m_image_ctx.snap_info.begin()->second.parent;
     } else {
       m_parent_spec = m_image_ctx.parent_md.spec;
+      m_parent_info = m_image_ctx.parent_md;
     }
   }
 
@@ -69,12 +72,70 @@ void DetachChildRequest<I>::clone_v2_child_detach() {
                             m_image_ctx.md_ctx.get_namespace(),
                             m_image_ctx.id});
 
-  int r = util::create_ioctx(m_image_ctx.md_ctx, "parent image",
-                             m_parent_spec.pool_id,
-                             m_parent_spec.pool_namespace, &m_parent_io_ctx);
-  if (r < 0) {
-    finish(r);
-    return;
+  int r;
+  // Check if parent is in remote cluster
+  if (m_parent_info.parent_type == PARENT_TYPE_REMOTE_STANDALONE) {
+    ldout(cct, 10) << "detaching from remote parent in cluster: "
+                   << m_parent_info.remote_cluster_name << dendl;
+
+    // Establish remote cluster connection
+    m_remote_parent_cluster.reset(new librados::Rados());
+
+    r = util::connect_to_remote_cluster(
+      cct,
+      m_parent_info.remote_cluster_name,
+      m_parent_info.remote_mon_hosts,
+      m_parent_info.remote_keyring,
+      "client.admin",
+      *m_remote_parent_cluster);
+
+    if (r < 0) {
+      lderr(cct) << "failed to connect to remote cluster: "
+                 << cpp_strerror(r) << dendl;
+      m_remote_parent_cluster.reset();
+      finish(r);
+      return;
+    }
+
+    ldout(cct, 10) << "successfully connected to remote cluster" << dendl;
+
+    // Create IoCtx from remote cluster using pool name
+    if (!m_parent_spec.pool_name.empty()) {
+      r = m_remote_parent_cluster->ioctx_create(
+        m_parent_spec.pool_name.c_str(), m_parent_io_ctx);
+      if (r < 0) {
+        lderr(cct) << "failed to create ioctx for remote parent pool '"
+                   << m_parent_spec.pool_name << "': "
+                   << cpp_strerror(r) << dendl;
+        m_remote_parent_cluster.reset();
+        finish(r);
+        return;
+      }
+    } else {
+      // Fallback to pool_id (for backward compatibility, though this may fail)
+      r = m_remote_parent_cluster->ioctx_create2(
+        m_parent_spec.pool_id, m_parent_io_ctx);
+      if (r < 0) {
+        lderr(cct) << "failed to create ioctx for remote parent pool: "
+                   << cpp_strerror(r) << dendl;
+        m_remote_parent_cluster.reset();
+        finish(r);
+        return;
+      }
+    }
+
+    if (!m_parent_spec.pool_namespace.empty()) {
+      m_parent_io_ctx.set_namespace(m_parent_spec.pool_namespace);
+    }
+  } else {
+    // Local parent - use existing code path
+    r = util::create_ioctx(m_image_ctx.md_ctx, "parent image",
+                           m_parent_spec.pool_id,
+                           m_parent_spec.pool_namespace, &m_parent_io_ctx);
+    if (r < 0) {
+      finish(r);
+      return;
+    }
   }
 
   m_parent_header_name = util::header_name(m_parent_spec.image_id);
@@ -292,6 +353,11 @@ template <typename I>
 void DetachChildRequest<I>::finish(int r) {
   auto cct = m_image_ctx.cct;
   ldout(cct, 5) << "r=" << r << dendl;
+
+  // Clean up remote cluster connection if it was created
+  if (m_remote_parent_cluster) {
+    m_remote_parent_cluster.reset();
+  }
 
   m_on_finish->complete(r);
   delete this;

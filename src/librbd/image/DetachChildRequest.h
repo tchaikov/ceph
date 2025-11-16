@@ -71,6 +71,10 @@ private:
   cls::rbd::ParentImageSpec m_parent_spec;
   std::string m_parent_header_name;
 
+  // Remote cluster connection for cross-cluster parents
+  std::shared_ptr<librados::Rados> m_remote_parent_cluster;
+  ParentImageInfo m_parent_info;
+
   cls::rbd::SnapshotNamespace m_parent_snap_namespace;
   std::string m_parent_snap_name;
 
