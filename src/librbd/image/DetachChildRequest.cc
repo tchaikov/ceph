@@ -364,6 +364,9 @@ void DetachChildRequest<I>::finish(int r) {
 
   // Clean up remote cluster connection if it was created
   if (m_remote_parent_cluster) {
+    ldout(cct, 10) << "closing parent IoCtx before resetting cluster" << dendl;
+    // Close IoCtx before destroying the cluster to avoid hang
+    m_parent_io_ctx.close();
     ldout(cct, 10) << "resetting remote cluster connection" << dendl;
     m_remote_parent_cluster.reset();
     ldout(cct, 10) << "remote cluster connection reset complete" << dendl;
