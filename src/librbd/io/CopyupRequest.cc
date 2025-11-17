@@ -655,7 +655,8 @@ bool CopyupRequest<I>::should_fetch_from_s3() {
   auto cct = m_image_ctx->cct;
 
   // Check if S3 back-fill feature is enabled globally
-  if (!cct->_conf.template get_val<bool>("rbd_s3_fetch_enabled")) {
+  bool s3_enabled = cct->_conf.template get_val<bool>("rbd_s3_fetch_enabled");
+  if (!s3_enabled) {
     ldout(cct, 20) << "S3 fetch disabled by config" << dendl;
     return false;
   }
@@ -669,7 +670,6 @@ bool CopyupRequest<I>::should_fetch_from_s3() {
   // Check if parent is a standalone clone (not snapshot-based)
   if (m_image_ctx->parent_md.parent_type != PARENT_TYPE_STANDALONE &&
       m_image_ctx->parent_md.parent_type != PARENT_TYPE_REMOTE_STANDALONE) {
-    ldout(cct, 20) << "parent is not standalone, S3 fetch not applicable" << dendl;
     return false;
   }
 
@@ -679,7 +679,7 @@ bool CopyupRequest<I>::should_fetch_from_s3() {
     return false;
   }
 
-  ldout(cct, 15) << "S3 back-fill conditions met for parent object" << dendl;
+  ldout(cct, 10) << "S3 back-fill enabled for object " << m_object_no << dendl;
   return true;
 }
 
@@ -863,24 +863,6 @@ void CopyupRequest<I>::retry_read_from_parent() {
 }
 
 template <typename I>
-std::string CopyupRequest<I>::construct_s3_object_key(uint64_t object_no) {
-  auto cct = m_image_ctx->cct;
-
-  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
-  if (m_image_ctx->parent == nullptr) {
-    lderr(cct) << "parent detached during S3 key construction" << dendl;
-    return "";
-  }
-
-  // Get parent object name (this already includes the full RADOS object name)
-  // For example: "rbd_data.1087432560df.0000000000000001"
-  std::string parent_object_name = m_image_ctx->parent->get_object_name(object_no);
-
-  // S3 object key should match the RADOS object name exactly (1:1 mapping)
-  return parent_object_name;
-}
-
-template <typename I>
 void CopyupRequest<I>::fetch_from_s3_async() {
   auto cct = m_image_ctx->cct;
   ldout(cct, 10) << "starting S3 fetch for object " << m_object_no << dendl;
@@ -904,29 +886,28 @@ void CopyupRequest<I>::fetch_from_s3_async() {
     return;
   }
 
-  // Construct S3 object key
-  std::string object_key = construct_s3_object_key(m_object_no);
-  if (object_key.empty()) {
-    lderr(cct) << "failed to construct S3 object key" << dendl;
-    unlock_parent_object();
-    finish(-EINVAL);
-    return;
-  }
+  // Build full S3 URL for the raw image
+  std::string s3_url = s3_config.build_url();
 
-  // Build full S3 URL
-  std::string s3_url = s3_config.build_url(object_key);
+  // Calculate byte range based on object number
+  // Each RBD object maps to a contiguous range in the raw image
+  uint64_t object_size = m_image_ctx->get_object_size();
+  uint64_t byte_start = m_object_no * object_size;
+  uint64_t byte_length = object_size;
 
-  ldout(cct, 10) << "S3 URL: " << s3_url << dendl;
+  ldout(cct, 10) << "S3 URL: " << s3_url
+                 << ", fetching range: bytes=" << byte_start
+                 << "-" << (byte_start + byte_length - 1) << dendl;
 
   parent_locker.unlock();
 
-  // Create S3 fetcher and fetch object
+  // Create S3 fetcher and fetch object range
   S3ObjectFetcher fetcher(cct);
 
   auto ctx = util::create_context_callback<
     CopyupRequest<I>, &CopyupRequest<I>::handle_s3_fetch>(this);
 
-  fetcher.fetch(s3_url, &m_s3_data, ctx);
+  fetcher.fetch(s3_url, &m_s3_data, ctx, byte_start, byte_length);
 }
 
 template <typename I>

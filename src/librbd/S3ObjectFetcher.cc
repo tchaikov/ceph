@@ -35,7 +35,9 @@ size_t S3ObjectFetcher::write_callback(void* ptr, size_t size, size_t nmemb,
 }
 
 CURL* S3ObjectFetcher::setup_curl_handle(const std::string& url,
-                                          bufferlist* data) {
+                                          bufferlist* data,
+                                          uint64_t byte_start,
+                                          uint64_t byte_length) {
   CURL* curl_handle = curl_easy_init();
   if (!curl_handle) {
     lderr(m_cct) << "curl_easy_init() failed" << dendl;
@@ -47,6 +49,14 @@ CURL* S3ObjectFetcher::setup_curl_handle(const std::string& url,
 
   // Set HTTP GET method
   curl_easy_setopt(curl_handle, CURLOPT_HTTPGET, 1L);
+
+  // Set HTTP Range header if byte range is specified
+  if (byte_length > 0) {
+    uint64_t byte_end = byte_start + byte_length - 1;
+    std::string range_header = std::to_string(byte_start) + "-" + std::to_string(byte_end);
+    curl_easy_setopt(curl_handle, CURLOPT_RANGE, range_header.c_str());
+    ldout(m_cct, 15) << "setting HTTP Range: bytes=" << range_header << dendl;
+  }
 
   // Set write callback to receive response data
   curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, write_callback);
@@ -85,7 +95,9 @@ CURL* S3ObjectFetcher::setup_curl_handle(const std::string& url,
 
 int S3ObjectFetcher::fetch_with_retry(const std::string& url,
                                        bufferlist* data,
-                                       uint32_t max_retries) {
+                                       uint32_t max_retries,
+                                       uint64_t byte_start,
+                                       uint64_t byte_length) {
   int retry_count = 0;
   int last_error = 0;
 
@@ -97,7 +109,7 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
                        << " for url: " << url << dendl;
     }
 
-    CURL* curl_handle = setup_curl_handle(url, data);
+    CURL* curl_handle = setup_curl_handle(url, data, byte_start, byte_length);
     if (!curl_handle) {
       return -ENOMEM;
     }
@@ -114,10 +126,11 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
     curl_easy_getinfo(curl_handle, CURLINFO_EFFECTIVE_URL, &effective_url);
 
     if (res == CURLE_OK) {
-      // Check HTTP status code
-      if (http_code == 200) {
+      // Check HTTP status code - accept both 200 (full content) and 206 (partial content)
+      if (http_code == 200 || http_code == 206) {
         ldout(m_cct, 10) << "successfully fetched " << data->length()
-                         << " bytes from " << url << dendl;
+                         << " bytes from " << url
+                         << " (HTTP " << http_code << ")" << dendl;
         curl_easy_cleanup(curl_handle);
         return 0;
       } else if (http_code == 404) {
@@ -128,6 +141,10 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
         lderr(m_cct) << "S3 access forbidden (403): " << url << dendl;
         curl_easy_cleanup(curl_handle);
         return -EACCES;
+      } else if (http_code == 416) {
+        lderr(m_cct) << "S3 range not satisfiable (416): " << url << dendl;
+        curl_easy_cleanup(curl_handle);
+        return -EINVAL;
       } else if (http_code >= 500 && http_code < 600) {
         // Server error, retry
         ldout(m_cct, 10) << "S3 server error " << http_code
@@ -181,9 +198,18 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
 
 void S3ObjectFetcher::fetch(const std::string& url,
                              bufferlist* data,
-                             Context* on_finish) {
+                             Context* on_finish,
+                             uint64_t byte_start,
+                             uint64_t byte_length) {
   auto cct = m_cct;
-  ldout(cct, 10) << "fetching from S3: " << url << dendl;
+
+  if (byte_length > 0) {
+    ldout(cct, 10) << "fetching from S3: " << url
+                   << " range: bytes=" << byte_start << "-"
+                   << (byte_start + byte_length - 1) << dendl;
+  } else {
+    ldout(cct, 10) << "fetching from S3: " << url << " (full object)" << dendl;
+  }
 
   ceph_assert(data != nullptr);
   ceph_assert(on_finish != nullptr);
@@ -195,7 +221,7 @@ void S3ObjectFetcher::fetch(const std::string& url,
   uint32_t max_retries = cct->_conf.get_val<uint64_t>("rbd_s3_fetch_max_retries");
 
   // Perform fetch with retry
-  int r = fetch_with_retry(url, data, max_retries);
+  int r = fetch_with_retry(url, data, max_retries, byte_start, byte_length);
 
   // Complete callback
   on_finish->complete(r);

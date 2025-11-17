@@ -90,6 +90,8 @@ struct S3Config {
   uint32_t timeout_ms = 30000;
   uint32_t max_retries = 3;
   std::string prefix;
+  std::string image_name;   // Name of the image object in S3 bucket
+  std::string image_format; // Format of the image (currently only "raw" supported)
 
   S3Config() = default;
 
@@ -97,7 +99,9 @@ struct S3Config {
   bool is_valid() const {
     return enabled &&
            !bucket.empty() &&
-           !endpoint.empty();
+           !endpoint.empty() &&
+           !image_name.empty() &&
+           !image_format.empty();
     // Note: access_key and secret_key are optional for anonymous access
     // region and prefix are also optional
   }
@@ -107,8 +111,8 @@ struct S3Config {
     return access_key.empty() && secret_key.empty();
   }
 
-  /// Build full S3 URL for an object key
-  std::string build_url(const std::string& object_key) const {
+  /// Build full S3 URL for the image object
+  std::string build_url() const {
     std::string url = endpoint;
     if (url.back() != '/') {
       url += '/';
@@ -121,7 +125,7 @@ struct S3Config {
         url += '/';
       }
     }
-    url += object_key;
+    url += image_name;
     return url;
   }
 

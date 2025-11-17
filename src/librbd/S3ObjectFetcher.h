@@ -39,31 +39,39 @@ public:
   ~S3ObjectFetcher();
 
   /**
-   * Fetch object from S3 via HTTP GET
+   * Fetch object from S3 via HTTP GET with optional range
    *
    * Performs an HTTP GET request to fetch an object from S3 storage.
+   * Supports HTTP range requests for fetching partial objects.
    * Currently synchronous, will be made async in future optimization.
    *
    * @param url Full S3 URL (e.g., "https://bucket.s3.amazonaws.com/key")
    * @param data Output buffer to store fetched data
    * @param on_finish Completion callback (called with return code)
+   * @param byte_start Start byte offset for range request (0 = beginning)
+   * @param byte_length Number of bytes to fetch (0 = fetch entire object)
    */
   void fetch(
     const std::string& url,
     bufferlist* data,
-    Context* on_finish);
+    Context* on_finish,
+    uint64_t byte_start = 0,
+    uint64_t byte_length = 0);
 
 private:
   CephContext* m_cct;
 
   /**
-   * Setup curl handle for HTTP GET request
+   * Setup curl handle for HTTP GET request with optional range
    *
    * @param url Target URL
    * @param data Output buffer for response data
+   * @param byte_start Start byte offset for range request
+   * @param byte_length Number of bytes to fetch
    * @return Configured CURL handle
    */
-  CURL* setup_curl_handle(const std::string& url, bufferlist* data);
+  CURL* setup_curl_handle(const std::string& url, bufferlist* data,
+                          uint64_t byte_start, uint64_t byte_length);
 
   /**
    * Perform HTTP GET with retry logic
@@ -71,12 +79,16 @@ private:
    * @param url Target URL
    * @param data Output buffer
    * @param max_retries Maximum number of retry attempts
+   * @param byte_start Start byte offset for range request
+   * @param byte_length Number of bytes to fetch
    * @return 0 on success, negative error code on failure
    */
   int fetch_with_retry(
     const std::string& url,
     bufferlist* data,
-    uint32_t max_retries);
+    uint32_t max_retries,
+    uint64_t byte_start,
+    uint64_t byte_length);
 
   /**
    * libcurl write callback for response data

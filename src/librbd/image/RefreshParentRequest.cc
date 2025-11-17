@@ -246,7 +246,7 @@ void RefreshParentRequest<I>::load_parent_s3_config() {
   // Load S3 configuration from parent image metadata
   // Metadata keys: s3.enabled, s3.bucket, s3.endpoint, s3.region,
   //                s3.access_key, s3.secret_key, s3.prefix,
-  //                s3.timeout_ms, s3.max_retries
+  //                s3.timeout_ms, s3.max_retries, s3.image_name, s3.image_format
 
   S3Config& s3_config = m_parent_image_ctx->s3_config;
 
@@ -283,6 +283,8 @@ void RefreshParentRequest<I>::load_parent_s3_config() {
   get_metadata("s3.access_key", s3_config.access_key);
   get_metadata("s3.secret_key", s3_config.secret_key);
   get_metadata("s3.prefix", s3_config.prefix);
+  get_metadata("s3.image_name", s3_config.image_name);
+  get_metadata("s3.image_format", s3_config.image_format);
 
   std::string timeout_str, retries_str;
   if (get_metadata("s3.timeout_ms", timeout_str)) {

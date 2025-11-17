@@ -147,7 +147,6 @@ private:
   void write_back_to_parent();
   void handle_write_back_to_parent(int r);
   void unlock_parent_object();
-  std::string construct_s3_object_key(uint64_t object_no);
 };
 
 } // namespace io
