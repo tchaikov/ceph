@@ -160,6 +160,14 @@ void DetachChildRequest<I>::handle_clone_v2_child_detach(int r) {
     return;
   }
 
+  // For standalone clones (snap_id == CEPH_NOSNAP), skip snapshot operations
+  // as they don't clone from a snapshot and there's nothing to clean up
+  if (m_parent_spec.snap_id == CEPH_NOSNAP) {
+    ldout(cct, 10) << "standalone clone - skipping snapshot cleanup" << dendl;
+    finish(0);
+    return;
+  }
+
   clone_v2_get_snapshot();
 }
 
