@@ -364,10 +364,14 @@ void DetachChildRequest<I>::finish(int r) {
 
   // Clean up remote cluster connection if it was created
   if (m_remote_parent_cluster) {
+    ldout(cct, 10) << "resetting remote cluster connection" << dendl;
     m_remote_parent_cluster.reset();
+    ldout(cct, 10) << "remote cluster connection reset complete" << dendl;
   }
 
+  ldout(cct, 10) << "invoking completion callback" << dendl;
   m_on_finish->complete(r);
+  ldout(cct, 10) << "completion callback returned" << dendl;
   delete this;
 }
 
