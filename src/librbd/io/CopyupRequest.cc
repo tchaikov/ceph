@@ -414,6 +414,32 @@ void CopyupRequest<I>::copyup() {
   ldout(cct, 20) << "oid=" << m_oid << dendl;
 
   bool copy_on_read = m_pending_requests.empty();
+  std::cerr << "[COPYUP] object " << m_object_no << ": copy_on_read=" << copy_on_read
+            << ", pending_requests=" << m_pending_requests.size()
+            << ", copyup_data.length()=" << m_copyup_data.length() << std::endl;
+
+  // For S3 fetch during flatten, we may have fetched data from S3 into m_copyup_data
+  // for an object that already exists in the child. In this case, we need to use the
+  // copy-on-read path (copyup with empty snapshot context) to properly overwrite
+  // the existing child object.
+  bool s3_fetch_for_existing_object = false;
+  if (!copy_on_read && m_copyup_data.length() > 0) {
+    // Check if all pending writes are empty (flatten case)
+    bool all_writes_empty = true;
+    for (auto req : m_pending_requests) {
+      std::cerr << "[COPYUP] checking pending request, is_empty=" << req->is_empty_write_op() << std::endl;
+      if (!req->is_empty_write_op()) {
+        all_writes_empty = false;
+        break;
+      }
+    }
+    if (all_writes_empty) {
+      s3_fetch_for_existing_object = true;
+      std::cerr << "[COPYUP] S3 fetch for existing object, using copy-on-read path!" << std::endl;
+      ldout(cct, 10) << "S3 fetch for existing object, using copy-on-read path" << dendl;
+    }
+  }
+
   bool deep_copyup = !snapc.snaps.empty() && !m_copyup_is_zero;
   if (m_copyup_is_zero) {
     m_copyup_data.clear();
@@ -425,10 +451,18 @@ void CopyupRequest<I>::copyup() {
     copyup_op.exec("rbd", "copyup", m_copyup_data);
     ObjectRequest<I>::add_write_hint(*m_image_ctx, &copyup_op);
     ++m_pending_copyups;
+  } else if (s3_fetch_for_existing_object) {
+    // For S3 fetch of existing objects, use write_full() instead of copyup
+    // because copyup skips writing if the object already exists
+    std::cerr << "[COPYUP] Using write_full for S3 fetch of existing object" << std::endl;
+    ldout(cct, 10) << "using write_full for S3 fetch of existing object" << dendl;
+    copyup_op.write_full(m_copyup_data);
+    ObjectRequest<I>::add_write_hint(*m_image_ctx, &copyup_op);
+    ++m_pending_copyups;
   }
 
   librados::ObjectWriteOperation write_op;
-  if (!copy_on_read) {
+  if (!copy_on_read && !s3_fetch_for_existing_object) {
     if (!deep_copyup) {
       write_op.exec("rbd", "copyup", m_copyup_data);
       ObjectRequest<I>::add_write_hint(*m_image_ctx, &write_op);
@@ -571,6 +605,13 @@ bool CopyupRequest<I>::is_copyup_required() {
     return true;
   }
 
+  // For flatten operations with S3-backed parents, we may have fetched data
+  // from S3 that needs to be written to the child, even if the original
+  // write request was empty. Check if we have non-zero copyup data.
+  if (m_copyup_data.length() > 0) {
+    return true;
+  }
+
   for (auto req : m_pending_requests) {
     if (!req->is_empty_write_op()) {
       return true;
@@ -657,25 +698,39 @@ bool CopyupRequest<I>::should_fetch_from_s3() {
   // Check if S3 back-fill feature is enabled globally
   bool s3_enabled = cct->_conf.template get_val<bool>("rbd_s3_fetch_enabled");
   if (!s3_enabled) {
-    ldout(cct, 20) << "S3 fetch disabled by config" << dendl;
+    ldout(cct, 10) << "S3 fetch disabled by config" << dendl;
     return false;
   }
 
   // Check if we have a parent image
   RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
   if (m_image_ctx->parent == nullptr) {
+    ldout(cct, 10) << "no parent image" << dendl;
     return false;
   }
 
   // Check if parent is a standalone clone (not snapshot-based)
-  if (m_image_ctx->parent_md.parent_type != PARENT_TYPE_STANDALONE &&
-      m_image_ctx->parent_md.parent_type != PARENT_TYPE_REMOTE_STANDALONE) {
+  // For standalone clones, parent_type should be PARENT_TYPE_STANDALONE or PARENT_TYPE_REMOTE_STANDALONE
+  auto parent_type = m_image_ctx->parent_md.parent_type;
+  ldout(cct, 10) << "parent_type=" << parent_type << dendl;
+
+  if (parent_type != PARENT_TYPE_STANDALONE &&
+      parent_type != PARENT_TYPE_REMOTE_STANDALONE) {
+    ldout(cct, 10) << "parent is not standalone type" << dendl;
     return false;
   }
 
   // Check if parent has S3 configuration
-  if (!m_image_ctx->parent->s3_config.is_valid()) {
-    ldout(cct, 20) << "parent S3 config invalid or missing" << dendl;
+  const S3Config& s3_config = m_image_ctx->parent->s3_config;
+  ldout(cct, 10) << "parent S3 config: enabled=" << s3_config.enabled
+                 << ", bucket=" << s3_config.bucket
+                 << ", endpoint=" << s3_config.endpoint
+                 << ", image_name=" << s3_config.image_name
+                 << ", image_format=" << s3_config.image_format
+                 << ", is_valid=" << s3_config.is_valid() << dendl;
+
+  if (!s3_config.is_valid()) {
+    ldout(cct, 10) << "parent S3 config invalid or missing" << dendl;
     return false;
   }
 
@@ -716,21 +771,28 @@ void CopyupRequest<I>::check_parent_object_exists() {
 template <typename I>
 void CopyupRequest<I>::handle_check_parent_object_exists(int r) {
   auto cct = m_image_ctx->cct;
-  ldout(cct, 15) << "parent object existence check result: r=" << r << dendl;
+  ldout(cct, 15) << "parent object existence check for object " << m_object_no
+                 << ": r=" << r << dendl;
 
-  if (r == -ENOENT) {
-    // Object doesn't exist in RADOS, fetch from S3
-    ldout(cct, 15) << "parent object not in RADOS, fetching from S3" << dendl;
+  std::cerr << "[S3_FETCH] handle_check_parent_object_exists for object " << m_object_no
+            << ": r=" << r << std::endl;
+
+  // For S3-backed parents, ALWAYS fetch from S3 directly, even if parent object
+  // exists in RADOS. This is because:
+  // 1. The parent object in RADOS may contain stale/incorrect data
+  // 2. We want to ensure consistency with the authoritative S3 source
+  // 3. S3 fetch will write-back to parent, updating the RADOS copy
+  if (r == -ENOENT || r == 0) {
+    // Object doesn't exist in RADOS, OR it exists but we want to re-fetch from S3
+    ldout(cct, 15) << "fetching from S3 (exists in RADOS: " << (r == 0) << ")" << dendl;
+    std::cerr << "[S3_FETCH] Object " << m_object_no << " - FETCHING FROM S3"
+              << " (parent_exists_in_rados=" << (r == 0) << ")" << std::endl;
     fetch_from_s3_with_lock();
   } else if (r < 0) {
     // Stat failed for other reason, fall back to normal read
-    // (which will handle the error appropriately)
     ldout(cct, 10) << "parent object stat failed: " << cpp_strerror(r)
                    << ", falling back to normal read" << dendl;
-    do_read_from_parent();
-  } else {
-    // Object exists in RADOS, do normal read
-    ldout(cct, 15) << "parent object exists in RADOS, reading normally" << dendl;
+    std::cerr << "[S3_FETCH] Object " << m_object_no << " stat failed, falling back to normal read" << std::endl;
     do_read_from_parent();
   }
 }
@@ -816,10 +878,14 @@ void CopyupRequest<I>::handle_lock_parent_object(int r) {
   auto cct = m_image_ctx->cct;
   ldout(cct, 15) << "lock result: r=" << r << dendl;
 
+  std::cerr << "[S3_FETCH] handle_lock_parent_object for object " << m_object_no
+            << ": r=" << r << std::endl;
+
   if (r == 0) {
     // Lock acquired successfully!
     m_s3_lock_acquired = true;
     ldout(cct, 10) << "acquired S3 fetch lock, proceeding to fetch from S3" << dendl;
+    std::cerr << "[S3_FETCH] Lock acquired for object " << m_object_no << ", fetching from S3" << std::endl;
 
     // Fetch object from S3
     fetch_from_s3_async();
@@ -827,11 +893,13 @@ void CopyupRequest<I>::handle_lock_parent_object(int r) {
   } else if (r == -EBUSY || r == -EEXIST) {
     // Lock is held by another child - they're fetching from S3
     ldout(cct, 10) << "lock busy, another child is fetching from S3, will retry" << dendl;
+    std::cerr << "[S3_FETCH] Lock busy for object " << m_object_no << ", will retry" << std::endl;
     retry_read_from_parent();
 
   } else {
     // Lock operation failed for other reason
     lderr(cct) << "failed to acquire S3 fetch lock: " << cpp_strerror(r) << dendl;
+    std::cerr << "[S3_FETCH] Lock FAILED for object " << m_object_no << ": " << cpp_strerror(r) << std::endl;
     finish(r);
   }
 }
@@ -915,8 +983,12 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
   auto cct = m_image_ctx->cct;
   ldout(cct, 10) << "S3 fetch result: r=" << r << ", bytes=" << m_s3_data.length() << dendl;
 
+  std::cerr << "[S3_FETCH] handle_s3_fetch for object " << m_object_no
+            << ": r=" << r << ", bytes=" << m_s3_data.length() << std::endl;
+
   if (r < 0) {
     lderr(cct) << "failed to fetch object from S3: " << cpp_strerror(r) << dendl;
+    std::cerr << "[S3_FETCH] S3 fetch FAILED for object " << m_object_no << ": " << cpp_strerror(r) << std::endl;
     unlock_parent_object();
     finish(r);
     return;
@@ -925,10 +997,12 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
   // Validate we got data
   if (m_s3_data.length() == 0) {
     ldout(cct, 5) << "warning: S3 object exists but is empty" << dendl;
+    std::cerr << "[S3_FETCH] WARNING: S3 returned empty data for object " << m_object_no << std::endl;
   }
 
   ldout(cct, 10) << "successfully fetched " << m_s3_data.length()
                  << " bytes from S3, writing back to parent" << dendl;
+  std::cerr << "[S3_FETCH] Got " << m_s3_data.length() << " bytes from S3 for object " << m_object_no << std::endl;
 
   // Write S3 data back to parent RADOS pool
   write_back_to_parent();
