@@ -606,31 +606,24 @@ bool CopyupRequest<I>::is_copyup_required() {
     return true;
   }
 
-  // For flatten operations with S3-backed parents, we may have fetched data
-  // from S3 that needs to be written to the child, even if the original
-  // write request was empty. Check if we have non-zero copyup data.
-  if (m_copyup_data.length() > 0) {
-    return true;
-  }
+  // If copyup data is all zeros and there are no pending writes, skip copyup.
+  // This avoids copying empty/zero regions during flatten operations.
+  // NOTE: We removed the check for "m_copyup_data.length() > 0" here because
+  // having data doesn't mean we need copyup - the data might be all zeros.
+  // The m_copyup_is_zero check above already handles non-zero data.
 
-  // For S3-backed parents, we need to proceed with copyup even if the parent
-  // object doesn't exist in RADOS, so that the S3 fetch can be triggered.
-  // Check if parent has S3 configuration.
-  {
-    RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
-    if (m_image_ctx->parent != nullptr) {
-      auto parent_type = m_image_ctx->parent_md.parent_type;
-      if (parent_type == PARENT_TYPE_STANDALONE ||
-          parent_type == PARENT_TYPE_REMOTE_STANDALONE) {
-        const S3Config& s3_config = m_image_ctx->parent->s3_config;
-        if (s3_config.is_valid()) {
-          auto cct = m_image_ctx->cct;
-          ldout(cct, 10) << "copyup required: parent has S3 config" << dendl;
-          return true;
-        }
-      }
-    }
-  }
+  // NOTE: We do NOT unconditionally force copyup for S3-backed parents anymore.
+  // The previous approach caused flatten to process ALL objects (entire virtual
+  // size), not just objects with actual data. This led to 1GB flatten for images
+  // with only 16MB of data.
+  //
+  // Instead, we rely on:
+  // 1. The normal read_from_parent flow which checks if parent object exists
+  // 2. For S3-backed parents, check_parent_object_exists() will trigger S3 fetch
+  //    only if there's a possibility of data existing
+  // 3. If S3 fetch succeeds and returns data, m_copyup_data will be populated,
+  //    making this function return true (see check above)
+  // 4. If no data exists (neither in RADOS nor S3), copyup is correctly skipped
 
   for (auto req : m_pending_requests) {
     if (!req->is_empty_write_op()) {
@@ -1007,8 +1000,28 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
             << ": r=" << r << ", bytes=" << m_s3_data.length() << std::endl;
 
   if (r < 0) {
+    // For sparse images, many objects don't exist in S3.
+    // S3 returns:
+    //   -ENOENT (404): Object/range doesn't exist
+    //   -EINVAL (416): Byte range not satisfiable (beyond file size)
+    //
+    // These are expected for sparse images and should NOT fail the operation.
+    // Instead, treat them as "no data to copy" and complete successfully.
+    if (r == -ENOENT || r == -EINVAL) {
+      ldout(cct, 10) << "object " << m_object_no
+                     << " does not exist in S3 (sparse image), skipping copyup"
+                     << dendl;
+      std::cerr << "[S3_FETCH] Object " << m_object_no
+                << " not in S3 (sparse), skipping: " << cpp_strerror(r) << std::endl;
+      unlock_parent_object();
+      finish(0);  // Success - no data to copy
+      return;
+    }
+
+    // Other errors (network, timeout, auth, etc.) are real failures
     lderr(cct) << "failed to fetch object from S3: " << cpp_strerror(r) << dendl;
-    std::cerr << "[S3_FETCH] S3 fetch FAILED for object " << m_object_no << ": " << cpp_strerror(r) << std::endl;
+    std::cerr << "[S3_FETCH] S3 fetch FAILED for object " << m_object_no
+              << ": " << cpp_strerror(r) << std::endl;
     unlock_parent_object();
     finish(r);
     return;
@@ -1016,8 +1029,13 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
 
   // Validate we got data
   if (m_s3_data.length() == 0) {
-    ldout(cct, 5) << "warning: S3 object exists but is empty" << dendl;
-    std::cerr << "[S3_FETCH] WARNING: S3 returned empty data for object " << m_object_no << std::endl;
+    ldout(cct, 10) << "S3 returned empty data for object " << m_object_no
+                   << " (sparse region), skipping copyup" << dendl;
+    std::cerr << "[S3_FETCH] Object " << m_object_no
+              << " has no data in S3 (sparse), skipping" << std::endl;
+    unlock_parent_object();
+    finish(0);  // Success - no data to copy
+    return;
   }
 
   ldout(cct, 10) << "successfully fetched " << m_s3_data.length()
