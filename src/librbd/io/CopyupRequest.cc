@@ -612,6 +612,25 @@ bool CopyupRequest<I>::is_copyup_required() {
     return true;
   }
 
+  // For S3-backed parents, we need to proceed with copyup even if the parent
+  // object doesn't exist in RADOS, so that the S3 fetch can be triggered.
+  // Check if parent has S3 configuration.
+  {
+    RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+    if (m_image_ctx->parent != nullptr) {
+      auto parent_type = m_image_ctx->parent_md.parent_type;
+      if (parent_type == PARENT_TYPE_STANDALONE ||
+          parent_type == PARENT_TYPE_REMOTE_STANDALONE) {
+        const S3Config& s3_config = m_image_ctx->parent->s3_config;
+        if (s3_config.is_valid()) {
+          auto cct = m_image_ctx->cct;
+          ldout(cct, 10) << "copyup required: parent has S3 config" << dendl;
+          return true;
+        }
+      }
+    }
+  }
+
   for (auto req : m_pending_requests) {
     if (!req->is_empty_write_op()) {
       return true;
