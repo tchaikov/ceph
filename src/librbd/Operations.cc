@@ -2,6 +2,7 @@
 // vim: ts=8 sw=2 smarttab
 
 #include "cls/rbd/cls_rbd_types.h"
+#include "cls/rbd/cls_rbd_client.h"
 #include "librbd/Operations.h"
 #include "common/dout.h"
 #include "common/errno.h"
@@ -349,7 +350,21 @@ int Operations<I>::flatten(ProgressContext &prog_ctx) {
 
   {
     RWLock::RLocker parent_locker(m_image_ctx.parent_lock);
-    if (m_image_ctx.parent_md.spec.pool_id == -1) {
+    bool has_traditional_parent = (m_image_ctx.parent_md.spec.pool_id != -1);
+    bool has_metadata_parent = false;
+
+    // Check for metadata-based parent (e.g., cross-cluster standalone clone)
+    if (!has_traditional_parent) {
+      std::string parent_type;
+      int r = cls_client::metadata_get(&m_image_ctx.md_ctx, m_image_ctx.header_oid,
+                                       "parent.type", &parent_type);
+      if (r >= 0 && !parent_type.empty()) {
+        has_metadata_parent = true;
+        ldout(cct, 10) << "detected metadata-based parent: " << parent_type << dendl;
+      }
+    }
+
+    if (!has_traditional_parent && !has_metadata_parent) {
       lderr(cct) << "image has no parent" << dendl;
       return -EINVAL;
     }
