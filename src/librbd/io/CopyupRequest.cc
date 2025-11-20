@@ -433,7 +433,8 @@ void CopyupRequest<I>::copyup() {
         break;
       }
     }
-    if (all_writes_empty) {
+    // Only use the S3 fetch path if the parent is actually S3-backed
+    if (all_writes_empty && should_fetch_from_s3()) {
       s3_fetch_for_existing_object = true;
       std::cerr << "[COPYUP] S3 fetch for existing object, using copy-on-read path!" << std::endl;
       ldout(cct, 10) << "S3 fetch for existing object, using copy-on-read path" << dendl;
