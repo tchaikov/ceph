@@ -6,35 +6,37 @@
 
 #include "include/buffer.h"
 #include "include/Context.h"
+#include "librbd/Types.h"
 #include <string>
 
 typedef void CURL;
+struct curl_slist;
 
 class CephContext;
 
 namespace librbd {
 
 /**
- * S3ObjectFetcher - Simple HTTP client for fetching objects from S3
+ * S3ObjectFetcher - HTTP client for fetching objects from S3 with AWS Signature V4 auth
  *
- * This class provides asynchronous object fetching from S3 storage using libcurl.
- * It supports anonymous S3 access (no authentication) for use cases where objects
- * are publicly accessible.
+ * This class provides object fetching from S3 storage using libcurl.
+ * It supports AWS Signature V4 authentication for secure access.
  *
  * Key features:
- * - Anonymous S3 access (simple HTTP GET)
+ * - AWS Signature V4 authentication
+ * - Anonymous S3 access (when no credentials provided)
  * - Timeout and retry handling
- * - Async operation (planned for future)
  * - libcurl-based (reuses Ceph's existing dependency)
  */
 class S3ObjectFetcher {
 public:
   /**
-   * Construct S3ObjectFetcher
+   * Construct S3ObjectFetcher with S3 configuration
    *
    * @param cct Ceph context for logging and configuration
+   * @param s3_config S3 configuration including credentials
    */
-  explicit S3ObjectFetcher(CephContext* cct);
+  S3ObjectFetcher(CephContext* cct, const S3Config& s3_config);
 
   ~S3ObjectFetcher();
 
@@ -43,7 +45,7 @@ public:
    *
    * Performs an HTTP GET request to fetch an object from S3 storage.
    * Supports HTTP range requests for fetching partial objects.
-   * Currently synchronous, will be made async in future optimization.
+   * Uses AWS Signature V4 authentication if credentials are provided.
    *
    * @param url Full S3 URL (e.g., "https://bucket.s3.amazonaws.com/key")
    * @param data Output buffer to store fetched data
@@ -60,6 +62,32 @@ public:
 
 private:
   CephContext* m_cct;
+  S3Config m_s3_config;
+
+  /**
+   * Extract host from URL (including port if present)
+   */
+  std::string extract_host_from_url(const std::string& url);
+
+  /**
+   * Extract URI path from URL
+   */
+  std::string extract_uri_from_url(const std::string& url);
+
+  /**
+   * Add AWS Signature V4 authentication headers to curl request
+   *
+   * @param curl_handle Curl handle
+   * @param headers Pointer to header list (will be populated)
+   * @param url Full request URL
+   * @param byte_start Start byte offset
+   * @param byte_length Number of bytes
+   */
+  void add_auth_headers(CURL* curl_handle,
+                        struct curl_slist** headers,
+                        const std::string& url,
+                        uint64_t byte_start,
+                        uint64_t byte_length);
 
   /**
    * Setup curl handle for HTTP GET request with optional range
@@ -68,10 +96,12 @@ private:
    * @param data Output buffer for response data
    * @param byte_start Start byte offset for range request
    * @param byte_length Number of bytes to fetch
+   * @param out_headers Output: header list to be freed by caller
    * @return Configured CURL handle
    */
   CURL* setup_curl_handle(const std::string& url, bufferlist* data,
-                          uint64_t byte_start, uint64_t byte_length);
+                          uint64_t byte_start, uint64_t byte_length,
+                          struct curl_slist** out_headers);
 
   /**
    * Perform HTTP GET with retry logic

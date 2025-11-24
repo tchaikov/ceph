@@ -2,11 +2,13 @@
 // vim: ts=8 sw=2 smarttab
 
 #include "librbd/S3ObjectFetcher.h"
+#include "librbd/io/AWSV4Signer.h"
 #include "common/dout.h"
 #include "common/errno.h"
 #include "include/ceph_assert.h"
 
 #include <curl/curl.h>
+#include <regex>
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
@@ -14,8 +16,8 @@
 
 namespace librbd {
 
-S3ObjectFetcher::S3ObjectFetcher(CephContext* cct)
-  : m_cct(cct) {
+S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config)
+  : m_cct(cct), m_s3_config(s3_config) {
   ldout(m_cct, 20) << "S3ObjectFetcher created" << dendl;
 }
 
@@ -34,15 +36,111 @@ size_t S3ObjectFetcher::write_callback(void* ptr, size_t size, size_t nmemb,
   return bytes;
 }
 
+std::string S3ObjectFetcher::extract_host_from_url(const std::string& url) {
+  // Extract host from URL like "http://host:port/path" or "https://host/path"
+  std::regex url_regex("^https?://([^/:]+)(:[0-9]+)?(/.*)?$");
+  std::smatch match;
+  if (std::regex_match(url, match, url_regex)) {
+    std::string host = match[1].str();
+    if (match[2].matched) {
+      // Include port if present
+      host += match[2].str();
+    }
+    return host;
+  }
+  return "";
+}
+
+std::string S3ObjectFetcher::extract_uri_from_url(const std::string& url) {
+  // Extract URI path from URL
+  std::regex url_regex("^https?://[^/]+(/.*)$");
+  std::smatch match;
+  if (std::regex_match(url, match, url_regex)) {
+    return match[1].str();
+  }
+  return "/";
+}
+
+void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
+                                        struct curl_slist** headers,
+                                        const std::string& url,
+                                        uint64_t byte_start,
+                                        uint64_t byte_length) {
+  // Skip authentication if no credentials provided
+  if (m_s3_config.is_anonymous()) {
+    ldout(m_cct, 15) << "using anonymous access (no credentials)" << dendl;
+    // Just add the Range header manually for anonymous access
+    if (byte_length > 0) {
+      uint64_t byte_end = byte_start + byte_length - 1;
+      std::string range_header = "Range: bytes=" + std::to_string(byte_start) +
+                                  "-" + std::to_string(byte_end);
+      *headers = curl_slist_append(*headers, range_header.c_str());
+    }
+    return;
+  }
+
+  std::string region = m_s3_config.region;
+  if (region.empty()) {
+    region = "us-east-1";  // Default region for S3-compatible services
+  }
+
+  io::AWSV4Signer::Credentials creds(
+    m_s3_config.access_key,
+    m_s3_config.secret_key,
+    region,
+    "s3"
+  );
+
+  io::AWSV4Signer signer(creds);
+
+  std::string host = extract_host_from_url(url);
+  std::string uri = extract_uri_from_url(url);
+
+  ldout(m_cct, 15) << "signing request: host=" << host << ", uri=" << uri << dendl;
+
+  // Build additional headers (Range if needed)
+  std::map<std::string, std::string> additional_headers;
+  if (byte_length > 0) {
+    uint64_t byte_end = byte_start + byte_length - 1;
+    std::string range_value = "bytes=" + std::to_string(byte_start) +
+                               "-" + std::to_string(byte_end);
+    additional_headers["range"] = range_value;
+  }
+
+  auto signed_request = signer.sign_request(
+    "GET",
+    host,
+    uri,
+    "",  // No query string
+    additional_headers,
+    io::AWSV4Signer::UNSIGNED_PAYLOAD
+  );
+
+  // Add all signed headers
+  for (const auto& header : signed_request.headers) {
+    std::string header_line = header.first + ": " + header.second;
+    *headers = curl_slist_append(*headers, header_line.c_str());
+    ldout(m_cct, 20) << "adding header: " << header.first << dendl;
+  }
+
+  // Add Authorization header
+  std::string auth_header = "Authorization: " + signed_request.authorization;
+  *headers = curl_slist_append(*headers, auth_header.c_str());
+  ldout(m_cct, 15) << "added AWS Signature V4 authorization" << dendl;
+}
+
 CURL* S3ObjectFetcher::setup_curl_handle(const std::string& url,
                                           bufferlist* data,
                                           uint64_t byte_start,
-                                          uint64_t byte_length) {
+                                          uint64_t byte_length,
+                                          struct curl_slist** out_headers) {
   CURL* curl_handle = curl_easy_init();
   if (!curl_handle) {
     lderr(m_cct) << "curl_easy_init() failed" << dendl;
     return nullptr;
   }
+
+  *out_headers = nullptr;
 
   // Set URL
   curl_easy_setopt(curl_handle, CURLOPT_URL, url.c_str());
@@ -50,12 +148,10 @@ CURL* S3ObjectFetcher::setup_curl_handle(const std::string& url,
   // Set HTTP GET method
   curl_easy_setopt(curl_handle, CURLOPT_HTTPGET, 1L);
 
-  // Set HTTP Range header if byte range is specified
-  if (byte_length > 0) {
-    uint64_t byte_end = byte_start + byte_length - 1;
-    std::string range_header = std::to_string(byte_start) + "-" + std::to_string(byte_end);
-    curl_easy_setopt(curl_handle, CURLOPT_RANGE, range_header.c_str());
-    ldout(m_cct, 15) << "setting HTTP Range: bytes=" << range_header << dendl;
+  // Add AWS Signature V4 authentication headers
+  add_auth_headers(curl_handle, out_headers, url, byte_start, byte_length);
+  if (*out_headers) {
+    curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, *out_headers);
   }
 
   // Set write callback to receive response data
@@ -109,7 +205,8 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
                        << " for url: " << url << dendl;
     }
 
-    CURL* curl_handle = setup_curl_handle(url, data, byte_start, byte_length);
+    struct curl_slist* headers = nullptr;
+    CURL* curl_handle = setup_curl_handle(url, data, byte_start, byte_length, &headers);
     if (!curl_handle) {
       return -ENOMEM;
     }
@@ -131,18 +228,22 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
         ldout(m_cct, 10) << "successfully fetched " << data->length()
                          << " bytes from " << url
                          << " (HTTP " << http_code << ")" << dendl;
+        curl_slist_free_all(headers);
         curl_easy_cleanup(curl_handle);
         return 0;
       } else if (http_code == 404) {
         lderr(m_cct) << "S3 object not found (404): " << url << dendl;
+        curl_slist_free_all(headers);
         curl_easy_cleanup(curl_handle);
         return -ENOENT;
       } else if (http_code == 403) {
         lderr(m_cct) << "S3 access forbidden (403): " << url << dendl;
+        curl_slist_free_all(headers);
         curl_easy_cleanup(curl_handle);
         return -EACCES;
       } else if (http_code == 416) {
         lderr(m_cct) << "S3 range not satisfiable (416): " << url << dendl;
+        curl_slist_free_all(headers);
         curl_easy_cleanup(curl_handle);
         return -EINVAL;
       } else if (http_code >= 500 && http_code < 600) {
@@ -153,6 +254,7 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
       } else {
         lderr(m_cct) << "unexpected HTTP status " << http_code
                      << " from " << url << dendl;
+        curl_slist_free_all(headers);
         curl_easy_cleanup(curl_handle);
         return -EIO;
       }
@@ -174,6 +276,7 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
       }
     }
 
+    curl_slist_free_all(headers);
     curl_easy_cleanup(curl_handle);
 
     // Check if we should retry

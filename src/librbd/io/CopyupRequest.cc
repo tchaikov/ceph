@@ -982,8 +982,8 @@ void CopyupRequest<I>::fetch_from_s3_async() {
 
   parent_locker.unlock();
 
-  // Create S3 fetcher and fetch object range
-  S3ObjectFetcher fetcher(cct);
+  // Create S3 fetcher with credentials and fetch object range
+  S3ObjectFetcher fetcher(cct, s3_config);
 
   auto ctx = util::create_context_callback<
     CopyupRequest<I>, &CopyupRequest<I>::handle_s3_fetch>(this);
