@@ -27,6 +27,7 @@ public:
     std::string object_key;    // S3 object key (image_name)
     std::string access_key;    // S3 access key
     std::string secret_key;    // S3 secret key
+    std::string region;        // AWS region (e.g., "us-east-1")
     std::string image_format;  // Image format: "raw" or "qcow2"
     uint64_t object_size;      // RBD object size (for offset calculation)
   };
@@ -70,6 +71,16 @@ private:
 
   // Perform HTTP Range GET request
   int do_http_range_get(uint64_t offset, uint64_t length, ceph::bufferlist* out_bl);
+
+  // Generate AWS Signature V4 headers for a request
+  void add_auth_headers(CURL* curl, struct curl_slist** headers,
+                       const std::string& url, const std::string& range_header);
+
+  // Extract host from URL
+  std::string extract_host_from_url(const std::string& url);
+
+  // Extract URI path from URL
+  std::string extract_uri_from_url(const std::string& url);
 
   // Thread entry point for async fetch processing
   static void* async_fetch_thread(void* arg);

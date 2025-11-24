@@ -81,6 +81,7 @@ set(librbd_internal_srcs
   io/ObjectRequest.cc
   io/ReadResult.cc
   io/Utils.cc
+  io/AWSV4Signer.cc
   journal/CreateRequest.cc
   journal/DemoteRequest.cc
   journal/ObjectDispatch.cc

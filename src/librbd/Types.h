@@ -86,7 +86,7 @@ struct S3Config {
   std::string endpoint;
   std::string region;
   std::string access_key;
-  std::string secret_key;  // Base64-encoded, encrypted
+  std::string secret_key;  // Note: stored as base64-encoded in metadata, decoded at runtime
   uint32_t timeout_ms = 30000;
   uint32_t max_retries = 3;
   std::string prefix;

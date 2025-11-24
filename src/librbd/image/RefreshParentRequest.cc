@@ -281,7 +281,32 @@ void RefreshParentRequest<I>::load_parent_s3_config() {
   // Read optional fields
   get_metadata("s3.region", s3_config.region);
   get_metadata("s3.access_key", s3_config.access_key);
-  get_metadata("s3.secret_key", s3_config.secret_key);
+
+  // Secret key is stored base64-encoded for security
+  std::string encoded_secret_key;
+  if (get_metadata("s3.secret_key", encoded_secret_key)) {
+    // Decode base64-encoded secret key
+    bufferlist encoded_bl;
+    encoded_bl.append(encoded_secret_key);
+    bufferlist decoded_bl;
+    try {
+      decoded_bl.decode_base64(encoded_bl);
+      s3_config.secret_key = decoded_bl.to_str();
+    } catch (buffer::error& err) {
+      // If we have an access key but failed to decode the secret key,
+      // this is a critical error - disable S3 configuration
+      if (!s3_config.access_key.empty()) {
+        lderr(cct) << "ERROR: failed to decode s3.secret_key for authenticated access - "
+                   << "disabling S3 configuration" << dendl;
+        s3_config.enabled = false;
+        return;
+      }
+      // Otherwise it's anonymous access - continue without credentials
+      ldout(cct, 10) << "note: no valid s3.secret_key, using anonymous access" << dendl;
+      s3_config.secret_key = "";
+    }
+  }
+
   get_metadata("s3.prefix", s3_config.prefix);
   get_metadata("s3.image_name", s3_config.image_name);
   get_metadata("s3.image_format", s3_config.image_format);

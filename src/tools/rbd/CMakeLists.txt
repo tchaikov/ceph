@@ -43,6 +43,7 @@ set(rbd_srcs
   action/Remove.cc
   action/Rename.cc
   action/Resize.cc
+  action/S3Config.cc
   action/Snap.cc
   action/Sparsify.cc
   action/Status.cc
