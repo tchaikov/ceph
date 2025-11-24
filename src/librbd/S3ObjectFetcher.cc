@@ -237,7 +237,10 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
         curl_easy_cleanup(curl_handle);
         return -ENOENT;
       } else if (http_code == 403) {
+        // Log the S3 error response body for debugging
+        std::string error_response(data->c_str(), data->length());
         lderr(m_cct) << "S3 access forbidden (403): " << url << dendl;
+        lderr(m_cct) << "S3 error response: " << error_response << dendl;
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl_handle);
         return -EACCES;
