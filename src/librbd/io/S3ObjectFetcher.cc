@@ -102,57 +102,51 @@ std::string S3ObjectFetcher::extract_uri_from_url(const std::string& url) {
 void S3ObjectFetcher::add_auth_headers(CURL* curl, struct curl_slist** headers,
                                         const std::string& url,
                                         const std::string& range_header) {
-  // Add Range header
-  *headers = curl_slist_append(*headers, range_header.c_str());
-
-  // If we have credentials, sign the request with AWS Signature V4
-  if (!m_config.access_key.empty() && !m_config.secret_key.empty()) {
-    std::string region = m_config.region;
-    if (region.empty()) {
-      region = "us-east-1";  // Default region for S3-compatible services
-    }
-
-    AWSV4Signer::Credentials creds(
-      m_config.access_key,
-      m_config.secret_key,
-      region,
-      "s3"
-    );
-
-    AWSV4Signer signer(creds);
-
-    std::string host = extract_host_from_url(url);
-    std::string uri = extract_uri_from_url(url);
-
-    // For GET requests, we use UNSIGNED-PAYLOAD
-    std::map<std::string, std::string> additional_headers;
-
-    // Extract the byte range for signing (remove "Range: " prefix)
-    std::string range_value;
-    if (range_header.substr(0, 7) == "Range: ") {
-      range_value = range_header.substr(7);
-      additional_headers["range"] = range_value;
-    }
-
-    auto signed_request = signer.sign_request(
-      "GET",
-      host,
-      uri,
-      "",  // No query string
-      additional_headers,
-      AWSV4Signer::UNSIGNED_PAYLOAD
-    );
-
-    // Add the signed headers
-    for (const auto& header : signed_request.headers) {
-      std::string header_line = header.first + ": " + header.second;
-      *headers = curl_slist_append(*headers, header_line.c_str());
-    }
-
-    // Add Authorization header
-    std::string auth_header = "Authorization: " + signed_request.authorization;
-    *headers = curl_slist_append(*headers, auth_header.c_str());
+  std::string region = m_config.region;
+  if (region.empty()) {
+    region = "us-east-1";  // Default region for S3-compatible services
   }
+
+  AWSV4Signer::Credentials creds(
+    m_config.access_key,
+    m_config.secret_key,
+    region,
+    "s3"
+  );
+
+  AWSV4Signer signer(creds);
+
+  std::string host = extract_host_from_url(url);
+  std::string uri = extract_uri_from_url(url);
+
+  // For GET requests, we use UNSIGNED-PAYLOAD
+  std::map<std::string, std::string> additional_headers;
+
+  // Extract the byte range for signing (remove "Range: " prefix)
+  std::string range_value;
+  if (range_header.substr(0, 7) == "Range: ") {
+    range_value = range_header.substr(7);
+    additional_headers["range"] = range_value;
+  }
+
+  auto signed_request = signer.sign_request(
+    "GET",
+    host,
+    uri,
+    "",  // No query string
+    additional_headers,
+    AWSV4Signer::UNSIGNED_PAYLOAD
+  );
+
+  // Add the signed headers (including Range)
+  for (const auto& header : signed_request.headers) {
+    std::string header_line = header.first + ": " + header.second;
+    *headers = curl_slist_append(*headers, header_line.c_str());
+  }
+
+  // Add Authorization header
+  std::string auth_header = "Authorization: " + signed_request.authorization;
+  *headers = curl_slist_append(*headers, auth_header.c_str());
 }
 
 int S3ObjectFetcher::do_http_range_get(uint64_t offset, uint64_t length,
