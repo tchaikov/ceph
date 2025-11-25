@@ -84,6 +84,10 @@ void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
     region = "us-east-1";  // Default region for S3-compatible services
   }
 
+  ldout(m_cct, 10) << "using region for signing: " << region << dendl;
+  ldout(m_cct, 10) << "using access_key: " << m_s3_config.access_key << dendl;
+  ldout(m_cct, 10) << "using secret_key length: " << m_s3_config.secret_key.length() << dendl;
+
   io::AWSV4Signer::Credentials creds(
     m_s3_config.access_key,
     m_s3_config.secret_key,
