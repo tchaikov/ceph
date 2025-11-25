@@ -19,6 +19,7 @@
 #include "librbd/io/ObjectRequest.h"
 #include "librbd/io/ReadResult.h"
 #include "cls/lock/cls_lock_client.h"
+#include "cls/rbd/cls_rbd_client.h"
 
 #include <boost/bind.hpp>
 #include <boost/lambda/bind.hpp>
@@ -1057,63 +1058,8 @@ void CopyupRequest<I>::write_back_to_parent() {
   librados::ObjectWriteOperation write_op;
   write_op.write_full(m_s3_data);
 
-  // IMPORTANT: Also update the parent's object map to mark this object as existing
-  // This is critical for proper space accounting (rbd du) and fast-diff support
-  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
-
-  ldout(cct, 10) << "checking parent for object map update: parent="
-                 << (void*)m_image_ctx->parent << dendl;
-
-  if (m_image_ctx->parent != nullptr) {
-    ldout(cct, 10) << "parent exists, checking object_map: object_map="
-                   << (void*)m_image_ctx->parent->object_map << dendl;
-
-    if (m_image_ctx->parent->object_map != nullptr) {
-      RWLock::WLocker object_map_locker(m_image_ctx->parent->object_map_lock);
-
-      // Update the parent's object map to mark this object as existing
-      // We need to do this synchronously before the write completes to ensure
-      // the object map is consistent with the actual objects
-      uint8_t new_state = OBJECT_EXISTS;
-      auto parent_obj_map = m_image_ctx->parent->object_map;
-
-      ldout(cct, 10) << "updating parent object map for object " << m_object_no
-                     << " to OBJECT_EXISTS" << dendl;
-
-      // Directly update the in-memory object map
-      if ((*parent_obj_map)[m_object_no] != new_state) {
-        (*parent_obj_map)[m_object_no] = new_state;
-
-        // Also persist to disk via async update
-        // Note: We don't wait for this to complete as it's a best-effort persistence
-        Context *ctx = new FunctionContext([](int r) {
-          // Ignore errors - the in-memory map is already updated
-        });
-
-        ZTracer::Trace trace;
-        bool sent = parent_obj_map->template aio_update<Context>(
-          CEPH_NOSNAP, m_object_no, new_state, boost::optional<uint8_t>(),
-          trace, false, ctx);
-
-        if (!sent) {
-          // Update wasn't queued (e.g., exclusive lock not held)
-          // That's OK - the in-memory update is what matters for rbd du
-          delete ctx;
-          ldout(cct, 10) << "parent object map update not queued (no exclusive lock)"
-                         << dendl;
-        }
-      } else {
-        ldout(cct, 10) << "parent object map already marked as EXISTS for object "
-                       << m_object_no << dendl;
-      }
-    } else {
-      ldout(cct, 10) << "parent object_map is nullptr, cannot update" << dendl;
-    }
-  } else {
-    ldout(cct, 10) << "parent is nullptr, cannot update object map" << dendl;
-  }
-
   // Submit async write operation
+  // Object map update will happen after write completes successfully
   using klass = CopyupRequest<I>;
   librados::AioCompletion *rados_completion =
     util::create_rados_callback<klass, &klass::handle_write_back_to_parent>(this);
@@ -1140,6 +1086,10 @@ void CopyupRequest<I>::handle_write_back_to_parent(int r) {
 
   ldout(cct, 10) << "successfully wrote S3 data to parent, "
                  << "continuing with normal copyup using S3 data" << dendl;
+
+  // IMPORTANT: Now that data write succeeded, update the parent's object map
+  // This ensures consistency - object map is only marked as EXISTS after data is written
+  update_parent_object_map();
 
   // Use the S3 data for the copyup operation
   // Copy S3 data to copyup buffer
@@ -1176,6 +1126,87 @@ void CopyupRequest<I>::handle_write_back_to_parent(int r) {
 
   // Continue to update object maps and then copyup
   update_object_maps();
+}
+
+template <typename I>
+void CopyupRequest<I>::update_parent_object_map() {
+  auto cct = m_image_ctx->cct;
+
+  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+
+  if (m_image_ctx->parent == nullptr) {
+    ldout(cct, 10) << "parent is nullptr, skipping object map update" << dendl;
+    return;
+  }
+
+  // Check if parent has object map feature enabled
+  bool parent_has_object_map = (m_image_ctx->parent->features & RBD_FEATURE_OBJECT_MAP) != 0;
+
+  if (!parent_has_object_map) {
+    ldout(cct, 10) << "parent does not have object_map feature, skipping" << dendl;
+    return;
+  }
+
+  if (m_image_ctx->parent->object_map != nullptr) {
+    // Path 1: In-memory object map is available (same-cluster parent)
+    RWLock::WLocker object_map_locker(m_image_ctx->parent->object_map_lock);
+
+    uint8_t new_state = OBJECT_EXISTS;
+    auto parent_obj_map = m_image_ctx->parent->object_map;
+
+    ldout(cct, 10) << "updating parent in-memory object map for object "
+                   << m_object_no << " to OBJECT_EXISTS" << dendl;
+
+    if ((*parent_obj_map)[m_object_no] != new_state) {
+      (*parent_obj_map)[m_object_no] = new_state;
+
+      Context *ctx = new FunctionContext([object_no = m_object_no](int r) {
+        // Note: Cannot use ldout in lambda without capturing cct/this
+        // Errors are already logged by the ObjectMap update infrastructure
+      });
+
+      ZTracer::Trace trace;
+      bool sent = parent_obj_map->template aio_update<Context>(
+        CEPH_NOSNAP, m_object_no, new_state, boost::optional<uint8_t>(),
+        trace, false, ctx);
+
+      if (!sent) {
+        delete ctx;
+        ldout(cct, 10) << "parent object map update not queued (no exclusive lock)" << dendl;
+      }
+    }
+  } else {
+    // Path 2: Parent has object map feature but in-memory map not available
+    // (cross-cluster scenario) - update via direct RADOS operation
+    ldout(cct, 10) << "parent object_map is nullptr, updating via direct RADOS operation"
+                   << dendl;
+
+    // Get parent's object map name
+    std::string parent_object_map_name = ObjectMap<>::object_map_name(
+      m_image_ctx->parent->id, CEPH_NOSNAP);
+
+    ldout(cct, 10) << "parent object_map name: " << parent_object_map_name << dendl;
+
+    // Create object map update operation
+    librados::ObjectWriteOperation map_op;
+    cls_client::object_map_update(&map_op, m_object_no, m_object_no + 1,
+                                  OBJECT_EXISTS, boost::optional<uint8_t>());
+
+    // Submit async operation to update parent's object map
+    // Using fire-and-forget as this is best-effort
+    auto rados_completion = librados::Rados::aio_create_completion();
+    int r = m_parent_ioctx.aio_operate(parent_object_map_name, rados_completion, &map_op);
+
+    if (r == 0) {
+      ldout(cct, 10) << "submitted async RADOS object map update for object "
+                     << m_object_no << dendl;
+    } else {
+      ldout(cct, 5) << "warning: failed to submit parent object map update via RADOS: "
+                    << cpp_strerror(r) << dendl;
+    }
+
+    rados_completion->release();
+  }
 }
 
 template <typename I>

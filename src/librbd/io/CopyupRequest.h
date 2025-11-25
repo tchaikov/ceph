@@ -146,6 +146,7 @@ private:
   void handle_s3_fetch(int r);
   void write_back_to_parent();
   void handle_write_back_to_parent(int r);
+  void update_parent_object_map();
   void unlock_parent_object();
 };
 
