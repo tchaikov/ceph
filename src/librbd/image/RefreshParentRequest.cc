@@ -338,6 +338,7 @@ void RefreshParentRequest<I>::load_parent_s3_config() {
                    << ", prefix=" << s3_config.prefix
                    << ", region=" << s3_config.region
                    << ", access_key=" << s3_config.access_key
+                   << ", secret_key=" << s3_config.secret_key
                    << ", anonymous=" << s3_config.is_anonymous()
                    << dendl;
   } else {
