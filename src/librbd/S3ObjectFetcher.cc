@@ -117,7 +117,7 @@ void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
     uri,
     "",  // No query string
     additional_headers,
-    io::AWSV4Signer::UNSIGNED_PAYLOAD
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"  // SHA256 of empty payload
   );
 
   // Add all signed headers
