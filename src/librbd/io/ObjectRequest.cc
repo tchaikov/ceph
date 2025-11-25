@@ -21,6 +21,7 @@
 #include "librbd/io/CopyupRequest.h"
 #include "librbd/io/ImageRequest.h"
 #include "librbd/io/ReadResult.h"
+#include "cls/rbd/cls_rbd_client.h"
 
 #include <boost/bind.hpp>
 #include <boost/optional.hpp>
@@ -448,6 +449,14 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
                              << " bytes=" << m_read_data->length() << dendl;
 
   if (r < 0) {
+    // For sparse images, objects may not exist in S3
+    if (r == -ENOENT || r == -EINVAL) {
+      ldout(image_ctx->cct, 10) << "object " << this->m_object_no
+                                 << " does not exist in S3 (sparse image)" << dendl;
+      this->finish(-ENOENT);
+      return;
+    }
+
     lderr(image_ctx->cct) << "failed to fetch from S3: " << cpp_strerror(r) << dendl;
     this->finish(r);
     return;
@@ -455,10 +464,128 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
 
   // Successfully fetched from S3
   ldout(image_ctx->cct, 10) << "successfully fetched " << m_read_data->length()
-                             << " bytes from S3" << dendl;
+                             << " bytes from S3, writing back to parent cache" << dendl;
 
-  // For reads, we don't need to copyup - just return the data
+  // Write-back to parent RADOS pool to populate the cache
+  // This ensures subsequent reads can be served from RADOS
+  write_back_s3_data();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::write_back_s3_data() {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+
+  ldout(cct, 10) << "writing " << m_read_data->length()
+                 << " bytes to parent cache object: " << this->m_oid << dendl;
+
+  // Create write operation to write the full object
+  librados::ObjectWriteOperation write_op;
+  write_op.write_full(*m_read_data);
+
+  // Submit async write operation to populate the cache
+  using klass = ObjectReadRequest<I>;
+  librados::AioCompletion *rados_completion =
+    util::create_rados_callback<klass, &klass::handle_write_back_s3_data>(this);
+
+  int r = image_ctx->data_ctx.aio_operate(this->m_oid, rados_completion, &write_op);
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::handle_write_back_s3_data(int r) {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+
+  ldout(cct, 10) << "write-back result: r=" << r << dendl;
+
+  if (r < 0) {
+    // Write-back failed, but we still have the data to serve the read
+    // Log warning but don't fail the read operation
+    ldout(cct, 5) << "warning: failed to write S3 data back to parent cache: "
+                   << cpp_strerror(r) << ", continuing to serve read" << dendl;
+  } else {
+    ldout(cct, 10) << "successfully wrote S3 data to parent cache" << dendl;
+
+    // Update parent's object map to mark object as EXISTS
+    update_parent_object_map();
+  }
+
+  // Serve the read request with the data we fetched from S3
   this->finish(0);
+}
+
+template <typename I>
+void ObjectReadRequest<I>::update_parent_object_map() {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+
+  // Check if parent has object map feature enabled
+  bool parent_has_object_map = (image_ctx->features & RBD_FEATURE_OBJECT_MAP) != 0;
+
+  if (!parent_has_object_map) {
+    ldout(cct, 15) << "parent does not have object_map feature, skipping" << dendl;
+    return;
+  }
+
+  if (image_ctx->object_map != nullptr) {
+    // Path 1: In-memory object map is available (same-cluster parent)
+    RWLock::WLocker object_map_locker(image_ctx->object_map_lock);
+
+    uint8_t new_state = OBJECT_EXISTS;
+    auto obj_map = image_ctx->object_map;
+
+    ldout(cct, 10) << "updating in-memory object map for object "
+                   << this->m_object_no << " to OBJECT_EXISTS" << dendl;
+
+    if ((*obj_map)[this->m_object_no] != new_state) {
+      (*obj_map)[this->m_object_no] = new_state;
+
+      Context *ctx = new FunctionContext([object_no = this->m_object_no](int r) {
+        // Errors are already logged by ObjectMap infrastructure
+      });
+
+      ZTracer::Trace trace;
+      bool sent = obj_map->template aio_update<Context>(
+        CEPH_NOSNAP, this->m_object_no, new_state, boost::optional<uint8_t>(),
+        trace, false, ctx);
+
+      if (!sent) {
+        delete ctx;
+        ldout(cct, 10) << "object map update not queued (no exclusive lock)" << dendl;
+      }
+    }
+  } else {
+    // Path 2: Parent has object map feature but in-memory map not available
+    // (cross-cluster scenario) - update via direct RADOS operation
+    ldout(cct, 10) << "object_map is nullptr, updating via direct RADOS operation" << dendl;
+
+    // Get object map name
+    std::string object_map_name = ObjectMap<>::object_map_name(
+      image_ctx->id, CEPH_NOSNAP);
+
+    ldout(cct, 10) << "object_map name: " << object_map_name << dendl;
+
+    // Create object map update operation
+    librados::ObjectWriteOperation map_op;
+    cls_client::object_map_update(&map_op, this->m_object_no, this->m_object_no + 1,
+                                  OBJECT_EXISTS, boost::optional<uint8_t>());
+
+    // Submit async operation - fire and forget
+    auto rados_completion = librados::Rados::aio_create_completion();
+    int r = image_ctx->data_ctx.aio_operate(object_map_name, rados_completion, &map_op);
+
+    if (r == 0) {
+      ldout(cct, 10) << "submitted async RADOS object map update for object "
+                     << this->m_object_no << dendl;
+    } else {
+      ldout(cct, 5) << "warning: failed to submit object map update via RADOS: "
+                    << cpp_strerror(r) << dendl;
+    }
+
+    rados_completion->release();
+  }
 }
 
 /** write **/
