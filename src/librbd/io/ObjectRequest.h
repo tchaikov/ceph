@@ -154,6 +154,11 @@ private:
   void handle_read_parent(int r);
 
   void copyup();
+
+  // S3 backend support for reads
+  bool should_read_from_s3();
+  void read_from_s3();
+  void handle_read_from_s3(int r);
 };
 
 template <typename ImageCtxT = ImageCtx>

@@ -16,6 +16,7 @@
 #include "librbd/ImageCtx.h"
 #include "librbd/ObjectMap.h"
 #include "librbd/Utils.h"
+#include "librbd/S3ObjectFetcher.h"
 #include "librbd/io/AioCompletion.h"
 #include "librbd/io/CopyupRequest.h"
 #include "librbd/io/ImageRequest.h"
@@ -254,6 +255,13 @@ void ObjectReadRequest<I>::handle_read_object(int r) {
   ldout(image_ctx->cct, 20) << "r=" << r << dendl;
 
   if (r == -ENOENT) {
+    // Check if this image is S3-backed before falling back to parent
+    // This handles the case where this image is a parent with S3 backend
+    if (should_read_from_s3()) {
+      read_from_s3();
+      return;
+    }
+
     read_parent();
     return;
   } else if (r < 0) {
@@ -367,6 +375,89 @@ void ObjectReadRequest<I>::copyup() {
   }
 
   image_ctx->owner_lock.put_read();
+  this->finish(0);
+}
+
+template <typename I>
+bool ObjectReadRequest<I>::should_read_from_s3() {
+  I *image_ctx = this->m_ictx;
+
+  RWLock::RLocker snap_locker(image_ctx->snap_lock);
+
+  // Fetch from S3 if this image has S3 backend configured.
+  // This works correctly for both cases:
+  // 1. Child (regular or standalone) reading: child has no s3_config → returns false → calls read_parent()
+  // 2. S3-backed parent reading: parent has s3_config → returns true → fetches from S3
+  // 3. Regular snapshot parent reading: parent has no s3_config → returns false → calls read_parent() (will fail -ENOENT, expected)
+
+  if (!image_ctx->s3_config.is_valid()) {
+    ldout(image_ctx->cct, 20) << "no valid S3 backend configured" << dendl;
+    return false;
+  }
+
+  ldout(image_ctx->cct, 10) << "S3-backed image, will fetch from S3" << dendl;
+  return true;
+}
+
+template <typename I>
+void ObjectReadRequest<I>::read_from_s3() {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+
+  ldout(cct, 10) << "fetching object " << this->m_object_no << " from S3" << dendl;
+
+  RWLock::RLocker snap_locker(image_ctx->snap_lock);
+
+  // Get S3 config
+  const S3Config& s3_config = image_ctx->s3_config;
+
+  if (!s3_config.is_valid()) {
+    snap_locker.unlock();
+    lderr(cct) << "invalid S3 configuration" << dendl;
+    this->finish(-EINVAL);
+    return;
+  }
+
+  // Calculate byte range for this object
+  uint64_t object_size = image_ctx->get_object_size();
+  uint64_t byte_start = this->m_object_no * object_size + this->m_object_off;
+  uint64_t byte_length = std::min(this->m_object_len, object_size - this->m_object_off);
+
+  std::string s3_url = s3_config.build_url();
+
+  ldout(cct, 10) << "S3 URL: " << s3_url
+                 << ", fetching range: bytes=" << byte_start
+                 << "-" << (byte_start + byte_length - 1) << dendl;
+
+  snap_locker.unlock();
+
+  // Create S3 fetcher
+  S3ObjectFetcher fetcher(cct, s3_config);
+
+  // Fetch from S3 synchronously for reads (simpler than async for now)
+  using klass = ObjectReadRequest<I>;
+  Context *ctx = util::create_context_callback<klass, &klass::handle_read_from_s3>(this);
+
+  fetcher.fetch(s3_url, m_read_data, ctx, byte_start, byte_length);
+}
+
+template <typename I>
+void ObjectReadRequest<I>::handle_read_from_s3(int r) {
+  I *image_ctx = this->m_ictx;
+  ldout(image_ctx->cct, 10) << "S3 fetch result: r=" << r
+                             << " bytes=" << m_read_data->length() << dendl;
+
+  if (r < 0) {
+    lderr(image_ctx->cct) << "failed to fetch from S3: " << cpp_strerror(r) << dendl;
+    this->finish(r);
+    return;
+  }
+
+  // Successfully fetched from S3
+  ldout(image_ctx->cct, 10) << "successfully fetched " << m_read_data->length()
+                             << " bytes from S3" << dendl;
+
+  // For reads, we don't need to copyup - just return the data
   this->finish(0);
 }
 
