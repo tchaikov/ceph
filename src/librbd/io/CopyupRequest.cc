@@ -336,7 +336,8 @@ void CopyupRequest<I>::update_object_maps() {
   bool is_standalone_parent = false;
   {
     RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
-    if (m_image_ctx->parent_md.parent_type == PARENT_TYPE_STANDALONE) {
+    if (m_image_ctx->parent_md.parent_type == PARENT_TYPE_STANDALONE ||
+        m_image_ctx->parent_md.parent_type == PARENT_TYPE_REMOTE_STANDALONE) {
       is_standalone_parent = true;
       // Mark objects copied from standalone parents with OBJECT_COPIEDUP
       head_object_map_state = OBJECT_COPIEDUP;
