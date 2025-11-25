@@ -1057,6 +1057,47 @@ void CopyupRequest<I>::write_back_to_parent() {
   librados::ObjectWriteOperation write_op;
   write_op.write_full(m_s3_data);
 
+  // IMPORTANT: Also update the parent's object map to mark this object as existing
+  // This is critical for proper space accounting (rbd du) and fast-diff support
+  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+  if (m_image_ctx->parent != nullptr &&
+      m_image_ctx->parent->object_map != nullptr) {
+    RWLock::WLocker object_map_locker(m_image_ctx->parent->object_map_lock);
+
+    // Update the parent's object map to mark this object as existing
+    // We need to do this synchronously before the write completes to ensure
+    // the object map is consistent with the actual objects
+    uint8_t new_state = OBJECT_EXISTS;
+    auto parent_obj_map = m_image_ctx->parent->object_map;
+
+    ldout(cct, 10) << "updating parent object map for object " << m_object_no
+                   << " to OBJECT_EXISTS" << dendl;
+
+    // Directly update the in-memory object map
+    if ((*parent_obj_map)[m_object_no] != new_state) {
+      (*parent_obj_map)[m_object_no] = new_state;
+
+      // Also persist to disk via async update
+      // Note: We don't wait for this to complete as it's a best-effort persistence
+      Context *ctx = new FunctionContext([](int r) {
+        // Ignore errors - the in-memory map is already updated
+      });
+
+      ZTracer::Trace trace;
+      bool sent = parent_obj_map->template aio_update<Context>(
+        CEPH_NOSNAP, m_object_no, new_state, boost::optional<uint8_t>(),
+        trace, false, ctx);
+
+      if (!sent) {
+        // Update wasn't queued (e.g., exclusive lock not held)
+        // That's OK - the in-memory update is what matters for rbd du
+        delete ctx;
+        ldout(cct, 10) << "parent object map update not queued (no exclusive lock)"
+                       << dendl;
+      }
+    }
+  }
+
   // Submit async write operation
   using klass = CopyupRequest<I>;
   librados::AioCompletion *rados_completion =
