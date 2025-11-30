@@ -16,7 +16,7 @@
 #include "librbd/ImageCtx.h"
 #include "librbd/ObjectMap.h"
 #include "librbd/Utils.h"
-#include "librbd/S3ObjectFetcher.h"
+#include "librbd/io/S3ObjectFetcher.h"
 #include "librbd/io/AioCompletion.h"
 #include "librbd/io/CopyupRequest.h"
 #include "librbd/io/ImageRequest.h"
@@ -433,13 +433,13 @@ void ObjectReadRequest<I>::read_from_s3() {
   snap_locker.unlock();
 
   // Create S3 fetcher
-  S3ObjectFetcher fetcher(cct, s3_config);
+  io::S3ObjectFetcher fetcher(cct, s3_config);
 
   // Fetch from S3 synchronously for reads (simpler than async for now)
   using klass = ObjectReadRequest<I>;
   Context *ctx = util::create_context_callback<klass, &klass::handle_read_from_s3>(this);
 
-  fetcher.fetch(s3_url, m_read_data, ctx, byte_start, byte_length);
+  fetcher.fetch_url(s3_url, m_read_data, ctx, byte_start, byte_length);
 }
 
 template <typename I>

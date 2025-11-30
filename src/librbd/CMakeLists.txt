@@ -24,7 +24,6 @@ set(librbd_internal_srcs
   TrashWatcher.cc
   Utils.cc
   RemoteClusterUtils.cc
-  S3ObjectFetcher.cc
   Watcher.cc
   api/Config.cc
   api/DiffIterate.cc
@@ -80,6 +79,7 @@ set(librbd_internal_srcs
   io/ObjectDispatcher.cc
   io/ObjectRequest.cc
   io/ReadResult.cc
+  io/S3ObjectFetcher.cc
   io/Utils.cc
   io/AWSV4Signer.cc
   journal/CreateRequest.cc

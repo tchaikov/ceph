@@ -7454,6 +7454,40 @@ static std::vector<Option> get_rbd_options() {
                           "clients.")
     .set_flag(Option::FLAG_RUNTIME),
 
+    // RBD S3 backfill daemon options
+    Option("rbd_backfill_max_concurrent", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(10)
+    .set_min(1)
+    .set_description("maximum concurrent S3 backfill operations globally"),
+
+    Option("rbd_backfill_lock_timeout", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(30)
+    .set_description("lock timeout for backfill operations in seconds"),
+
+    Option("rbd_backfill_max_retries", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(5)
+    .set_description("maximum number of retries for failed backfill operations"),
+
+    Option("rbd_backfill_retry_delay", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(5.0)
+    .set_description("initial delay in seconds after preemption before retry"),
+
+    Option("rbd_backfill_progress_interval", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(60)
+    .set_description("interval in seconds to save backfill progress"),
+
+    Option("rbd_backfill_bandwidth_limit", Option::TYPE_SIZE, Option::LEVEL_ADVANCED)
+    .set_default(0)
+    .set_description("bandwidth limit in bytes/second (0 = unlimited)"),
+
+    Option("rbd_backfill_enable_preemption", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .set_description("enable user IO preemption of background backfill"),
+
+    Option("rbd_backfill_cancel_timeout", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(2000)
+    .set_description("maximum time in milliseconds to wait for S3 fetch cancellation"),
+
     Option("rbd_journal_order", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_min_max(12, 26)
     .set_default(24)
@@ -7697,6 +7731,14 @@ static std::vector<Option> get_rbd_mirror_options() {
     .set_long_description("When enabled, SSL/TLS certificates from S3 endpoints "
                           "will be verified. Disable only for testing with "
                           "self-signed certificates."),
+
+    Option("rbd_s3_max_download_bps", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(0)
+    .set_description("maximum S3 download speed in bytes per second")
+    .set_long_description("When set to a positive value, throttles S3 downloads to "
+                          "the specified bandwidth in bytes per second. Useful for "
+                          "testing preemption scenarios where slow S3 fetches allow "
+                          "client I/O to acquire locks. Set to 0 for unlimited bandwidth."),
   });
 }
 

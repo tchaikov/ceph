@@ -92,6 +92,7 @@ struct S3Config {
   std::string prefix;
   std::string image_name;   // Name of the image object in S3 bucket
   std::string image_format; // Format of the image (currently only "raw" supported)
+  uint64_t object_size = 0; // RBD object size (for offset calculation in raw images)
 
   S3Config() = default;
 

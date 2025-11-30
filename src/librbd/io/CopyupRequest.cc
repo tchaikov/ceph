@@ -12,7 +12,7 @@
 #include "librbd/ImageCtx.h"
 #include "librbd/ObjectMap.h"
 #include "librbd/Utils.h"
-#include "librbd/S3ObjectFetcher.h"
+#include "librbd/io/S3ObjectFetcher.h"
 #include "librbd/deep_copy/ObjectCopyRequest.h"
 #include "librbd/io/AioCompletion.h"
 #include "librbd/io/ImageRequest.h"
@@ -985,12 +985,12 @@ void CopyupRequest<I>::fetch_from_s3_async() {
   parent_locker.unlock();
 
   // Create S3 fetcher with credentials and fetch object range
-  S3ObjectFetcher fetcher(cct, s3_config);
+  io::S3ObjectFetcher fetcher(cct, s3_config);
 
   auto ctx = util::create_context_callback<
     CopyupRequest<I>, &CopyupRequest<I>::handle_s3_fetch>(this);
 
-  fetcher.fetch(s3_url, &m_s3_data, ctx, byte_start, byte_length);
+  fetcher.fetch_url(s3_url, &m_s3_data, ctx, byte_start, byte_length);
 }
 
 template <typename I>
