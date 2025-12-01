@@ -179,6 +179,8 @@ int BackfillDaemon::discover_scheduled_images() {
     return r;
   }
 
+  dout(10) << "scanning " << pools.size() << " pools for scheduled images" << dendl;
+
   // Iterate through each pool to find scheduled images
   for (const auto& pool : pools) {
     std::string pool_name = pool.second;
@@ -233,7 +235,12 @@ int BackfillDaemon::discover_scheduled_images() {
     }
   }
 
-  dout(5) << "discovered " << m_image_specs.size() << " scheduled images" << dendl;
+  if (m_image_specs.empty()) {
+    dout(0) << "no images scheduled for backfill found (use 'rbd backfill schedule' to schedule images)" << dendl;
+  } else {
+    dout(5) << "discovered " << m_image_specs.size() << " scheduled images" << dendl;
+  }
+
   return 0;
 }
 

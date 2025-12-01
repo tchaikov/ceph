@@ -61,13 +61,22 @@ int ImageBackfiller::init() {
     return r;
   }
 
+  // Set namespace if specified
+  if (!m_spec.namespace_name.empty()) {
+    m_ioctx.set_namespace(m_spec.namespace_name);
+  }
+
   // Open the parent image
   m_image_ctx.reset(new librbd::ImageCtx(m_spec.image_name, "", "", m_ioctx, false));
 
   r = m_image_ctx->state->open(0);
   if (r < 0) {
-    derr << "failed to open image " << m_spec.pool_name << "/"
-         << m_spec.image_name << ": " << cpp_strerror(r) << dendl;
+    std::string full_name = m_spec.pool_name;
+    if (!m_spec.namespace_name.empty()) {
+      full_name += "/" + m_spec.namespace_name;
+    }
+    full_name += "/" + m_spec.image_name;
+    derr << "failed to open image " << full_name << ": " << cpp_strerror(r) << dendl;
     m_image_ctx.reset();
     return r;
   }

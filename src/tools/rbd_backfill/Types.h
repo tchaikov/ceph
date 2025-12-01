@@ -11,6 +11,7 @@ namespace backfill {
 
 struct ImageSpec {
   std::string pool_name;
+  std::string namespace_name;
   std::string image_name;
   int64_t pool_id = -1;
   std::string image_id;
@@ -22,6 +23,9 @@ struct ImageSpec {
   bool operator<(const ImageSpec& other) const {
     if (pool_id != other.pool_id) {
       return pool_id < other.pool_id;
+    }
+    if (namespace_name != other.namespace_name) {
+      return namespace_name < other.namespace_name;
     }
     return image_id < other.image_id;
   }
