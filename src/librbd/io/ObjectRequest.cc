@@ -419,15 +419,20 @@ void ObjectReadRequest<I>::read_from_s3() {
     return;
   }
 
-  // Calculate byte range for this object
+  // For non-sparse raw images in S3, we need to fetch the ENTIRE object
+  // even if only a small range is requested. This is because:
+  // 1. We write the fetched data back to RADOS as cache
+  // 2. Subsequent reads from different offsets of the same object need the full data
+  // 3. If we only fetch partial ranges, write_full() would create incomplete objects
   uint64_t object_size = image_ctx->get_object_size();
-  uint64_t byte_start = this->m_object_no * object_size + this->m_object_off;
-  uint64_t byte_length = std::min(this->m_object_len, object_size - this->m_object_off);
+  uint64_t byte_start = this->m_object_no * object_size;
+  uint64_t byte_length = object_size;  // Always fetch entire object
 
   std::string s3_url = s3_config.build_url();
 
   ldout(cct, 10) << "S3 URL: " << s3_url
-                 << ", fetching range: bytes=" << byte_start
+                 << ", fetching entire object " << this->m_object_no
+                 << " range: bytes=" << byte_start
                  << "-" << (byte_start + byte_length - 1) << dendl;
 
   snap_locker.unlock();
@@ -435,7 +440,7 @@ void ObjectReadRequest<I>::read_from_s3() {
   // Create S3 fetcher
   io::S3ObjectFetcher fetcher(cct, s3_config);
 
-  // Fetch from S3 synchronously for reads (simpler than async for now)
+  // Fetch entire object from S3
   using klass = ObjectReadRequest<I>;
   Context *ctx = util::create_context_callback<klass, &klass::handle_read_from_s3>(this);
 
@@ -462,26 +467,40 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
     return;
   }
 
-  // Successfully fetched from S3
+  // Successfully fetched entire object from S3
   ldout(image_ctx->cct, 10) << "successfully fetched " << m_read_data->length()
-                             << " bytes from S3, writing back to parent cache" << dendl;
+                             << " bytes (entire object) from S3" << dendl;
 
-  // Write-back to parent RADOS pool to populate the cache
-  // This ensures subsequent reads can be served from RADOS
-  write_back_s3_data();
+  // Extract only the requested range for the read result
+  // The full object will be written back to RADOS cache
+  bufferlist full_object_data;
+  full_object_data.claim(*m_read_data);  // Take ownership of full data
+
+  // Extract requested range
+  m_read_data->substr_of(full_object_data, this->m_object_off, this->m_object_len);
+
+  ldout(image_ctx->cct, 10) << "extracted requested range: offset=" << this->m_object_off
+                             << " len=" << this->m_object_len
+                             << " from full object" << dendl;
+
+  // Write-back FULL object to parent RADOS pool to populate the cache
+  // This ensures subsequent reads from any offset can be served from RADOS
+  write_back_s3_data(full_object_data);
 }
 
 template <typename I>
-void ObjectReadRequest<I>::write_back_s3_data() {
+void ObjectReadRequest<I>::write_back_s3_data(bufferlist& full_object_data) {
   I *image_ctx = this->m_ictx;
   auto cct = image_ctx->cct;
 
-  ldout(cct, 10) << "writing " << m_read_data->length()
-                 << " bytes to parent cache object: " << this->m_oid << dendl;
+  ldout(cct, 10) << "writing " << full_object_data.length()
+                 << " bytes (entire object)"
+                 << " to parent cache object: " << this->m_oid << dendl;
 
-  // Create write operation to write the full object
+  // Create write operation to write the entire object
+  // Since we fetched the entire object from S3, we can use write_full()
   librados::ObjectWriteOperation write_op;
-  write_op.write_full(*m_read_data);
+  write_op.write_full(full_object_data);
 
   // Submit async write operation to populate the cache
   using klass = ObjectReadRequest<I>;

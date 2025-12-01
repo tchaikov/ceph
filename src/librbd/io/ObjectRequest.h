@@ -159,7 +159,7 @@ private:
   bool should_read_from_s3();
   void read_from_s3();
   void handle_read_from_s3(int r);
-  void write_back_s3_data();
+  void write_back_s3_data(bufferlist& full_object_data);
   void handle_write_back_s3_data(int r);
   void update_parent_object_map();
 };
