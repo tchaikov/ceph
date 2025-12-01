@@ -39,7 +39,7 @@ struct Threads {
 
 class BackfillDaemon {
 public:
-  BackfillDaemon(CephContext *cct, const std::vector<ImageSpec>& images);
+  BackfillDaemon(CephContext *cct);
   ~BackfillDaemon();
 
   BackfillDaemon(const BackfillDaemon&) = delete;
@@ -51,7 +51,7 @@ public:
 
 private:
   int connect_to_cluster();
-  int resolve_image_specs();
+  int discover_scheduled_images();
   int start_image_backfillers();
 
   void handle_image_complete(const ImageSpec& spec, int r);

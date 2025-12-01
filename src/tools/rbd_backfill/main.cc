@@ -30,20 +30,26 @@ void handle_signal(int signum) {
 }
 
 void usage() {
-  std::cout << "Usage: rbd-backfill [options] --pool <pool> --image <image> [--pool <pool> --image <image> ...]" << std::endl;
+  std::cout << "Usage: rbd-backfill [options]" << std::endl;
   std::cout << std::endl;
   std::cout << "Background S3 backfill daemon for RBD standalone parent images" << std::endl;
   std::cout << std::endl;
+  std::cout << "The daemon automatically discovers and backfills images that have been" << std::endl;
+  std::cout << "scheduled for backfill using 'rbd backfill schedule <image>'." << std::endl;
+  std::cout << std::endl;
   std::cout << "Options:" << std::endl;
-  std::cout << "  --pool <pool>           Pool containing parent image to backfill" << std::endl;
-  std::cout << "  --image <image>         Parent image name to backfill" << std::endl;
   std::cout << "  --daemon                Run in daemon mode (default: foreground)" << std::endl;
   std::cout << "  --foreground            Run in foreground mode" << std::endl;
   std::cout << "  -c, --conf <file>       Configuration file" << std::endl;
   std::cout << "  --log-file <file>       Log file path" << std::endl;
   std::cout << std::endl;
   std::cout << "Example:" << std::endl;
-  std::cout << "  rbd-backfill --pool rbd --image parent1 --pool rbd --image parent2" << std::endl;
+  std::cout << "  # Schedule images for backfill" << std::endl;
+  std::cout << "  rbd backfill schedule rbd/parent1" << std::endl;
+  std::cout << "  rbd backfill schedule rbd/parent2" << std::endl;
+  std::cout << std::endl;
+  std::cout << "  # Start the daemon (will discover scheduled images)" << std::endl;
+  std::cout << "  rbd-backfill --foreground" << std::endl;
   std::cout << std::endl;
 }
 
@@ -65,25 +71,12 @@ int main(int argc, const char **argv) {
                          CINIT_FLAG_UNPRIVILEGED_DAEMON_DEFAULTS);
 
   // Parse command-line arguments
-  std::vector<ImageSpec> images_to_backfill;
   bool daemon_mode = false;
-  std::string current_pool;
-  std::string current_image;
 
   for (auto i = args.begin(); i != args.end(); ) {
     if (ceph_argparse_flag(args, i, "-h", "--help", (char*)nullptr)) {
       usage();
       return 0;
-    } else if (ceph_argparse_witharg(args, i, &current_pool, "--pool", (char*)nullptr)) {
-      // Pool name stored
-    } else if (ceph_argparse_witharg(args, i, &current_image, "--image", (char*)nullptr)) {
-      if (current_pool.empty()) {
-        std::cerr << "Error: --image must follow --pool" << std::endl;
-        return EXIT_FAILURE;
-      }
-      images_to_backfill.push_back({current_pool, current_image});
-      current_pool.clear();
-      current_image.clear();
     } else if (ceph_argparse_flag(args, i, "--daemon", (char*)nullptr)) {
       daemon_mode = true;
     } else if (ceph_argparse_flag(args, i, "--foreground", (char*)nullptr)) {
@@ -93,21 +86,10 @@ int main(int argc, const char **argv) {
     }
   }
 
-  if (images_to_backfill.empty()) {
-    std::cerr << "Error: No images specified for backfill" << std::endl;
-    std::cerr << "Use --pool <pool> --image <image> to specify images" << std::endl;
-    usage();
-    return EXIT_FAILURE;
-  }
-
   // Initialize logging
   common_init_finish(g_ceph_context);
 
-  dout(0) << "rbd-backfill starting" << dendl;
-  dout(5) << "Images to backfill: " << images_to_backfill.size() << dendl;
-  for (const auto& spec : images_to_backfill) {
-    dout(5) << "  - " << spec.pool_name << "/" << spec.image_name << dendl;
-  }
+  dout(0) << "rbd-backfill starting (will discover images via metadata)" << dendl;
 
   // Daemonize if requested
   if (daemon_mode) {
@@ -124,7 +106,7 @@ int main(int argc, const char **argv) {
   // Create and run daemon
   int r = 0;
   {
-    rbd::backfill::BackfillDaemon daemon(g_ceph_context, images_to_backfill);
+    rbd::backfill::BackfillDaemon daemon(g_ceph_context);
 
     r = daemon.init();
     if (r < 0) {

@@ -5,6 +5,7 @@
 #include "BackfillThrottler.h"
 #include "ImageBackfiller.h"
 #include "include/rados/librados.hpp"
+#include "include/rbd/librbd.hpp"
 #include "common/debug.h"
 #include "common/errno.h"
 #include "common/WorkQueue.h"
@@ -51,12 +52,10 @@ Threads::~Threads() {
 }
 
 // BackfillDaemon implementation
-BackfillDaemon::BackfillDaemon(CephContext *cct,
-                               const std::vector<ImageSpec>& images)
+BackfillDaemon::BackfillDaemon(CephContext *cct)
   : m_cct(cct),
-    m_image_specs(images),
     m_lock("rbd::backfill::BackfillDaemon::m_lock") {
-  dout(10) << "images=" << images.size() << dendl;
+  dout(10) << dendl;
 }
 
 BackfillDaemon::~BackfillDaemon() {
@@ -77,9 +76,9 @@ int BackfillDaemon::init() {
     return r;
   }
 
-  r = resolve_image_specs();
+  r = discover_scheduled_images();
   if (r < 0) {
-    derr << "failed to resolve image specs: " << cpp_strerror(r) << dendl;
+    derr << "failed to discover scheduled images: " << cpp_strerror(r) << dendl;
     return r;
   }
 
@@ -169,30 +168,72 @@ int BackfillDaemon::connect_to_cluster() {
   return 0;
 }
 
-int BackfillDaemon::resolve_image_specs() {
+int BackfillDaemon::discover_scheduled_images() {
   dout(10) << dendl;
 
-  for (auto& spec : m_image_specs) {
-    // Resolve pool name to pool ID
-    librados::IoCtx ioctx;
-    int r = m_rados.ioctx_create(spec.pool_name.c_str(), ioctx);
-    if (r < 0) {
-      derr << "failed to open pool " << spec.pool_name << ": "
-           << cpp_strerror(r) << dendl;
-      return r;
-    }
-
-    spec.pool_id = ioctx.get_id();
-
-    // TODO: Resolve image name to image ID
-    // For now, just use image name as image ID (will need librbd API)
-    spec.image_id = spec.image_name;
-
-    dout(10) << "resolved " << spec.pool_name << "/" << spec.image_name
-             << " to pool_id=" << spec.pool_id << " image_id=" << spec.image_id
-             << dendl;
+  // List all pools
+  std::list<std::pair<int64_t, std::string>> pools;
+  int r = m_rados.pool_list2(pools);
+  if (r < 0) {
+    derr << "failed to list pools: " << cpp_strerror(r) << dendl;
+    return r;
   }
 
+  // Iterate through each pool to find scheduled images
+  for (const auto& pool : pools) {
+    std::string pool_name = pool.second;
+    int64_t pool_id = pool.first;
+
+    librados::IoCtx ioctx;
+    r = m_rados.ioctx_create2(pool_id, ioctx);
+    if (r < 0) {
+      dout(10) << "skipping pool " << pool_name << " (cannot create ioctx): "
+               << cpp_strerror(r) << dendl;
+      continue;
+    }
+
+    // List images in this pool
+    librbd::RBD rbd;
+    std::vector<librbd::image_spec_t> images;
+    r = rbd.list2(ioctx, &images);
+    if (r < 0) {
+      dout(10) << "failed to list images in pool " << pool_name << ": "
+               << cpp_strerror(r) << dendl;
+      continue;
+    }
+
+    // Check each image for backfill scheduling metadata
+    for (const auto& image_spec : images) {
+      librbd::Image image;
+      r = rbd.open(ioctx, image, image_spec.name.c_str());
+      if (r < 0) {
+        dout(10) << "failed to open image " << pool_name << "/" << image_spec.name
+                 << ": " << cpp_strerror(r) << dendl;
+        continue;
+      }
+
+      std::string scheduled_value;
+      r = image.metadata_get("backfill_scheduled", &scheduled_value);
+      if (r >= 0 && scheduled_value == "true") {
+        // This image is scheduled for backfill
+        ImageSpec spec;
+        spec.pool_name = pool_name;
+        spec.pool_id = pool_id;
+        spec.image_name = image_spec.name;
+        spec.image_id = image_spec.id;
+
+        m_image_specs.push_back(spec);
+
+        dout(10) << "discovered scheduled image: " << pool_name << "/"
+                 << image_spec.name << " (pool_id=" << pool_id
+                 << " image_id=" << spec.image_id << ")" << dendl;
+      }
+
+      image.close();
+    }
+  }
+
+  dout(5) << "discovered " << m_image_specs.size() << " scheduled images" << dendl;
   return 0;
 }
 
