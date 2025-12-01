@@ -802,6 +802,52 @@ public:
       discard_granularity_bytes = 0;
     }
 
+    // Load S3 configuration from image metadata
+    s3_config = S3Config();  // Reset to defaults first
+    for (auto meta_pair : meta) {
+      if (!boost::starts_with(meta_pair.first, "s3.")) {
+        continue;
+      }
+
+      std::string key = meta_pair.first.substr(3);  // Remove "s3." prefix
+      std::string val(meta_pair.second.c_str(), meta_pair.second.length());
+
+      if (key == "enabled") {
+        s3_config.enabled = (val == "true" || val == "1");
+      } else if (key == "endpoint") {
+        s3_config.endpoint = val;
+      } else if (key == "bucket") {
+        s3_config.bucket = val;
+      } else if (key == "region") {
+        s3_config.region = val;
+      } else if (key == "access_key") {
+        s3_config.access_key = val;
+      } else if (key == "secret_key") {
+        s3_config.secret_key = val;
+      } else if (key == "image_name") {
+        s3_config.image_name = val;
+      } else if (key == "image_format") {
+        s3_config.image_format = val;
+      } else if (key == "prefix") {
+        s3_config.prefix = val;
+      } else if (key == "timeout_ms") {
+        s3_config.timeout_ms = std::stoul(val);
+      } else if (key == "max_retries") {
+        s3_config.max_retries = std::stoul(val);
+      }
+    }
+
+    // Enable S3 config if we have the minimum required fields
+    if (!s3_config.bucket.empty() && !s3_config.endpoint.empty() &&
+        !s3_config.image_name.empty() && !s3_config.image_format.empty()) {
+      s3_config.enabled = true;
+      s3_config.object_size = get_object_size();
+      ldout(cct, 10) << __func__ << ": S3 config loaded: endpoint=" << s3_config.endpoint
+                     << ", bucket=" << s3_config.bucket
+                     << ", image_name=" << s3_config.image_name
+                     << ", format=" << s3_config.image_format << dendl;
+    }
+
     alloc_hint_flags = 0;
     auto compression_hint = config.get_val<std::string>("rbd_compression_hint");
     if (compression_hint == "compressible") {
