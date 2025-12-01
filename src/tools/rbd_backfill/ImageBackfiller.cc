@@ -45,9 +45,8 @@ ImageBackfiller::~ImageBackfiller() {
 
   // unique_ptr will automatically delete m_s3_fetcher
 
-  if (m_image_ctx != nullptr) {
+  if (m_image_ctx) {
     m_image_ctx->state->close();
-    m_image_ctx = nullptr;
   }
 }
 
@@ -63,14 +62,13 @@ int ImageBackfiller::init() {
   }
 
   // Open the parent image
-  m_image_ctx = new librbd::ImageCtx(m_spec.image_name, "", "", m_ioctx, false);
+  m_image_ctx.reset(new librbd::ImageCtx(m_spec.image_name, "", "", m_ioctx, false));
 
   r = m_image_ctx->state->open(0);
   if (r < 0) {
     derr << "failed to open image " << m_spec.pool_name << "/"
          << m_spec.image_name << ": " << cpp_strerror(r) << dendl;
-    delete m_image_ctx;
-    m_image_ctx = nullptr;
+    m_image_ctx.reset();
     return r;
   }
 
@@ -284,7 +282,7 @@ void ImageBackfiller::load_s3_config() {
 
   // Helper lambda to get metadata value
   auto get_metadata = [this](const std::string& key, std::string& value) -> bool {
-    int r = librbd::metadata_get(m_image_ctx, key, &value);
+    int r = librbd::metadata_get(m_image_ctx.get(), key, &value);
     if (r < 0 && r != -ENOENT) {
       dout(5) << "warning: failed to read " << key << ": "
               << cpp_strerror(r) << dendl;

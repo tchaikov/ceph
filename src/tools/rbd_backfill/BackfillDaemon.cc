@@ -21,32 +21,33 @@ namespace backfill {
 // Threads implementation
 Threads::Threads(CephContext *cct)
   : timer_lock("rbd::backfill::Threads::timer_lock") {
-  thread_pool = new ThreadPool(cct, "rbd_backfill", "tp_rbd_backfill",
-                                cct->_conf.get_val<uint64_t>("rbd_op_threads"));
+  thread_pool.reset(new ThreadPool(cct, "rbd_backfill", "tp_rbd_backfill",
+                                    cct->_conf.get_val<uint64_t>("rbd_op_threads")));
   thread_pool->start();
 
-  work_queue = new ContextWQ("rbd_backfill_wq",
-                             cct->_conf.get_val<uint64_t>("rbd_op_thread_timeout"),
-                             thread_pool);
+  work_queue.reset(new ContextWQ("rbd_backfill_wq",
+                                 cct->_conf.get_val<uint64_t>("rbd_op_thread_timeout"),
+                                 thread_pool.get()));
 
   Mutex::Locker timer_locker(timer_lock);
-  timer = new SafeTimer(cct, timer_lock, true);
+  timer.reset(new SafeTimer(cct, timer_lock, true));
   timer->init();
 }
 
 Threads::~Threads() {
-  if (timer != nullptr) {
+  if (timer) {
     Mutex::Locker timer_locker(timer_lock);
     timer->shutdown();
-    delete timer;
   }
 
-  delete work_queue;
+  // work_queue will be automatically deleted before thread_pool
+  // due to unique_ptr destruction order
 
-  if (thread_pool != nullptr) {
+  if (thread_pool) {
     thread_pool->stop();
-    delete thread_pool;
   }
+
+  // Smart pointers handle cleanup automatically
 }
 
 // BackfillDaemon implementation
@@ -62,8 +63,8 @@ BackfillDaemon::~BackfillDaemon() {
   dout(10) << dendl;
 
   // Cleanup should happen in shutdown()
-  ceph_assert(m_threads == nullptr);
-  ceph_assert(m_throttler == nullptr);
+  ceph_assert(!m_threads);
+  ceph_assert(!m_throttler);
   ceph_assert(m_image_backfillers.empty());
 }
 
@@ -83,10 +84,10 @@ int BackfillDaemon::init() {
   }
 
   // Initialize thread infrastructure
-  m_threads = new Threads(m_cct);
+  m_threads = std::make_unique<Threads>(m_cct);
 
   // Initialize throttler
-  m_throttler = new BackfillThrottler(m_cct, m_threads->work_queue);
+  m_throttler = std::make_unique<BackfillThrottler>(m_cct, m_threads->work_queue.get());
 
   dout(5) << "daemon initialized successfully" << dendl;
   return 0;
@@ -129,24 +130,19 @@ void BackfillDaemon::shutdown() {
     dout(10) << "stopping backfiller for " << pair.first.pool_name
              << "/" << pair.first.image_name << dendl;
     pair.second->stop();
-    delete pair.second;
   }
   m_image_backfillers.clear();
 
   // Cleanup throttler
-  if (m_throttler != nullptr) {
+  if (m_throttler) {
     // Wait for all inflight operations to complete before destroying
     dout(10) << "waiting for throttler operations to complete" << dendl;
     m_throttler->wait_for_ops();
-    delete m_throttler;
-    m_throttler = nullptr;
+    m_throttler.reset();
   }
 
   // Cleanup threads
-  if (m_threads != nullptr) {
-    delete m_threads;
-    m_threads = nullptr;
-  }
+  m_threads.reset();
 
   // Disconnect from cluster
   m_rados.shutdown();
@@ -212,13 +208,13 @@ int BackfillDaemon::start_image_backfillers() {
       handle_image_complete(spec, r);
     });
 
-    // Create ImageBackfiller instance
-    ImageBackfiller *backfiller = new ImageBackfiller(
+    // Create ImageBackfiller instance using unique_ptr
+    auto backfiller = std::make_unique<ImageBackfiller>(
       m_cct,
       m_rados,
       spec,
-      m_throttler,
-      m_threads,
+      m_throttler.get(),
+      m_threads.get(),
       on_finish
     );
 
@@ -227,7 +223,6 @@ int BackfillDaemon::start_image_backfillers() {
     if (r < 0) {
       derr << "failed to initialize backfiller for " << spec.pool_name
            << "/" << spec.image_name << ": " << cpp_strerror(r) << dendl;
-      delete backfiller;
       delete on_finish;
       return r;
     }
@@ -236,7 +231,7 @@ int BackfillDaemon::start_image_backfillers() {
     backfiller->create("img_backfill");
 
     // Track the backfiller
-    m_image_backfillers[spec] = backfiller;
+    m_image_backfillers[spec] = std::move(backfiller);
 
     dout(5) << "started backfiller for " << spec.pool_name
             << "/" << spec.image_name << dendl;
@@ -260,7 +255,7 @@ void BackfillDaemon::handle_image_complete(const ImageSpec& spec, int r) {
   dout(5) << "image backfill complete: " << spec.pool_name
           << "/" << spec.image_name << " r=" << r << dendl;
 
-  delete it->second;
+  // Smart pointer will automatically clean up when erased
   m_image_backfillers.erase(it);
 
   // If all backfillers are done, we can shut down

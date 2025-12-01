@@ -60,7 +60,7 @@ private:
   Context *m_on_finish;
 
   librados::IoCtx m_ioctx;
-  librbd::ImageCtx *m_image_ctx = nullptr;
+  std::unique_ptr<librbd::ImageCtx> m_image_ctx;
   std::unique_ptr<librbd::io::S3ObjectFetcher> m_s3_fetcher;
 
   std::atomic<bool> m_stopping{false};

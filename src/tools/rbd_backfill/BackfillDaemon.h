@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <memory>
 
 class CephContext;
 class ContextWQ;
@@ -24,9 +25,9 @@ class BackfillThrottler;
 class ImageBackfiller;
 
 struct Threads {
-  ThreadPool *thread_pool = nullptr;
-  ContextWQ *work_queue = nullptr;
-  SafeTimer *timer = nullptr;
+  std::unique_ptr<ThreadPool> thread_pool;
+  std::unique_ptr<ContextWQ> work_queue;
+  std::unique_ptr<SafeTimer> timer;
   Mutex timer_lock;
 
   explicit Threads(CephContext *cct);
@@ -56,13 +57,13 @@ private:
   void handle_image_complete(const ImageSpec& spec, int r);
 
   CephContext *m_cct;
-  Threads *m_threads = nullptr;
-  BackfillThrottler *m_throttler = nullptr;
+  std::unique_ptr<Threads> m_threads;
+  std::unique_ptr<BackfillThrottler> m_throttler;
 
   librados::Rados m_rados;
 
   std::vector<ImageSpec> m_image_specs;
-  std::map<ImageSpec, ImageBackfiller*> m_image_backfillers;
+  std::map<ImageSpec, std::unique_ptr<ImageBackfiller>> m_image_backfillers;
 
   Mutex m_lock;
   Cond m_cond;
