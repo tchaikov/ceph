@@ -9,6 +9,7 @@ set(rbd_srcs
   OptionPrinter.cc
   Shell.cc
   Utils.cc
+  action/Backfill.cc
   action/Bench.cc
   action/Children.cc
   action/Clone.cc
