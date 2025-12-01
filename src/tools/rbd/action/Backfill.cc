@@ -26,9 +26,9 @@ namespace {
 
 int validate_s3_backed_image(librbd::Image& image) {
   std::string value;
-  int r = image.metadata_get("s3_bucket", &value);
+  int r = image.metadata_get("s3.bucket", &value);
   if (r < 0) {
-    std::cerr << "rbd: image is not S3-backed (no s3_bucket metadata)" << std::endl;
+    std::cerr << "rbd: image is not S3-backed (no s3.bucket metadata)" << std::endl;
     return r;
   }
   return 0;
