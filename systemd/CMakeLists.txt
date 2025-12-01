@@ -11,6 +11,7 @@ foreach(service
     ceph-mon@
     ceph-osd@
     ceph-radosgw@
+    ceph-rbd-backfill@
     ceph-rbd-mirror@
     rbdmap)
   configure_file(
@@ -30,6 +31,7 @@ install(FILES
   ceph-mon.target
   ceph-mds.target
   ceph-radosgw.target
+  ceph-rbd-backfill.target
   ceph-rbd-mirror.target
   ceph-volume@.service
   DESTINATION ${CMAKE_INSTALL_SYSTEMD_SERVICEDIR})

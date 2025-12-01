@@ -623,6 +623,18 @@ Requires:	librbd1 = %{_epoch_prefix}%{version}-%{release}
 Daemon for mirroring RBD images between Ceph clusters, streaming
 changes asynchronously.
 
+%package -n rbd-backfill
+Summary:	Ceph daemon for backfilling RBD images from S3
+%if 0%{?suse_version}
+Group:		System/Filesystems
+%endif
+Requires:	ceph-base = %{_epoch_prefix}%{version}-%{release}
+Requires:	librados2 = %{_epoch_prefix}%{version}-%{release}
+Requires:	librbd1 = %{_epoch_prefix}%{version}-%{release}
+%description -n rbd-backfill
+Daemon for backfilling RBD images from S3-backed parent images, streaming
+data asynchronously to reduce network load and enable cross-cluster operations.
+
 %package -n rbd-nbd
 Summary:	Ceph RBD client base on NBD
 %if 0%{?suse_version}
@@ -1316,6 +1328,7 @@ mkdir -p %{buildroot}%{_localstatedir}/lib/ceph/bootstrap-rgw
 mkdir -p %{buildroot}%{_localstatedir}/lib/ceph/bootstrap-mgr
 mkdir -p %{buildroot}%{_localstatedir}/lib/ceph/bootstrap-rbd
 mkdir -p %{buildroot}%{_localstatedir}/lib/ceph/bootstrap-rbd-mirror
+mkdir -p %{buildroot}%{_localstatedir}/lib/ceph/bootstrap-rbd-backfill
 
 %if 0%{?suse_version}
 # create __pycache__ directories and their contents
@@ -1397,6 +1410,7 @@ rm -rf %{buildroot}
 %attr(750,ceph,ceph) %dir %{_localstatedir}/lib/ceph/bootstrap-mgr
 %attr(750,ceph,ceph) %dir %{_localstatedir}/lib/ceph/bootstrap-rbd
 %attr(750,ceph,ceph) %dir %{_localstatedir}/lib/ceph/bootstrap-rbd-mirror
+%attr(750,ceph,ceph) %dir %{_localstatedir}/lib/ceph/bootstrap-rbd-backfill
 
 %post base
 /sbin/ldconfig
@@ -1839,6 +1853,53 @@ if [ $1 -ge 1 ] ; then
   fi
   if [ "X$CEPH_AUTO_RESTART_ON_UPGRADE" = "Xyes" ] ; then
     /usr/bin/systemctl try-restart ceph-rbd-mirror@\*.service > /dev/null 2>&1 || :
+  fi
+fi
+
+%files -n rbd-backfill
+%{_bindir}/rbd-backfill
+%{_mandir}/man8/rbd-backfill.8*
+%{_unitdir}/ceph-rbd-backfill@.service
+%{_unitdir}/ceph-rbd-backfill.target
+
+%post -n rbd-backfill
+%if 0%{?suse_version}
+if [ $1 -eq 1 ] ; then
+  /usr/bin/systemctl preset ceph-rbd-backfill@\*.service ceph-rbd-backfill.target >/dev/null 2>&1 || :
+fi
+%endif
+%if 0%{?fedora} || 0%{?rhel}
+%systemd_post ceph-rbd-backfill@\*.service ceph-rbd-backfill.target
+%endif
+if [ $1 -eq 1 ] ; then
+/usr/bin/systemctl start ceph-rbd-backfill.target >/dev/null 2>&1 || :
+fi
+
+%preun -n rbd-backfill
+%if 0%{?suse_version}
+%service_del_preun ceph-rbd-backfill@\*.service ceph-rbd-backfill.target
+%endif
+%if 0%{?fedora} || 0%{?rhel}
+%systemd_preun ceph-rbd-backfill@\*.service ceph-rbd-backfill.target
+%endif
+
+%postun -n rbd-backfill
+%if 0%{?suse_version}
+DISABLE_RESTART_ON_UPDATE="yes"
+%service_del_postun ceph-rbd-backfill@\*.service ceph-rbd-backfill.target
+%endif
+%if 0%{?fedora} || 0%{?rhel}
+%systemd_postun ceph-rbd-backfill@\*.service ceph-rbd-backfill.target
+%endif
+if [ $1 -ge 1 ] ; then
+  # Restart on upgrade, but only if "CEPH_AUTO_RESTART_ON_UPGRADE" is set to
+  # "yes". In any case: if units are not running, do not touch them.
+  SYSCONF_CEPH=%{_sysconfdir}/sysconfig/ceph
+  if [ -f $SYSCONF_CEPH -a -r $SYSCONF_CEPH ] ; then
+    source $SYSCONF_CEPH
+  fi
+  if [ "X$CEPH_AUTO_RESTART_ON_UPGRADE" = "Xyes" ] ; then
+    /usr/bin/systemctl try-restart ceph-rbd-backfill@\*.service > /dev/null 2>&1 || :
   fi
 fi
 
