@@ -572,8 +572,21 @@ void CloneRequest<I>::handle_metadata_list(int r) {
   }
 
   if (!metadata.empty()) {
-    m_pairs.insert(metadata.begin(), metadata.end());
-    m_last_metadata_key = m_pairs.rbegin()->first;
+    // Filter out S3 metadata - child clones should not inherit S3 configuration
+    // from parent images. S3 metadata is specific to the parent's storage and
+    // should not be copied to child clones which read data through normal RBD CoW.
+    for (const auto& kv : metadata) {
+      const std::string& key = kv.first;
+      // Skip any metadata keys starting with "s3."
+      if (key.size() >= 3 && key.substr(0, 3) == "s3.") {
+        ldout(m_cct, 10) << "skipping S3 metadata key: " << key << dendl;
+        continue;
+      }
+      m_pairs.insert(kv);
+    }
+    if (!m_pairs.empty()) {
+      m_last_metadata_key = m_pairs.rbegin()->first;
+    }
   }
 
   if (metadata.size() == MAX_KEYS) {
