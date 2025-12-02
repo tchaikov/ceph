@@ -483,9 +483,13 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
                              << " len=" << this->m_object_len
                              << " from full object" << dendl;
 
-  // Write-back FULL object to parent RADOS pool to populate the cache
-  // This ensures subsequent reads from any offset can be served from RADOS
+  // Write-back FULL object to parent RADOS pool in the background (fire-and-forget)
+  // This populates the cache without blocking the read completion
   write_back_s3_data(full_object_data);
+
+  // Return read result immediately without waiting for write-back
+  // Write-back happens asynchronously in the background
+  this->finish(0);
 }
 
 template <typename I>
@@ -494,72 +498,58 @@ void ObjectReadRequest<I>::write_back_s3_data(bufferlist& full_object_data) {
   auto cct = image_ctx->cct;
 
   ldout(cct, 10) << "writing " << full_object_data.length()
-                 << " bytes (entire object)"
-                 << " to parent cache object: " << this->m_oid << dendl;
+                 << " bytes (entire object) to parent cache object: "
+                 << this->m_oid << " (fire-and-forget)" << dendl;
 
   // Create write operation to write the entire object
   // Since we fetched the entire object from S3, we can use write_full()
   librados::ObjectWriteOperation write_op;
   write_op.write_full(full_object_data);
 
-  // Submit async write operation to populate the cache
-  using klass = ObjectReadRequest<I>;
-  librados::AioCompletion *rados_completion =
-    util::create_rados_callback<klass, &klass::handle_write_back_s3_data>(this);
+  // Submit async write operation as fire-and-forget
+  // We don't wait for completion - the write happens in the background
+  auto rados_completion = librados::Rados::aio_create_completion();
 
   int r = image_ctx->data_ctx.aio_operate(this->m_oid, rados_completion, &write_op);
-  ceph_assert(r == 0);
+  if (r < 0) {
+    ldout(cct, 5) << "warning: failed to submit S3 cache write-back: "
+                  << cpp_strerror(r) << dendl;
+  } else {
+    ldout(cct, 10) << "submitted S3 cache write-back for " << this->m_oid << dendl;
+
+    // Update object map to mark the object as EXISTS
+    // This is done synchronously (in-memory) or fire-and-forget (RADOS)
+    // so it doesn't block the read completion
+    update_object_map_for_s3_write_back();
+  }
   rados_completion->release();
 }
 
 template <typename I>
-void ObjectReadRequest<I>::handle_write_back_s3_data(int r) {
+void ObjectReadRequest<I>::update_object_map_for_s3_write_back() {
   I *image_ctx = this->m_ictx;
   auto cct = image_ctx->cct;
 
-  ldout(cct, 10) << "write-back result: r=" << r << dendl;
+  // Check if this image has object map feature enabled
+  bool has_object_map = (image_ctx->features & RBD_FEATURE_OBJECT_MAP) != 0;
 
-  if (r < 0) {
-    // Write-back failed, but we still have the data to serve the read
-    // Log warning but don't fail the read operation
-    ldout(cct, 5) << "warning: failed to write S3 data back to parent cache: "
-                   << cpp_strerror(r) << ", continuing to serve read" << dendl;
-  } else {
-    ldout(cct, 10) << "successfully wrote S3 data to parent cache" << dendl;
-
-    // Update parent's object map to mark object as EXISTS
-    update_parent_object_map();
-  }
-
-  // Serve the read request with the data we fetched from S3
-  this->finish(0);
-}
-
-template <typename I>
-void ObjectReadRequest<I>::update_parent_object_map() {
-  I *image_ctx = this->m_ictx;
-  auto cct = image_ctx->cct;
-
-  // Check if parent has object map feature enabled
-  bool parent_has_object_map = (image_ctx->features & RBD_FEATURE_OBJECT_MAP) != 0;
-
-  if (!parent_has_object_map) {
-    ldout(cct, 15) << "parent does not have object_map feature, skipping" << dendl;
+  if (!has_object_map) {
+    ldout(cct, 15) << "image does not have object_map feature, skipping" << dendl;
     return;
   }
 
   if (image_ctx->object_map != nullptr) {
-    // Path 1: In-memory object map is available (same-cluster parent)
+    // In-memory object map is available - update it synchronously (fast)
     RWLock::WLocker object_map_locker(image_ctx->object_map_lock);
 
     uint8_t new_state = OBJECT_EXISTS;
     auto obj_map = image_ctx->object_map;
 
-    ldout(cct, 10) << "updating in-memory object map for object "
-                   << this->m_object_no << " to OBJECT_EXISTS" << dendl;
-
     if ((*obj_map)[this->m_object_no] != new_state) {
       (*obj_map)[this->m_object_no] = new_state;
+
+      ldout(cct, 10) << "updated in-memory object map for object "
+                     << this->m_object_no << " to OBJECT_EXISTS" << dendl;
 
       Context *ctx = new FunctionContext([object_no = this->m_object_no](int r) {
         // Errors are already logged by ObjectMap infrastructure
@@ -576,34 +566,27 @@ void ObjectReadRequest<I>::update_parent_object_map() {
       }
     }
   } else {
-    // Path 2: Parent has object map feature but in-memory map not available
-    // (cross-cluster scenario) - update via direct RADOS operation
+    // Object map is not in memory - update via direct RADOS operation (fire-and-forget)
     ldout(cct, 10) << "object_map is nullptr, updating via direct RADOS operation" << dendl;
 
-    // Get object map name
     std::string object_map_name = ObjectMap<>::object_map_name(
       image_ctx->id, CEPH_NOSNAP);
 
-    ldout(cct, 10) << "object_map name: " << object_map_name << dendl;
-
-    // Create object map update operation
     librados::ObjectWriteOperation map_op;
     cls_client::object_map_update(&map_op, this->m_object_no, this->m_object_no + 1,
                                   OBJECT_EXISTS, boost::optional<uint8_t>());
 
-    // Submit async operation - fire and forget
-    auto rados_completion = librados::Rados::aio_create_completion();
-    int r = image_ctx->data_ctx.aio_operate(object_map_name, rados_completion, &map_op);
+    auto map_completion = librados::Rados::aio_create_completion();
+    int r = image_ctx->data_ctx.aio_operate(object_map_name, map_completion, &map_op);
 
     if (r == 0) {
-      ldout(cct, 10) << "submitted async RADOS object map update for object "
-                     << this->m_object_no << dendl;
+      ldout(cct, 10) << "submitted async object map update for object " << this->m_object_no << dendl;
     } else {
-      ldout(cct, 5) << "warning: failed to submit object map update via RADOS: "
+      ldout(cct, 5) << "warning: failed to submit object map update: "
                     << cpp_strerror(r) << dendl;
     }
 
-    rados_completion->release();
+    map_completion->release();
   }
 }
 
