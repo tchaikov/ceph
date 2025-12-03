@@ -1044,17 +1044,11 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
                  << " bytes from S3" << dendl;
   std::cerr << "[S3_FETCH] Got " << m_s3_data.length() << " bytes from S3 for object " << m_object_no << std::endl;
 
-  // Skip parent write-back during copyup for performance
-  // The data is about to be written to the child anyway, so writing to parent
-  // first would just slow down the write operation. Parent cache population
-  // can happen through normal reads later.
-  ldout(cct, 10) << "skipping parent write-back during copyup (child will have data)" << dendl;
+  // Write data to parent in fire-and-forget manner to populate cache
+  // This doesn't block the copyup operation but ensures parent has the data
+  write_back_to_parent_async();
 
   unlock_parent_object();
-
-  // Update parent's object map to mark it as EXISTS (fire-and-forget)
-  // This is best-effort - if it fails, the next read will populate it
-  update_parent_object_map();
 
   // Use the S3 data for the copyup operation
   m_copyup_data = m_s3_data;
@@ -1088,6 +1082,35 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
 
   // Continue to update object maps and then copyup
   update_object_maps();
+}
+
+template <typename I>
+void CopyupRequest<I>::write_back_to_parent_async() {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 10) << "writing " << m_s3_data.length()
+                 << " bytes to parent object: " << m_parent_oid
+                 << " (fire-and-forget)" << dendl;
+
+  // Create write operation to write full object to parent
+  librados::ObjectWriteOperation write_op;
+  write_op.write_full(m_s3_data);
+
+  // Submit async write operation as fire-and-forget
+  // We don't wait for completion - the write happens in the background
+  auto rados_completion = librados::Rados::aio_create_completion();
+
+  int r = m_parent_ioctx.aio_operate(m_parent_oid, rados_completion, &write_op);
+  if (r < 0) {
+    ldout(cct, 5) << "warning: failed to submit parent cache write-back: "
+                  << cpp_strerror(r) << dendl;
+  } else {
+    ldout(cct, 10) << "submitted parent cache write-back for " << m_parent_oid << dendl;
+
+    // Update object map to mark the object as EXISTS (also fire-and-forget)
+    // This ensures consistency - object map is updated along with data write
+    update_parent_object_map();
+  }
+  rados_completion->release();
 }
 
 template <typename I>

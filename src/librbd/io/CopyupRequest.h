@@ -144,6 +144,7 @@ private:
   void retry_read_from_parent();
   void fetch_from_s3_async();
   void handle_s3_fetch(int r);
+  void write_back_to_parent_async();
   void write_back_to_parent();
   void handle_write_back_to_parent(int r);
   void update_parent_object_map();
