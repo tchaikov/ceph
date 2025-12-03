@@ -418,9 +418,9 @@ void CopyupRequest<I>::copyup() {
   ldout(cct, 20) << "oid=" << m_oid << dendl;
 
   bool copy_on_read = m_pending_requests.empty();
-  std::cerr << "[COPYUP] object " << m_object_no << ": copy_on_read=" << copy_on_read
-            << ", pending_requests=" << m_pending_requests.size()
-            << ", copyup_data.length()=" << m_copyup_data.length() << std::endl;
+  ldout(cct, 15) << "object " << m_object_no << ": copy_on_read=" << copy_on_read
+                 << ", pending_requests=" << m_pending_requests.size()
+                 << ", copyup_data.length()=" << m_copyup_data.length() << dendl;
 
   // For S3 fetch during flatten, we may have fetched data from S3 into m_copyup_data
   // for an object that already exists in the child. In this case, we need to use the
@@ -431,7 +431,6 @@ void CopyupRequest<I>::copyup() {
     // Check if all pending writes are empty (flatten case)
     bool all_writes_empty = true;
     for (auto req : m_pending_requests) {
-      std::cerr << "[COPYUP] checking pending request, is_empty=" << req->is_empty_write_op() << std::endl;
       if (!req->is_empty_write_op()) {
         all_writes_empty = false;
         break;
@@ -440,7 +439,6 @@ void CopyupRequest<I>::copyup() {
     // Only use the S3 fetch path if the parent is actually S3-backed
     if (all_writes_empty && should_fetch_from_s3()) {
       s3_fetch_for_existing_object = true;
-      std::cerr << "[COPYUP] S3 fetch for existing object, using copy-on-read path!" << std::endl;
       ldout(cct, 10) << "S3 fetch for existing object, using copy-on-read path" << dendl;
     }
   }
@@ -459,7 +457,6 @@ void CopyupRequest<I>::copyup() {
   } else if (s3_fetch_for_existing_object) {
     // For S3 fetch of existing objects, use write_full() instead of copyup
     // because copyup skips writing if the object already exists
-    std::cerr << "[COPYUP] Using write_full for S3 fetch of existing object" << std::endl;
     ldout(cct, 10) << "using write_full for S3 fetch of existing object" << dendl;
     copyup_op.write_full(m_copyup_data);
     ObjectRequest<I>::add_write_hint(*m_image_ctx, &copyup_op);
@@ -1043,22 +1040,28 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
   }
 
   ldout(cct, 10) << "successfully fetched " << m_s3_data.length()
-                 << " bytes from S3" << dendl;
-  std::cerr << "[S3_FETCH] Got " << m_s3_data.length() << " bytes from S3 for object " << m_object_no << std::endl;
+                 << " bytes from S3 for object " << m_object_no << dendl;
 
-  // Only write to parent if this represents a cache miss on parent
-  // (i.e., child object didn't exist before this operation).
-  // If child object already existed, this S3 fetch is just for merging with
-  // a partial write, NOT a cache miss on parent, so don't populate parent.
-  if (!m_child_object_existed) {
-    ldout(cct, 10) << "child object didn't exist, writing to parent to populate cache" << dendl;
-    std::cerr << "[S3_FETCH] Cache miss - writing to parent for object " << m_object_no << std::endl;
+  // Determine whether to populate parent cache based on operation type
+  bool copy_on_read = m_pending_requests.empty();
+  bool should_populate_parent = !m_child_object_existed || copy_on_read;
+
+  ldout(cct, 10) << "S3 fetch complete: copy_on_read=" << copy_on_read
+                 << ", child_object_existed=" << m_child_object_existed
+                 << ", will_populate_parent=" << should_populate_parent << dendl;
+
+  // Only write to parent if this represents a cache miss on parent:
+  // 1. Copy-on-read: child object doesn't exist, read triggered copyup
+  // 2. Copy-on-write (first write): child object doesn't exist, write triggered copyup
+  // 3. Overwrite: child object exists, S3 fetch only for read-modify-write (skip parent write)
+  if (should_populate_parent) {
+    ldout(cct, 10) << "populating parent cache: "
+                   << (copy_on_read ? "copy-on-read" : "initial copyup") << dendl;
     // Write data to parent in fire-and-forget manner to populate cache
     // This doesn't block the copyup operation but ensures parent has the data
     write_back_to_parent_async();
   } else {
-    ldout(cct, 10) << "child object already existed, skipping parent write (not a cache miss)" << dendl;
-    std::cerr << "[S3_FETCH] Child existed - NOT writing to parent for object " << m_object_no << std::endl;
+    ldout(cct, 10) << "skipping parent cache write: overwrite to existing child object" << dendl;
   }
 
   unlock_parent_object();
