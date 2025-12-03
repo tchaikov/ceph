@@ -12,14 +12,13 @@
 #include "librbd/ImageCtx.h"
 #include "librbd/ObjectMap.h"
 #include "librbd/Utils.h"
-#include "librbd/io/S3ObjectFetcher.h"
+#include "librbd/S3ObjectFetcher.h"
 #include "librbd/deep_copy/ObjectCopyRequest.h"
 #include "librbd/io/AioCompletion.h"
 #include "librbd/io/ImageRequest.h"
 #include "librbd/io/ObjectRequest.h"
 #include "librbd/io/ReadResult.h"
 #include "cls/lock/cls_lock_client.h"
-#include "cls/rbd/cls_rbd_client.h"
 
 #include <boost/bind.hpp>
 #include <boost/lambda/bind.hpp>
@@ -113,13 +112,11 @@ private:
 template <typename I>
 CopyupRequest<I>::CopyupRequest(I *ictx, const std::string &oid,
                                 uint64_t objectno, Extents &&image_extents,
-                                const ZTracer::Trace &parent_trace,
-                                bool child_object_existed)
+                                const ZTracer::Trace &parent_trace)
   : m_image_ctx(ictx), m_oid(oid), m_object_no(objectno),
     m_image_extents(image_extents),
     m_trace(util::create_trace(*m_image_ctx, "copy-up", parent_trace)),
-    m_lock("CopyupRequest", false, false),
-    m_child_object_existed(child_object_existed)
+    m_lock("CopyupRequest", false, false)
 {
   ceph_assert(m_image_ctx->data_ctx.is_valid());
   m_async_op.start_op(*util::get_image_ctx(m_image_ctx));
@@ -339,8 +336,7 @@ void CopyupRequest<I>::update_object_maps() {
   bool is_standalone_parent = false;
   {
     RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
-    if (m_image_ctx->parent_md.parent_type == PARENT_TYPE_STANDALONE ||
-        m_image_ctx->parent_md.parent_type == PARENT_TYPE_REMOTE_STANDALONE) {
+    if (m_image_ctx->parent_md.parent_type == PARENT_TYPE_STANDALONE) {
       is_standalone_parent = true;
       // Mark objects copied from standalone parents with OBJECT_COPIEDUP
       head_object_map_state = OBJECT_COPIEDUP;
@@ -418,31 +414,6 @@ void CopyupRequest<I>::copyup() {
   ldout(cct, 20) << "oid=" << m_oid << dendl;
 
   bool copy_on_read = m_pending_requests.empty();
-  ldout(cct, 15) << "object " << m_object_no << ": copy_on_read=" << copy_on_read
-                 << ", pending_requests=" << m_pending_requests.size()
-                 << ", copyup_data.length()=" << m_copyup_data.length() << dendl;
-
-  // For S3 fetch during flatten, we may have fetched data from S3 into m_copyup_data
-  // for an object that already exists in the child. In this case, we need to use the
-  // copy-on-read path (copyup with empty snapshot context) to properly overwrite
-  // the existing child object.
-  bool s3_fetch_for_existing_object = false;
-  if (!copy_on_read && m_copyup_data.length() > 0) {
-    // Check if all pending writes are empty (flatten case)
-    bool all_writes_empty = true;
-    for (auto req : m_pending_requests) {
-      if (!req->is_empty_write_op()) {
-        all_writes_empty = false;
-        break;
-      }
-    }
-    // Only use the S3 fetch path if the parent is actually S3-backed
-    if (all_writes_empty && should_fetch_from_s3()) {
-      s3_fetch_for_existing_object = true;
-      ldout(cct, 10) << "S3 fetch for existing object, using copy-on-read path" << dendl;
-    }
-  }
-
   bool deep_copyup = !snapc.snaps.empty() && !m_copyup_is_zero;
   if (m_copyup_is_zero) {
     m_copyup_data.clear();
@@ -454,17 +425,10 @@ void CopyupRequest<I>::copyup() {
     copyup_op.exec("rbd", "copyup", m_copyup_data);
     ObjectRequest<I>::add_write_hint(*m_image_ctx, &copyup_op);
     ++m_pending_copyups;
-  } else if (s3_fetch_for_existing_object) {
-    // For S3 fetch of existing objects, use write_full() instead of copyup
-    // because copyup skips writing if the object already exists
-    ldout(cct, 10) << "using write_full for S3 fetch of existing object" << dendl;
-    copyup_op.write_full(m_copyup_data);
-    ObjectRequest<I>::add_write_hint(*m_image_ctx, &copyup_op);
-    ++m_pending_copyups;
   }
 
   librados::ObjectWriteOperation write_op;
-  if (!copy_on_read && !s3_fetch_for_existing_object) {
+  if (!copy_on_read) {
     if (!deep_copyup) {
       write_op.exec("rbd", "copyup", m_copyup_data);
       ObjectRequest<I>::add_write_hint(*m_image_ctx, &write_op);
@@ -607,25 +571,6 @@ bool CopyupRequest<I>::is_copyup_required() {
     return true;
   }
 
-  // If copyup data is all zeros and there are no pending writes, skip copyup.
-  // This avoids copying empty/zero regions during flatten operations.
-  // NOTE: We removed the check for "m_copyup_data.length() > 0" here because
-  // having data doesn't mean we need copyup - the data might be all zeros.
-  // The m_copyup_is_zero check above already handles non-zero data.
-
-  // NOTE: We do NOT unconditionally force copyup for S3-backed parents anymore.
-  // The previous approach caused flatten to process ALL objects (entire virtual
-  // size), not just objects with actual data. This led to 1GB flatten for images
-  // with only 16MB of data.
-  //
-  // Instead, we rely on:
-  // 1. The normal read_from_parent flow which checks if parent object exists
-  // 2. For S3-backed parents, check_parent_object_exists() will trigger S3 fetch
-  //    only if there's a possibility of data existing
-  // 3. If S3 fetch succeeds and returns data, m_copyup_data will be populated,
-  //    making this function return true (see check above)
-  // 4. If no data exists (neither in RADOS nor S3), copyup is correctly skipped
-
   for (auto req : m_pending_requests) {
     if (!req->is_empty_write_op()) {
       return true;
@@ -712,39 +657,25 @@ bool CopyupRequest<I>::should_fetch_from_s3() {
   // Check if S3 back-fill feature is enabled globally
   bool s3_enabled = cct->_conf.template get_val<bool>("rbd_s3_fetch_enabled");
   if (!s3_enabled) {
-    ldout(cct, 10) << "S3 fetch disabled by config" << dendl;
+    ldout(cct, 20) << "S3 fetch disabled by config" << dendl;
     return false;
   }
 
   // Check if we have a parent image
   RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
   if (m_image_ctx->parent == nullptr) {
-    ldout(cct, 10) << "no parent image" << dendl;
     return false;
   }
 
   // Check if parent is a standalone clone (not snapshot-based)
-  // For standalone clones, parent_type should be PARENT_TYPE_STANDALONE or PARENT_TYPE_REMOTE_STANDALONE
-  auto parent_type = m_image_ctx->parent_md.parent_type;
-  ldout(cct, 10) << "parent_type=" << parent_type << dendl;
-
-  if (parent_type != PARENT_TYPE_STANDALONE &&
-      parent_type != PARENT_TYPE_REMOTE_STANDALONE) {
-    ldout(cct, 10) << "parent is not standalone type" << dendl;
+  if (m_image_ctx->parent_md.parent_type != PARENT_TYPE_STANDALONE &&
+      m_image_ctx->parent_md.parent_type != PARENT_TYPE_REMOTE_STANDALONE) {
     return false;
   }
 
   // Check if parent has S3 configuration
-  const S3Config& s3_config = m_image_ctx->parent->s3_config;
-  ldout(cct, 10) << "parent S3 config: enabled=" << s3_config.enabled
-                 << ", bucket=" << s3_config.bucket
-                 << ", endpoint=" << s3_config.endpoint
-                 << ", image_name=" << s3_config.image_name
-                 << ", image_format=" << s3_config.image_format
-                 << ", is_valid=" << s3_config.is_valid() << dendl;
-
-  if (!s3_config.is_valid()) {
-    ldout(cct, 10) << "parent S3 config invalid or missing" << dendl;
+  if (!m_image_ctx->parent->s3_config.is_valid()) {
+    ldout(cct, 20) << "parent S3 config invalid or missing" << dendl;
     return false;
   }
 
@@ -785,28 +716,21 @@ void CopyupRequest<I>::check_parent_object_exists() {
 template <typename I>
 void CopyupRequest<I>::handle_check_parent_object_exists(int r) {
   auto cct = m_image_ctx->cct;
-  ldout(cct, 15) << "parent object existence check for object " << m_object_no
-                 << ": r=" << r << dendl;
+  ldout(cct, 15) << "parent object existence check result: r=" << r << dendl;
 
-  std::cerr << "[S3_FETCH] handle_check_parent_object_exists for object " << m_object_no
-            << ": r=" << r << std::endl;
-
-  // For S3-backed parents, ALWAYS fetch from S3 directly, even if parent object
-  // exists in RADOS. This is because:
-  // 1. The parent object in RADOS may contain stale/incorrect data
-  // 2. We want to ensure consistency with the authoritative S3 source
-  // 3. S3 fetch will write-back to parent, updating the RADOS copy
-  if (r == -ENOENT || r == 0) {
-    // Object doesn't exist in RADOS, OR it exists but we want to re-fetch from S3
-    ldout(cct, 15) << "fetching from S3 (exists in RADOS: " << (r == 0) << ")" << dendl;
-    std::cerr << "[S3_FETCH] Object " << m_object_no << " - FETCHING FROM S3"
-              << " (parent_exists_in_rados=" << (r == 0) << ")" << std::endl;
+  if (r == -ENOENT) {
+    // Object doesn't exist in RADOS, fetch from S3
+    ldout(cct, 15) << "parent object not in RADOS, fetching from S3" << dendl;
     fetch_from_s3_with_lock();
   } else if (r < 0) {
     // Stat failed for other reason, fall back to normal read
+    // (which will handle the error appropriately)
     ldout(cct, 10) << "parent object stat failed: " << cpp_strerror(r)
                    << ", falling back to normal read" << dendl;
-    std::cerr << "[S3_FETCH] Object " << m_object_no << " stat failed, falling back to normal read" << std::endl;
+    do_read_from_parent();
+  } else {
+    // Object exists in RADOS, do normal read
+    ldout(cct, 15) << "parent object exists in RADOS, reading normally" << dendl;
     do_read_from_parent();
   }
 }
@@ -892,14 +816,10 @@ void CopyupRequest<I>::handle_lock_parent_object(int r) {
   auto cct = m_image_ctx->cct;
   ldout(cct, 15) << "lock result: r=" << r << dendl;
 
-  std::cerr << "[S3_FETCH] handle_lock_parent_object for object " << m_object_no
-            << ": r=" << r << std::endl;
-
   if (r == 0) {
     // Lock acquired successfully!
     m_s3_lock_acquired = true;
     ldout(cct, 10) << "acquired S3 fetch lock, proceeding to fetch from S3" << dendl;
-    std::cerr << "[S3_FETCH] Lock acquired for object " << m_object_no << ", fetching from S3" << std::endl;
 
     // Fetch object from S3
     fetch_from_s3_async();
@@ -907,13 +827,11 @@ void CopyupRequest<I>::handle_lock_parent_object(int r) {
   } else if (r == -EBUSY || r == -EEXIST) {
     // Lock is held by another child - they're fetching from S3
     ldout(cct, 10) << "lock busy, another child is fetching from S3, will retry" << dendl;
-    std::cerr << "[S3_FETCH] Lock busy for object " << m_object_no << ", will retry" << std::endl;
     retry_read_from_parent();
 
   } else {
     // Lock operation failed for other reason
     lderr(cct) << "failed to acquire S3 fetch lock: " << cpp_strerror(r) << dendl;
-    std::cerr << "[S3_FETCH] Lock FAILED for object " << m_object_no << ": " << cpp_strerror(r) << std::endl;
     finish(r);
   }
 }
@@ -983,13 +901,13 @@ void CopyupRequest<I>::fetch_from_s3_async() {
 
   parent_locker.unlock();
 
-  // Create S3 fetcher with credentials and fetch object range
-  io::S3ObjectFetcher fetcher(cct, s3_config);
+  // Create S3 fetcher and fetch object range
+  S3ObjectFetcher fetcher(cct);
 
   auto ctx = util::create_context_callback<
     CopyupRequest<I>, &CopyupRequest<I>::handle_s3_fetch>(this);
 
-  fetcher.fetch_url(s3_url, &m_s3_data, ctx, byte_start, byte_length);
+  fetcher.fetch(s3_url, &m_s3_data, ctx, byte_start, byte_length);
 }
 
 template <typename I>
@@ -997,32 +915,8 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
   auto cct = m_image_ctx->cct;
   ldout(cct, 10) << "S3 fetch result: r=" << r << ", bytes=" << m_s3_data.length() << dendl;
 
-  std::cerr << "[S3_FETCH] handle_s3_fetch for object " << m_object_no
-            << ": r=" << r << ", bytes=" << m_s3_data.length() << std::endl;
-
   if (r < 0) {
-    // For sparse images, many objects don't exist in S3.
-    // S3 returns:
-    //   -ENOENT (404): Object/range doesn't exist
-    //   -EINVAL (416): Byte range not satisfiable (beyond file size)
-    //
-    // These are expected for sparse images and should NOT fail the operation.
-    // Instead, treat them as "no data to copy" and complete successfully.
-    if (r == -ENOENT || r == -EINVAL) {
-      ldout(cct, 10) << "object " << m_object_no
-                     << " does not exist in S3 (sparse image), skipping copyup"
-                     << dendl;
-      std::cerr << "[S3_FETCH] Object " << m_object_no
-                << " not in S3 (sparse), skipping: " << cpp_strerror(r) << std::endl;
-      unlock_parent_object();
-      finish(0);  // Success - no data to copy
-      return;
-    }
-
-    // Other errors (network, timeout, auth, etc.) are real failures
     lderr(cct) << "failed to fetch object from S3: " << cpp_strerror(r) << dendl;
-    std::cerr << "[S3_FETCH] S3 fetch FAILED for object " << m_object_no
-              << ": " << cpp_strerror(r) << std::endl;
     unlock_parent_object();
     finish(r);
     return;
@@ -1030,103 +924,14 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
 
   // Validate we got data
   if (m_s3_data.length() == 0) {
-    ldout(cct, 10) << "S3 returned empty data for object " << m_object_no
-                   << " (sparse region), skipping copyup" << dendl;
-    std::cerr << "[S3_FETCH] Object " << m_object_no
-              << " has no data in S3 (sparse), skipping" << std::endl;
-    unlock_parent_object();
-    finish(0);  // Success - no data to copy
-    return;
+    ldout(cct, 5) << "warning: S3 object exists but is empty" << dendl;
   }
 
   ldout(cct, 10) << "successfully fetched " << m_s3_data.length()
-                 << " bytes from S3 for object " << m_object_no << dendl;
+                 << " bytes from S3, writing back to parent" << dendl;
 
-  // Determine whether to populate parent cache based on operation type
-  bool copy_on_read = m_pending_requests.empty();
-  bool should_populate_parent = !m_child_object_existed || copy_on_read;
-
-  ldout(cct, 10) << "S3 fetch complete: copy_on_read=" << copy_on_read
-                 << ", child_object_existed=" << m_child_object_existed
-                 << ", will_populate_parent=" << should_populate_parent << dendl;
-
-  // Only write to parent if this represents a cache miss on parent:
-  // 1. Copy-on-read: child object doesn't exist, read triggered copyup
-  // 2. Copy-on-write (first write): child object doesn't exist, write triggered copyup
-  // 3. Overwrite: child object exists, S3 fetch only for read-modify-write (skip parent write)
-  if (should_populate_parent) {
-    ldout(cct, 10) << "populating parent cache: "
-                   << (copy_on_read ? "copy-on-read" : "initial copyup") << dendl;
-    // Write data to parent in fire-and-forget manner to populate cache
-    // This doesn't block the copyup operation but ensures parent has the data
-    write_back_to_parent_async();
-  } else {
-    ldout(cct, 10) << "skipping parent cache write: overwrite to existing child object" << dendl;
-  }
-
-  unlock_parent_object();
-
-  // Use the S3 data for the copyup operation
-  m_copyup_data = m_s3_data;
-
-  // Clear S3 data buffer to free memory
-  m_s3_data.clear();
-
-  // Continue with normal copyup flow
-  m_image_ctx->snap_lock.get_read();
-  m_lock.Lock();
-  m_copyup_is_zero = m_copyup_data.is_zero();
-  m_copyup_required = is_copyup_required();
-  disable_append_requests();
-
-  if (!m_copyup_required) {
-    m_lock.Unlock();
-    m_image_ctx->snap_lock.put_read();
-    ldout(cct, 20) << "copyup not required after S3 fetch" << dendl;
-    finish(0);
-    return;
-  }
-
-  // Copyup is required - populate snapshot IDs if data is not all zeros
-  if (!m_copyup_is_zero) {
-    m_snap_ids.insert(m_snap_ids.end(), m_image_ctx->snaps.rbegin(),
-                      m_image_ctx->snaps.rend());
-  }
-
-  m_lock.Unlock();
-  m_image_ctx->snap_lock.put_read();
-
-  // Continue to update object maps and then copyup
-  update_object_maps();
-}
-
-template <typename I>
-void CopyupRequest<I>::write_back_to_parent_async() {
-  auto cct = m_image_ctx->cct;
-  ldout(cct, 10) << "writing " << m_s3_data.length()
-                 << " bytes to parent object: " << m_parent_oid
-                 << " (fire-and-forget)" << dendl;
-
-  // Create write operation to write full object to parent
-  librados::ObjectWriteOperation write_op;
-  write_op.write_full(m_s3_data);
-
-  // Submit async write operation as fire-and-forget
-  // We don't wait for completion - the write happens in the background
-  auto rados_completion = librados::Rados::aio_create_completion();
-
-  int r = m_parent_ioctx.aio_operate(m_parent_oid, rados_completion, &write_op);
-  if (r < 0) {
-    ldout(cct, 5) << "warning: failed to submit parent cache write-back: "
-                  << cpp_strerror(r) << dendl;
-  } else {
-    ldout(cct, 10) << "submitted parent cache write-back for " << m_parent_oid << dendl;
-
-    // Update object map to mark the object as EXISTS (also fire-and-forget)
-    // This ensures consistency - object map is updated along with data write
-    update_parent_object_map();
-  }
-  rados_completion->release();
+  // Write S3 data back to parent RADOS pool
+  write_back_to_parent();
 }
 
 template <typename I>
@@ -1140,7 +945,6 @@ void CopyupRequest<I>::write_back_to_parent() {
   write_op.write_full(m_s3_data);
 
   // Submit async write operation
-  // Object map update will happen after write completes successfully
   using klass = CopyupRequest<I>;
   librados::AioCompletion *rados_completion =
     util::create_rados_callback<klass, &klass::handle_write_back_to_parent>(this);
@@ -1167,10 +971,6 @@ void CopyupRequest<I>::handle_write_back_to_parent(int r) {
 
   ldout(cct, 10) << "successfully wrote S3 data to parent, "
                  << "continuing with normal copyup using S3 data" << dendl;
-
-  // IMPORTANT: Now that data write succeeded, update the parent's object map
-  // This ensures consistency - object map is only marked as EXISTS after data is written
-  update_parent_object_map();
 
   // Use the S3 data for the copyup operation
   // Copy S3 data to copyup buffer
@@ -1207,87 +1007,6 @@ void CopyupRequest<I>::handle_write_back_to_parent(int r) {
 
   // Continue to update object maps and then copyup
   update_object_maps();
-}
-
-template <typename I>
-void CopyupRequest<I>::update_parent_object_map() {
-  auto cct = m_image_ctx->cct;
-
-  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
-
-  if (m_image_ctx->parent == nullptr) {
-    ldout(cct, 10) << "parent is nullptr, skipping object map update" << dendl;
-    return;
-  }
-
-  // Check if parent has object map feature enabled
-  bool parent_has_object_map = (m_image_ctx->parent->features & RBD_FEATURE_OBJECT_MAP) != 0;
-
-  if (!parent_has_object_map) {
-    ldout(cct, 10) << "parent does not have object_map feature, skipping" << dendl;
-    return;
-  }
-
-  if (m_image_ctx->parent->object_map != nullptr) {
-    // Path 1: In-memory object map is available (same-cluster parent)
-    RWLock::WLocker object_map_locker(m_image_ctx->parent->object_map_lock);
-
-    uint8_t new_state = OBJECT_EXISTS;
-    auto parent_obj_map = m_image_ctx->parent->object_map;
-
-    ldout(cct, 10) << "updating parent in-memory object map for object "
-                   << m_object_no << " to OBJECT_EXISTS" << dendl;
-
-    if ((*parent_obj_map)[m_object_no] != new_state) {
-      (*parent_obj_map)[m_object_no] = new_state;
-
-      Context *ctx = new FunctionContext([object_no = m_object_no](int r) {
-        // Note: Cannot use ldout in lambda without capturing cct/this
-        // Errors are already logged by the ObjectMap update infrastructure
-      });
-
-      ZTracer::Trace trace;
-      bool sent = parent_obj_map->template aio_update<Context>(
-        CEPH_NOSNAP, m_object_no, new_state, boost::optional<uint8_t>(),
-        trace, false, ctx);
-
-      if (!sent) {
-        delete ctx;
-        ldout(cct, 10) << "parent object map update not queued (no exclusive lock)" << dendl;
-      }
-    }
-  } else {
-    // Path 2: Parent has object map feature but in-memory map not available
-    // (cross-cluster scenario) - update via direct RADOS operation
-    ldout(cct, 10) << "parent object_map is nullptr, updating via direct RADOS operation"
-                   << dendl;
-
-    // Get parent's object map name
-    std::string parent_object_map_name = ObjectMap<>::object_map_name(
-      m_image_ctx->parent->id, CEPH_NOSNAP);
-
-    ldout(cct, 10) << "parent object_map name: " << parent_object_map_name << dendl;
-
-    // Create object map update operation
-    librados::ObjectWriteOperation map_op;
-    cls_client::object_map_update(&map_op, m_object_no, m_object_no + 1,
-                                  OBJECT_EXISTS, boost::optional<uint8_t>());
-
-    // Submit async operation to update parent's object map
-    // Using fire-and-forget as this is best-effort
-    auto rados_completion = librados::Rados::aio_create_completion();
-    int r = m_parent_ioctx.aio_operate(parent_object_map_name, rados_completion, &map_op);
-
-    if (r == 0) {
-      ldout(cct, 10) << "submitted async RADOS object map update for object "
-                     << m_object_no << dendl;
-    } else {
-      ldout(cct, 5) << "warning: failed to submit parent object map update via RADOS: "
-                    << cpp_strerror(r) << dendl;
-    }
-
-    rados_completion->release();
-  }
 }
 
 template <typename I>

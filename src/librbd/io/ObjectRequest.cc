@@ -362,7 +362,7 @@ void ObjectReadRequest<I>::copyup() {
     // create and kick off a CopyupRequest
     auto new_req = CopyupRequest<I>::create(
       image_ctx, this->m_oid, this->m_object_no, std::move(parent_extents),
-      this->m_trace, false);  // child object doesn't exist yet (copy-on-read)
+      this->m_trace);
 
     image_ctx->copyup_list[this->m_object_no] = new_req;
     image_ctx->copyup_list_lock.Unlock();
@@ -687,26 +687,6 @@ void AbstractObjectWriteRequest<I>::pre_write_object_map_update() {
     return;
   }
 
-  // For S3-backed parents, force copyup even if object exists
-  // to ensure we fetch the correct data from S3
-  bool force_copyup_for_s3 = false;
-  if (m_object_may_exist && m_copyup_enabled) {
-    RWLock::RLocker parent_lock(image_ctx->parent_lock);
-    if (image_ctx->parent != nullptr &&
-        (image_ctx->parent_md.parent_type == PARENT_TYPE_STANDALONE ||
-         image_ctx->parent_md.parent_type == PARENT_TYPE_REMOTE_STANDALONE) &&
-        image_ctx->parent->s3_config.is_valid()) {
-      force_copyup_for_s3 = true;
-    }
-  }
-
-  if (force_copyup_for_s3) {
-    ldout(image_ctx->cct, 10) << "forcing copyup for S3-backed parent even though object exists" << dendl;
-    image_ctx->snap_lock.put_read();
-    copyup();
-    return;
-  }
-
   uint8_t new_state = this->get_pre_write_object_map_state();
   ldout(image_ctx->cct, 20) << this->m_oid << " " << this->m_object_off
                             << "~" << this->m_object_len << dendl;
@@ -822,8 +802,7 @@ void AbstractObjectWriteRequest<I>::copyup() {
   if (it == image_ctx->copyup_list.end()) {
     auto new_req = CopyupRequest<I>::create(
       image_ctx, this->m_oid, this->m_object_no,
-      std::move(this->m_parent_extents), this->m_trace,
-      m_object_may_exist);  // Pass whether child object may already exist
+      std::move(this->m_parent_extents), this->m_trace);
     this->m_parent_extents.clear();
 
     // make sure to wait on this CopyupRequest

@@ -47,34 +47,9 @@ public:
 
     {
       RWLock::RLocker snap_lock(image_ctx.snap_lock);
-
-      // Check if parent is S3-backed
-      bool parent_is_s3_backed = false;
-      {
-        RWLock::RLocker parent_lock(image_ctx.parent_lock);
-        if (image_ctx.parent != nullptr &&
-            (image_ctx.parent_md.parent_type == PARENT_TYPE_STANDALONE ||
-             image_ctx.parent_md.parent_type == PARENT_TYPE_REMOTE_STANDALONE) &&
-            image_ctx.parent->s3_config.is_valid()) {
-          parent_is_s3_backed = true;
-        }
-      }
-
-      std::cerr << "[FLATTEN] object " << m_object_no
-                << ": parent_is_s3_backed=" << parent_is_s3_backed
-                << ", object_may_exist=" << (image_ctx.object_map != nullptr &&
-                                            !image_ctx.object_map->object_may_not_exist(m_object_no))
-                << std::endl;
-
-      // For S3-backed parents, we must flatten ALL objects even if they exist,
-      // because existing objects may contain stale/wrong data (e.g., from writes
-      // before S3 fetch was implemented). We need to ensure all objects get the
-      // correct data from S3.
-      if (!parent_is_s3_backed &&
-          image_ctx.object_map != nullptr &&
+      if (image_ctx.object_map != nullptr &&
           !image_ctx.object_map->object_may_not_exist(m_object_no)) {
-        // can skip because the object already exists (non-S3 case)
-        std::cerr << "[FLATTEN] Skipping object " << m_object_no << " (exists, not S3)" << std::endl;
+        // can skip because the object already exists
         return 1;
       }
     }
@@ -84,11 +59,9 @@ public:
     auto req = new io::ObjectWriteRequest<I>(&image_ctx, oid, m_object_no, 0,
                                              std::move(bl), m_snapc, 0, {},
                                              this);
-    std::cerr << "[FLATTEN] object " << m_object_no << ": has_parent=" << req->has_parent() << std::endl;
     if (!req->has_parent()) {
       // stop early if the parent went away - it just means
       // another flatten finished first or the image was resized
-      std::cerr << "[FLATTEN] object " << m_object_no << ": SKIPPING (no parent)" << std::endl;
       delete req;
       return 1;
     }
