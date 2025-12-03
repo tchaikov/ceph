@@ -1041,11 +1041,53 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
   }
 
   ldout(cct, 10) << "successfully fetched " << m_s3_data.length()
-                 << " bytes from S3, writing back to parent" << dendl;
+                 << " bytes from S3" << dendl;
   std::cerr << "[S3_FETCH] Got " << m_s3_data.length() << " bytes from S3 for object " << m_object_no << std::endl;
 
-  // Write S3 data back to parent RADOS pool
-  write_back_to_parent();
+  // Skip parent write-back during copyup for performance
+  // The data is about to be written to the child anyway, so writing to parent
+  // first would just slow down the write operation. Parent cache population
+  // can happen through normal reads later.
+  ldout(cct, 10) << "skipping parent write-back during copyup (child will have data)" << dendl;
+
+  unlock_parent_object();
+
+  // Update parent's object map to mark it as EXISTS (fire-and-forget)
+  // This is best-effort - if it fails, the next read will populate it
+  update_parent_object_map();
+
+  // Use the S3 data for the copyup operation
+  m_copyup_data = m_s3_data;
+
+  // Clear S3 data buffer to free memory
+  m_s3_data.clear();
+
+  // Continue with normal copyup flow
+  m_image_ctx->snap_lock.get_read();
+  m_lock.Lock();
+  m_copyup_is_zero = m_copyup_data.is_zero();
+  m_copyup_required = is_copyup_required();
+  disable_append_requests();
+
+  if (!m_copyup_required) {
+    m_lock.Unlock();
+    m_image_ctx->snap_lock.put_read();
+    ldout(cct, 20) << "copyup not required after S3 fetch" << dendl;
+    finish(0);
+    return;
+  }
+
+  // Copyup is required - populate snapshot IDs if data is not all zeros
+  if (!m_copyup_is_zero) {
+    m_snap_ids.insert(m_snap_ids.end(), m_image_ctx->snaps.rbegin(),
+                      m_image_ctx->snaps.rend());
+  }
+
+  m_lock.Unlock();
+  m_image_ctx->snap_lock.put_read();
+
+  // Continue to update object maps and then copyup
+  update_object_maps();
 }
 
 template <typename I>
