@@ -113,11 +113,13 @@ private:
 template <typename I>
 CopyupRequest<I>::CopyupRequest(I *ictx, const std::string &oid,
                                 uint64_t objectno, Extents &&image_extents,
-                                const ZTracer::Trace &parent_trace)
+                                const ZTracer::Trace &parent_trace,
+                                bool child_object_existed)
   : m_image_ctx(ictx), m_oid(oid), m_object_no(objectno),
     m_image_extents(image_extents),
     m_trace(util::create_trace(*m_image_ctx, "copy-up", parent_trace)),
-    m_lock("CopyupRequest", false, false)
+    m_lock("CopyupRequest", false, false),
+    m_child_object_existed(child_object_existed)
 {
   ceph_assert(m_image_ctx->data_ctx.is_valid());
   m_async_op.start_op(*util::get_image_ctx(m_image_ctx));
@@ -1044,9 +1046,20 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
                  << " bytes from S3" << dendl;
   std::cerr << "[S3_FETCH] Got " << m_s3_data.length() << " bytes from S3 for object " << m_object_no << std::endl;
 
-  // Write data to parent in fire-and-forget manner to populate cache
-  // This doesn't block the copyup operation but ensures parent has the data
-  write_back_to_parent_async();
+  // Only write to parent if this represents a cache miss on parent
+  // (i.e., child object didn't exist before this operation).
+  // If child object already existed, this S3 fetch is just for merging with
+  // a partial write, NOT a cache miss on parent, so don't populate parent.
+  if (!m_child_object_existed) {
+    ldout(cct, 10) << "child object didn't exist, writing to parent to populate cache" << dendl;
+    std::cerr << "[S3_FETCH] Cache miss - writing to parent for object " << m_object_no << std::endl;
+    // Write data to parent in fire-and-forget manner to populate cache
+    // This doesn't block the copyup operation but ensures parent has the data
+    write_back_to_parent_async();
+  } else {
+    ldout(cct, 10) << "child object already existed, skipping parent write (not a cache miss)" << dendl;
+    std::cerr << "[S3_FETCH] Child existed - NOT writing to parent for object " << m_object_no << std::endl;
+  }
 
   unlock_parent_object();
 

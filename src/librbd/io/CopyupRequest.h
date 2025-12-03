@@ -30,13 +30,15 @@ class CopyupRequest {
 public:
   static CopyupRequest* create(ImageCtxT *ictx, const std::string &oid,
                                uint64_t objectno, Extents &&image_extents,
-                               const ZTracer::Trace &parent_trace) {
+                               const ZTracer::Trace &parent_trace,
+                               bool child_object_existed = false) {
     return new CopyupRequest(ictx, oid, objectno, std::move(image_extents),
-                             parent_trace);
+                             parent_trace, child_object_existed);
   }
 
   CopyupRequest(ImageCtxT *ictx, const std::string &oid, uint64_t objectno,
-                Extents &&image_extents, const ZTracer::Trace &parent_trace);
+                Extents &&image_extents, const ZTracer::Trace &parent_trace,
+                bool child_object_existed = false);
   ~CopyupRequest();
 
   void append_request(AbstractObjectWriteRequest<ImageCtxT> *req);
@@ -109,6 +111,7 @@ private:
   ceph::bufferlist m_s3_data;
   std::string m_parent_oid;
   librados::IoCtx m_parent_ioctx;
+  bool m_child_object_existed = false;  // Track if child object existed before copyup
 
   void read_from_parent();
   void handle_read_from_parent(int r);

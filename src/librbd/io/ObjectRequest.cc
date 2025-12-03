@@ -362,7 +362,7 @@ void ObjectReadRequest<I>::copyup() {
     // create and kick off a CopyupRequest
     auto new_req = CopyupRequest<I>::create(
       image_ctx, this->m_oid, this->m_object_no, std::move(parent_extents),
-      this->m_trace);
+      this->m_trace, false);  // child object doesn't exist yet (copy-on-read)
 
     image_ctx->copyup_list[this->m_object_no] = new_req;
     image_ctx->copyup_list_lock.Unlock();
@@ -822,7 +822,8 @@ void AbstractObjectWriteRequest<I>::copyup() {
   if (it == image_ctx->copyup_list.end()) {
     auto new_req = CopyupRequest<I>::create(
       image_ctx, this->m_oid, this->m_object_no,
-      std::move(this->m_parent_extents), this->m_trace);
+      std::move(this->m_parent_extents), this->m_trace,
+      m_object_may_exist);  // Pass whether child object may already exist
     this->m_parent_extents.clear();
 
     // make sure to wait on this CopyupRequest
