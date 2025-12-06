@@ -12,13 +12,14 @@
 #include "librbd/ImageCtx.h"
 #include "librbd/ObjectMap.h"
 #include "librbd/Utils.h"
-#include "librbd/S3ObjectFetcher.h"
+#include "librbd/io/S3ObjectFetcher.h"
 #include "librbd/deep_copy/ObjectCopyRequest.h"
 #include "librbd/io/AioCompletion.h"
 #include "librbd/io/ImageRequest.h"
 #include "librbd/io/ObjectRequest.h"
 #include "librbd/io/ReadResult.h"
 #include "cls/lock/cls_lock_client.h"
+#include "cls/rbd/cls_rbd_client.h"
 
 #include <boost/bind.hpp>
 #include <boost/lambda/bind.hpp>
@@ -151,6 +152,7 @@ void CopyupRequest<I>::send() {
 template <typename I>
 void CopyupRequest<I>::read_from_parent() {
   auto cct = m_image_ctx->cct;
+
   RWLock::RLocker snap_locker(m_image_ctx->snap_lock);
   RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
 
@@ -493,8 +495,8 @@ void CopyupRequest<I>::handle_copyup(int r) {
     pending_copyups = --m_pending_copyups;
   }
 
-  ldout(cct, 20) << "oid=" << m_oid << ", " << "r=" << r << ", "
-                 << "pending=" << pending_copyups << dendl;
+  ldout(cct, 20) << "oid=" << m_oid << ", r=" << r
+                 << ", pending=" << pending_copyups << dendl;
 
   if (r < 0 && r != -ENOENT) {
     lderr(cct) << "failed to copyup object: " << cpp_strerror(r) << dendl;
@@ -502,7 +504,12 @@ void CopyupRequest<I>::handle_copyup(int r) {
   }
 
   if (pending_copyups == 0) {
-    finish(0);
+    // All copyup operations complete - update parent object map if needed
+    if (r >= 0 || r == -ENOENT) {
+      update_parent_object_map_after_copyup();
+    } else {
+      finish(0);
+    }
   }
 }
 
@@ -902,12 +909,12 @@ void CopyupRequest<I>::fetch_from_s3_async() {
   parent_locker.unlock();
 
   // Create S3 fetcher and fetch object range
-  S3ObjectFetcher fetcher(cct);
+  S3ObjectFetcher fetcher(cct, s3_config);
 
   auto ctx = util::create_context_callback<
     CopyupRequest<I>, &CopyupRequest<I>::handle_s3_fetch>(this);
 
-  fetcher.fetch(s3_url, &m_s3_data, ctx, byte_start, byte_length);
+  fetcher.fetch_url(s3_url, &m_s3_data, ctx, byte_start, byte_length);
 }
 
 template <typename I>
@@ -959,18 +966,132 @@ void CopyupRequest<I>::handle_write_back_to_parent(int r) {
   auto cct = m_image_ctx->cct;
   ldout(cct, 10) << "write-back result: r=" << r << dendl;
 
-  // Always unlock the parent object when we're done
-  unlock_parent_object();
-
   if (r < 0) {
     lderr(cct) << "failed to write S3 data to parent object: "
                << cpp_strerror(r) << dendl;
+    unlock_parent_object();
     finish(r);
     return;
   }
 
   ldout(cct, 10) << "successfully wrote S3 data to parent, "
-                 << "continuing with normal copyup using S3 data" << dendl;
+                 << "updating parent object map" << dendl;
+
+  // Update parent object map to reflect the newly written object
+  update_parent_object_map();
+}
+
+template <typename I>
+void CopyupRequest<I>::unlock_parent_object() {
+  if (!m_s3_lock_acquired) {
+    return;
+  }
+
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 15) << "unlocking parent object" << dendl;
+
+  // Construct the same lock cookie we used to acquire the lock
+  std::string lock_cookie = m_image_ctx->id + "_" + stringify(m_object_no);
+
+  // Release the lock
+  librados::ObjectWriteOperation unlock_op;
+  rados::cls::lock::unlock(&unlock_op, "s3_fetch_lock", lock_cookie);
+
+  // Fire and forget - we don't wait for completion
+  int r = m_parent_ioctx.operate(m_parent_oid, &unlock_op);
+  if (r < 0) {
+    ldout(cct, 5) << "warning: failed to unlock parent object: "
+                  << cpp_strerror(r) << dendl;
+  }
+
+  m_s3_lock_acquired = false;
+}
+
+template <typename I>
+void CopyupRequest<I>::update_parent_object_map() {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 10) << "updating parent object map for object " << m_object_no << dendl;
+
+  // Get parent image context
+  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+  if (m_image_ctx->parent == nullptr) {
+    ldout(cct, 5) << "parent detached, skipping object map update" << dendl;
+    unlock_parent_object();
+    // Continue with copyup anyway
+    handle_update_parent_object_map(0);
+    return;
+  }
+
+  auto parent_image_ctx = m_image_ctx->parent;
+
+  // Check if parent has object map enabled
+  RWLock::RLocker snap_locker(parent_image_ctx->snap_lock);
+  if (parent_image_ctx->object_map == nullptr) {
+    ldout(cct, 10) << "parent object map not loaded in memory, updating via direct RADOS operation" << dendl;
+
+    // Update object map directly via RADOS cls operation
+    std::string object_map_name = ObjectMap<>::object_map_name(
+      parent_image_ctx->id, CEPH_NOSNAP);
+
+    librados::ObjectWriteOperation map_op;
+    cls_client::object_map_update(&map_op, m_object_no, m_object_no + 1,
+                                  OBJECT_EXISTS, boost::optional<uint8_t>());
+
+    // Create a completion with a callback to wait for the operation
+    using klass = CopyupRequest<I>;
+    librados::AioCompletion *map_completion =
+      util::create_rados_callback<klass, &klass::handle_direct_object_map_update>(this);
+
+    int r = parent_image_ctx->data_ctx.aio_operate(object_map_name, map_completion, &map_op);
+
+    if (r == 0) {
+      ldout(cct, 10) << "submitted async object map update for parent object " << m_object_no << dendl;
+      map_completion->release();
+    } else {
+      ldout(cct, 5) << "warning: failed to submit object map update: "
+                    << cpp_strerror(r) << dendl;
+      map_completion->release();
+      unlock_parent_object();
+      // Continue with copyup
+      handle_update_parent_object_map(0);
+    }
+
+    return;
+  }
+
+  // Update parent object map to mark object as existing
+  RWLock::WLocker object_map_locker(parent_image_ctx->object_map_lock);
+
+  using klass = CopyupRequest<I>;
+  Context *ctx = util::create_context_callback<
+    klass, &klass::handle_update_parent_object_map>(this);
+
+  bool sent = parent_image_ctx->object_map->template aio_update<Context>(
+    CEPH_NOSNAP, m_object_no, OBJECT_EXISTS, {}, m_trace, false, ctx);
+
+  if (!sent) {
+    // Object map update not needed or failed to queue
+    ldout(cct, 10) << "parent object map update not sent" << dendl;
+    unlock_parent_object();
+    parent_image_ctx->op_work_queue->queue(ctx, 0);
+  }
+}
+
+template <typename I>
+void CopyupRequest<I>::handle_update_parent_object_map(int r) {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 10) << "parent object map update result: r=" << r << dendl;
+
+  // Always unlock the parent object when we're done
+  unlock_parent_object();
+
+  if (r < 0) {
+    ldout(cct, 5) << "warning: failed to update parent object map: "
+                  << cpp_strerror(r) << dendl;
+    // Continue anyway - the object was written successfully
+  }
+
+  ldout(cct, 10) << "continuing with normal copyup using S3 data" << dendl;
 
   // Use the S3 data for the copyup operation
   // Copy S3 data to copyup buffer
@@ -1010,29 +1131,164 @@ void CopyupRequest<I>::handle_write_back_to_parent(int r) {
 }
 
 template <typename I>
-void CopyupRequest<I>::unlock_parent_object() {
-  if (!m_s3_lock_acquired) {
+void CopyupRequest<I>::handle_direct_object_map_update(int r) {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 10) << "direct object map update result: r=" << r << dendl;
+
+  // Unlock the parent object
+  unlock_parent_object();
+
+  if (r < 0) {
+    ldout(cct, 5) << "warning: failed to update parent object map via RADOS: "
+                  << cpp_strerror(r) << dendl;
+    // Continue anyway - the object was written successfully
+  }
+
+  // Continue with copyup
+  handle_update_parent_object_map(0);
+}
+
+template <typename I>
+void CopyupRequest<I>::update_parent_object_map_after_copyup() {
+  auto cct = m_image_ctx->cct;
+
+  ldout(cct, 20) << "checking if parent write needed" << dendl;
+
+  // Check if we need to write to parent and update its object map
+  RWLock::RLocker snap_locker(m_image_ctx->snap_lock);
+  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+
+  if (m_image_ctx->parent == nullptr) {
+    ldout(cct, 20) << "no parent, skipping parent write" << dendl;
+    snap_locker.unlock();
+    parent_locker.unlock();
+    finish(0);
     return;
   }
 
-  auto cct = m_image_ctx->cct;
-  ldout(cct, 15) << "unlocking parent object" << dendl;
-
-  // Construct the same lock cookie we used to acquire the lock
-  std::string lock_cookie = m_image_ctx->id + "_" + stringify(m_object_no);
-
-  // Release the lock
-  librados::ObjectWriteOperation unlock_op;
-  rados::cls::lock::unlock(&unlock_op, "s3_fetch_lock", lock_cookie);
-
-  // Fire and forget - we don't wait for completion
-  int r = m_parent_ioctx.operate(m_parent_oid, &unlock_op);
-  if (r < 0) {
-    ldout(cct, 5) << "warning: failed to unlock parent object: "
-                  << cpp_strerror(r) << dendl;
+  // Only write to parent for standalone clones
+  if (m_image_ctx->parent_md.parent_type != PARENT_TYPE_STANDALONE) {
+    ldout(cct, 20) << "not a standalone clone (type="
+                   << m_image_ctx->parent_md.parent_type << "), skipping" << dendl;
+    snap_locker.unlock();
+    parent_locker.unlock();
+    finish(0);
+    return;
   }
 
-  m_s3_lock_acquired = false;
+  // Check if we have data to write
+  if (m_copyup_data.length() == 0) {
+    ldout(cct, 20) << "no copyup data to write to parent" << dendl;
+    snap_locker.unlock();
+    parent_locker.unlock();
+    finish(0);
+    return;
+  }
+
+  ldout(cct, 10) << "writing copyup data to parent object " << m_object_no
+                 << " (" << m_copyup_data.length() << " bytes)" << dendl;
+
+  // Get parent object name and IoCtx
+  std::string parent_oid = m_image_ctx->parent->get_object_name(m_object_no);
+  librados::IoCtx parent_ioctx = m_image_ctx->parent->data_ctx;
+
+  snap_locker.unlock();
+  parent_locker.unlock();
+
+  // Write the copyup data to the parent object
+  librados::ObjectWriteOperation write_op;
+  write_op.write_full(m_copyup_data);
+
+  using klass = CopyupRequest<I>;
+  librados::AioCompletion *rados_completion =
+    util::create_rados_callback<klass, &klass::handle_write_parent_after_copyup>(this);
+
+  int r = parent_ioctx.aio_operate(parent_oid, rados_completion, &write_op);
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+template <typename I>
+void CopyupRequest<I>::handle_update_parent_object_map_after_copyup(int r) {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 15) << "parent object map update result: r=" << r << dendl;
+
+  if (r < 0) {
+    lderr(cct) << "warning: failed to update parent object map: "
+               << cpp_strerror(r) << dendl;
+    // Continue anyway - the copyup succeeded
+  }
+
+  finish(0);
+}
+
+template <typename I>
+void CopyupRequest<I>::handle_write_parent_after_copyup(int r) {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 15) << "parent write result: r=" << r << dendl;
+
+  if (r < 0) {
+    lderr(cct) << "warning: failed to write to parent object: "
+               << cpp_strerror(r) << dendl;
+    // Continue anyway - child copyup succeeded
+    finish(0);
+    return;
+  }
+
+  ldout(cct, 15) << "successfully wrote to parent object " << m_object_no
+                 << ", now updating object map" << dendl;
+
+  // Now update the parent object map
+  RWLock::RLocker snap_locker(m_image_ctx->snap_lock);
+  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+
+  if (m_image_ctx->parent == nullptr || m_image_ctx->parent->object_map == nullptr) {
+    ldout(cct, 15) << "parent or object map no longer available" << dendl;
+    snap_locker.unlock();
+    parent_locker.unlock();
+    finish(0);
+    return;
+  }
+
+  auto parent_image_ctx = m_image_ctx->parent;
+
+  snap_locker.unlock();
+  parent_locker.unlock();
+
+  // Update the parent's object map
+  RWLock::RLocker parent_owner_locker(parent_image_ctx->owner_lock);
+  RWLock::RLocker parent_snap_locker(parent_image_ctx->snap_lock);
+
+  if (parent_image_ctx->object_map == nullptr) {
+    ldout(cct, 15) << "parent object map became null" << dendl;
+    parent_snap_locker.unlock();
+    parent_owner_locker.unlock();
+    finish(0);
+    return;
+  }
+
+  RWLock::WLocker parent_object_map_locker(parent_image_ctx->object_map_lock);
+
+  // Update the in-memory object map
+  (*parent_image_ctx->object_map)[m_object_no] = OBJECT_EXISTS;
+
+  parent_object_map_locker.unlock();
+  parent_snap_locker.unlock();
+  parent_owner_locker.unlock();
+
+  ldout(cct, 15) << "updated parent in-memory object map, persisting..." << dendl;
+
+  // Queue async update to persist the object map
+  Context *ctx = util::create_context_callback<
+    CopyupRequest<I>, &CopyupRequest<I>::handle_update_parent_object_map_after_copyup>(this);
+
+  bool update_sent = parent_image_ctx->object_map->template aio_update<Context>(
+    CEPH_NOSNAP, m_object_no, OBJECT_EXISTS, {}, m_trace, false, ctx);
+
+  if (!update_sent) {
+    ldout(cct, 15) << "parent object map update not sent, completing immediately" << dendl;
+    parent_image_ctx->op_work_queue->queue(ctx, 0);
+  }
 }
 
 } // namespace io

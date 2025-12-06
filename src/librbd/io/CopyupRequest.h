@@ -148,7 +148,12 @@ private:
   void write_back_to_parent();
   void handle_write_back_to_parent(int r);
   void update_parent_object_map();
+  void handle_update_parent_object_map(int r);
+  void handle_direct_object_map_update(int r);
   void unlock_parent_object();
+  void update_parent_object_map_after_copyup();
+  void handle_write_parent_after_copyup(int r);
+  void handle_update_parent_object_map_after_copyup(int r);
 };
 
 } // namespace io
