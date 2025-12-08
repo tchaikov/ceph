@@ -937,8 +937,75 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
   ldout(cct, 10) << "successfully fetched " << m_s3_data.length()
                  << " bytes from S3, writing back to parent" << dendl;
 
-  // Write S3 data back to parent RADOS pool
-  write_back_to_parent();
+  // Write data to parent in fire-and-forget manner to populate cache
+  // This doesn't block the copyup operation but ensures parent has the data
+  write_back_to_parent_async();
+
+  unlock_parent_object();
+
+  // Use the S3 data for the copyup operation
+  m_copyup_data = m_s3_data;
+
+  // Clear S3 data buffer to free memory
+  m_s3_data.clear();
+
+  // Continue with normal copyup flow
+  m_image_ctx->snap_lock.get_read();
+  m_lock.Lock();
+  m_copyup_is_zero = m_copyup_data.is_zero();
+  m_copyup_required = is_copyup_required();
+  disable_append_requests();
+
+  if (!m_copyup_required) {
+    m_lock.Unlock();
+    m_image_ctx->snap_lock.put_read();
+    ldout(cct, 20) << "copyup not required after S3 fetch" << dendl;
+    finish(0);
+    return;
+  }
+
+  // Copyup is required - populate snapshot IDs if data is not all zeros
+  if (!m_copyup_is_zero) {
+    m_snap_ids.insert(m_snap_ids.end(), m_image_ctx->snaps.rbegin(),
+                      m_image_ctx->snaps.rend());
+  }
+
+  m_lock.Unlock();
+  m_image_ctx->snap_lock.put_read();
+
+  // Continue to update object maps and then copyup
+  update_object_maps();
+}
+
+template <typename I>
+void CopyupRequest<I>::write_back_to_parent_async() {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 10) << "writing " << m_s3_data.length()
+                 << " bytes to parent object: " << m_parent_oid
+                 << " (fire-and-forget)" << dendl;
+
+  // Create write operation to write full object to parent
+  librados::ObjectWriteOperation write_op;
+  write_op.write_full(m_s3_data);
+
+  // Submit async write operation as fire-and-forget
+  // We don't wait for completion - the write happens in the background
+  auto rados_completion = librados::Rados::aio_create_completion();
+
+  int r = m_parent_ioctx.aio_operate(m_parent_oid, rados_completion, &write_op);
+  if (r < 0) {
+    ldout(cct, 5) << "warning: failed to submit parent cache write-back: "
+                  << cpp_strerror(r) << dendl;
+  } else {
+    ldout(cct, 10) << "submitted parent cache write-back for " << m_parent_oid << dendl;
+
+    // NOTE: We intentionally skip update_parent_object_map() here to avoid
+    // blocking on parent->object_map_lock during flatten. During flatten,
+    // many objects update simultaneously and would serialize on this lock.
+    // Parent object map updates are best-effort cache population - not critical
+    // for correctness. The parent objects will be marked EXISTS when first read.
+  }
+  rados_completion->release();
 }
 
 template <typename I>
@@ -1010,70 +1077,81 @@ void CopyupRequest<I>::unlock_parent_object() {
 template <typename I>
 void CopyupRequest<I>::update_parent_object_map() {
   auto cct = m_image_ctx->cct;
-  ldout(cct, 10) << "updating parent object map for object " << m_object_no << dendl;
 
-  // Get parent image context
   RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+
   if (m_image_ctx->parent == nullptr) {
-    ldout(cct, 5) << "parent detached, skipping object map update" << dendl;
-    unlock_parent_object();
-    // Continue with copyup anyway
-    handle_update_parent_object_map(0);
+    ldout(cct, 10) << "parent is nullptr, skipping object map update" << dendl;
     return;
   }
 
-  auto parent_image_ctx = m_image_ctx->parent;
+  // Check if parent has object map feature enabled
+  bool parent_has_object_map = (m_image_ctx->parent->features & RBD_FEATURE_OBJECT_MAP) != 0;
 
-  // Check if parent has object map enabled
-  RWLock::RLocker snap_locker(parent_image_ctx->snap_lock);
-  if (parent_image_ctx->object_map == nullptr) {
-    ldout(cct, 10) << "parent object map not loaded in memory, updating via direct RADOS operation" << dendl;
+  if (!parent_has_object_map) {
+    ldout(cct, 10) << "parent does not have object_map feature, skipping" << dendl;
+    return;
+  }
 
-    // Update object map directly via RADOS cls operation
-    std::string object_map_name = ObjectMap<>::object_map_name(
-      parent_image_ctx->id, CEPH_NOSNAP);
+  if (m_image_ctx->parent->object_map != nullptr) {
+    // Path 1: In-memory object map is available (same-cluster parent)
+    RWLock::WLocker object_map_locker(m_image_ctx->parent->object_map_lock);
 
+    uint8_t new_state = OBJECT_EXISTS;
+    auto parent_obj_map = m_image_ctx->parent->object_map;
+
+    ldout(cct, 10) << "updating parent in-memory object map for object "
+                   << m_object_no << " to OBJECT_EXISTS" << dendl;
+
+    if ((*parent_obj_map)[m_object_no] != new_state) {
+      (*parent_obj_map)[m_object_no] = new_state;
+
+      Context *ctx = new FunctionContext([object_no = m_object_no](int r) {
+        // Note: Cannot use ldout in lambda without capturing cct/this
+        // Errors are already logged by the ObjectMap update infrastructure
+      });
+
+      ZTracer::Trace trace;
+      bool sent = parent_obj_map->template aio_update<Context>(
+        CEPH_NOSNAP, m_object_no, new_state, boost::optional<uint8_t>(),
+        trace, false, ctx);
+
+      if (!sent) {
+        delete ctx;
+        ldout(cct, 10) << "parent object map update not queued (no exclusive lock)" << dendl;
+      }
+    }
+  } else {
+    // Path 2: Parent has object map feature but in-memory map not available
+    // (cross-cluster scenario) - update via direct RADOS operation
+    ldout(cct, 10) << "parent object_map is nullptr, updating via direct RADOS operation"
+                   << dendl;
+
+    // Get parent's object map name
+    std::string parent_object_map_name = ObjectMap<>::object_map_name(
+      m_image_ctx->parent->id, CEPH_NOSNAP);
+
+    ldout(cct, 10) << "parent object_map name: " << parent_object_map_name << dendl;
+
+    // Create object map update operation
     librados::ObjectWriteOperation map_op;
     cls_client::object_map_update(&map_op, m_object_no, m_object_no + 1,
                                   OBJECT_EXISTS, boost::optional<uint8_t>());
 
-    // Create a completion with a callback to wait for the operation
-    using klass = CopyupRequest<I>;
-    librados::AioCompletion *map_completion =
-      util::create_rados_callback<klass, &klass::handle_direct_object_map_update>(this);
-
-    int r = parent_image_ctx->data_ctx.aio_operate(object_map_name, map_completion, &map_op);
+    // Submit async operation to update parent's object map
+    // Using fire-and-forget as this is best-effort
+    auto rados_completion = librados::Rados::aio_create_completion();
+    int r = m_parent_ioctx.aio_operate(parent_object_map_name, rados_completion, &map_op);
 
     if (r == 0) {
-      ldout(cct, 10) << "submitted async object map update for parent object " << m_object_no << dendl;
-      map_completion->release();
+      ldout(cct, 10) << "submitted async RADOS object map update for object "
+                     << m_object_no << dendl;
     } else {
-      ldout(cct, 5) << "warning: failed to submit object map update: "
+      ldout(cct, 5) << "warning: failed to submit parent object map update via RADOS: "
                     << cpp_strerror(r) << dendl;
-      map_completion->release();
-      unlock_parent_object();
-      // Continue with copyup
-      handle_update_parent_object_map(0);
     }
 
-    return;
-  }
-
-  // Update parent object map to mark object as existing
-  RWLock::WLocker object_map_locker(parent_image_ctx->object_map_lock);
-
-  using klass = CopyupRequest<I>;
-  Context *ctx = util::create_context_callback<
-    klass, &klass::handle_update_parent_object_map>(this);
-
-  bool sent = parent_image_ctx->object_map->template aio_update<Context>(
-    CEPH_NOSNAP, m_object_no, OBJECT_EXISTS, {}, m_trace, false, ctx);
-
-  if (!sent) {
-    // Object map update not needed or failed to queue
-    ldout(cct, 10) << "parent object map update not sent" << dendl;
-    unlock_parent_object();
-    parent_image_ctx->op_work_queue->queue(ctx, 0);
+    rados_completion->release();
   }
 }
 
