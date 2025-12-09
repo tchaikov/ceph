@@ -485,11 +485,46 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
   // Clear output buffer
   data->clear();
 
-  // Perform fetch with retry
-  int r = fetch_with_retry(url, data, byte_start, byte_length);
+  // Create fetch context for async operation
+  FetchContext* ctx = new FetchContext();
+  ctx->fetcher = this;
+  ctx->url = url;
+  ctx->byte_start = byte_start;
+  ctx->byte_length = byte_length;
+  ctx->out_bl = data;
+  ctx->on_finish = on_finish;
+  ctx->cancel_flag = nullptr;  // No cancellation for fetch_url
 
-  // Complete callback
-  on_finish->complete(r);
+  // Setup curl handle
+  ctx->curl_handle = setup_curl_handle(url, data, byte_start, byte_length,
+                                       &ctx->headers);
+  if (!ctx->curl_handle) {
+    ldout(cct, 1) << "failed to setup curl handle" << dendl;
+    on_finish->complete(-ENOMEM);
+    delete ctx;
+    return;
+  }
+
+  // Launch async fetch thread
+  pthread_t thread_id;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+
+  int r = pthread_create(&thread_id, &attr, async_fetch_thread, ctx);
+  pthread_attr_destroy(&attr);
+
+  if (r != 0) {
+    ldout(cct, 1) << "failed to create async fetch thread: " << cpp_strerror(r) << dendl;
+    curl_slist_free_all(ctx->headers);
+    curl_easy_cleanup(ctx->curl_handle);
+    on_finish->complete(-r);
+    delete ctx;
+    return;
+  }
+
+  // Thread will handle completion callback and cleanup
+  ldout(cct, 15) << "launched async S3 fetch thread" << dendl;
 }
 
 void S3ObjectFetcher::fetch(uint64_t object_no, uint64_t object_off,

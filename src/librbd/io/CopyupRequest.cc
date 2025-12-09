@@ -999,11 +999,10 @@ void CopyupRequest<I>::write_back_to_parent_async() {
   } else {
     ldout(cct, 10) << "submitted parent cache write-back for " << m_parent_oid << dendl;
 
-    // NOTE: We intentionally skip update_parent_object_map() here to avoid
-    // blocking on parent->object_map_lock during flatten. During flatten,
-    // many objects update simultaneously and would serialize on this lock.
-    // Parent object map updates are best-effort cache population - not critical
-    // for correctness. The parent objects will be marked EXISTS when first read.
+    // Update parent object map to mark the object as EXISTS
+    // Note: This acquires parent->object_map_lock briefly (~250μs per object)
+    // With async S3 fetching, this minimal lock contention is acceptable
+    update_parent_object_map();
   }
   rados_completion->release();
 }
