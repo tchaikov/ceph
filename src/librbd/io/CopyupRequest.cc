@@ -999,10 +999,13 @@ void CopyupRequest<I>::write_back_to_parent_async() {
   } else {
     ldout(cct, 10) << "submitted parent cache write-back for " << m_parent_oid << dendl;
 
-    // Update parent object map to mark the object as EXISTS
-    // Note: This acquires parent->object_map_lock briefly (~250μs per object)
-    // With async S3 fetching, this minimal lock contention is acceptable
-    update_parent_object_map();
+    // Queue parent object map update to work queue (fire-and-forget)
+    // This prevents blocking on parent->object_map_lock which would serialize
+    // all concurrent I/O operations
+    m_image_ctx->op_work_queue->queue(new FunctionContext(
+      [this](int r) {
+        update_parent_object_map();
+      }), 0);
   }
   rados_completion->release();
 }
