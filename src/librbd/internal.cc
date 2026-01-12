@@ -1034,8 +1034,8 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
 
     // Parse remote cluster configuration
     std::vector<std::string> remote_mon_hosts;
-    std::string cluster_name;
-    int r = util::parse_mon_hosts_from_config(remote_cluster_conf, remote_mon_hosts, cluster_name);
+    std::string remote_cluster_name;
+    int r = util::parse_mon_hosts_from_config(remote_cluster_conf, remote_mon_hosts, remote_cluster_name);
     if (r < 0) {
       lderr(cct) << "failed to parse remote cluster configuration: "
                  << cpp_strerror(r) << dendl;
@@ -1075,7 +1075,7 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     if (p_id == nullptr) {
       // Connect to remote cluster to look up parent image
       librados::Rados remote_cluster;
-      r = util::connect_to_remote_cluster(cct, cluster_name, remote_mon_hosts,
+      r = util::connect_to_remote_cluster(cct, remote_cluster_name, remote_mon_hosts,
                                            encoded_keyring, remote_client_name,
                                            remote_cluster);
       if (r < 0) {
@@ -1126,11 +1126,10 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
                    << "c_name=" << c_name << ", "
                    << "c_id= " << clone_id << ", "
                    << "c_opts=" << c_opts << ", "
-                   << "remote_cluster=" << cluster_name << ", "
                    << "remote_monitors=" << remote_mon_hosts.size() << dendl;
 
     // Construct RemoteParentSpec
-    RemoteParentSpec remote_parent_spec(cluster_name, remote_mon_hosts, encoded_keyring);
+    RemoteParentSpec remote_parent_spec(remote_cluster_name, remote_mon_hosts, encoded_keyring);
 
     ConfigProxy config{reinterpret_cast<CephContext *>(c_ioctx.cct())->_conf};
     api::Config<>::apply_pool_overrides(c_ioctx, &config);

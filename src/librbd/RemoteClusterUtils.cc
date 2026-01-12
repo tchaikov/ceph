@@ -48,13 +48,16 @@ int parse_mon_hosts_from_config(const std::string& conf_path,
     return -EINVAL;
   }
 
-  // Get fsid (cluster identifier) if available
-  std::string fsid_str;
-  r = temp_cluster.conf_get("fsid", fsid_str);
-  if (r == 0 && !fsid_str.empty()) {
-    cluster_name = fsid_str;
-  } else {
+  // Extract cluster name from config file path
+  // Logic from src/common/config.cc lines 400-409:
+  // Use the prefix of the basename (before .conf) as cluster name
+  auto start = conf_path.rfind('/') + 1;
+  auto end = conf_path.find(".conf", start);
+  if (end == std::string::npos) {
+    // Configuration file doesn't follow $cluster.conf convention
     cluster_name = "ceph";  // default
+  } else {
+    cluster_name = conf_path.substr(start, end - start);
   }
 
   // Clean up temporary cluster handle
@@ -162,7 +165,7 @@ int connect_to_remote_cluster(CephContext* cct,
   int r;
 
   // Initialize cluster handle
-  r = cluster.init(client_name.c_str());
+  r = cluster.init2(client_name.c_str(), cluster_name.c_str(), 0);
   if (r < 0) {
     return r;
   }
