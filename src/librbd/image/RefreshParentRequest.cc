@@ -76,7 +76,8 @@ bool RefreshParentRequest<I>::does_parent_exist(
     return false;
   }
 
-  return (parent_md.spec.pool_id > -1 && parent_md.overlap > 0) ||
+  return ((parent_md.spec.pool_id > -1 || !parent_md.spec.pool_name.empty()) &&
+          parent_md.overlap > 0) ||
           !migration_info.empty();
 }
 
@@ -112,7 +113,11 @@ void RefreshParentRequest<I>::finalize(Context *on_finish) {
 
 template <typename I>
 void RefreshParentRequest<I>::send_open_parent() {
-  ceph_assert(m_parent_md.spec.pool_id >= 0);
+  // For remote parents loaded from metadata, pool_id may be -1 (pool_name is used instead)
+  // Only assert for local parents
+  if (m_parent_md.parent_type != PARENT_TYPE_REMOTE_STANDALONE) {
+    ceph_assert(m_parent_md.spec.pool_id >= 0);
+  }
 
   CephContext *cct = m_child_image_ctx.cct;
   ldout(cct, 10) << this << " " << __func__ << dendl;
