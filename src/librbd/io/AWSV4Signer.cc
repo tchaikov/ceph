@@ -259,17 +259,12 @@ AWSV4Signer::SignedRequest AWSV4Signer::sign_request(
   std::string canonical_request = create_canonical_request(
     method, uri, query_string, headers, signed_headers, payload_hash);
 
-  std::cerr << "[AWS_SIG_DEBUG] canonical_request:\n" << canonical_request << std::endl;
-
   // Step 2: Create string to sign
   std::string scope = date_string + "/" + m_credentials.region + "/" +
                      m_credentials.service + "/aws4_request";
   std::string canonical_request_hash = sha256_hex(canonical_request);
   std::string string_to_sign = create_string_to_sign(
     iso8601_timestamp, scope, canonical_request_hash);
-
-  std::cerr << "[AWS_SIG_DEBUG] string_to_sign:\n" << string_to_sign << std::endl;
-  std::cerr << "[AWS_SIG_DEBUG] scope: " << scope << std::endl;
 
   // Step 3: Calculate signature
   auto signing_key = calculate_signing_key(date_string);

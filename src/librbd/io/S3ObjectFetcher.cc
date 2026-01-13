@@ -541,9 +541,8 @@ void S3ObjectFetcher::fetch(uint64_t object_no, uint64_t object_off,
                    << " s3_offset=" << s3_offset
                    << " length=" << length << dendl;
 
-  // NOTE: Async fetch with pthread_create disabled for now
-  // Using synchronous fetch instead - cancellation not yet supported
-  // TODO: Implement proper async fetch with cancellation using work queue
+  // Async fetch using pthread (cancellation support via cancel_flag)
+  // TODO: Consider migrating to Ceph's work queue for better thread management
   fetch_url(url, out_bl, on_finish, s3_offset, length);
 }
 

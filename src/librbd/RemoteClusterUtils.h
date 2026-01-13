@@ -26,12 +26,15 @@ int parse_mon_hosts_from_config(const std::string& conf_path,
                                 std::string& cluster_name);
 
 /**
- * Read and encode keyring file contents
+ * Read keyring file and extract key
  *
  * @param keyring_path Path to keyring file
  * @param client_name Client name (e.g., "client.admin")
- * @param encoded_keyring Output base64-encoded keyring
+ * @param encoded_keyring Output base64-encoded key (as stored in keyring file)
  * @return 0 on success, negative error code on failure
+ *
+ * Note: Keys in keyring files are already base64-encoded, so this function
+ * simply extracts the key value without additional encoding.
  */
 int read_and_encode_keyring(const std::string& keyring_path,
                             const std::string& client_name,

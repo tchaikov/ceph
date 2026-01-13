@@ -290,8 +290,6 @@ void RefreshParentRequest<I>::load_parent_s3_config() {
   // Secret key is stored base64-encoded for security
   std::string encoded_secret_key;
   if (get_metadata("s3.secret_key", encoded_secret_key)) {
-    ldout(cct, 10) << "encoded secret key: '" << encoded_secret_key << "'" << dendl;
-    ldout(cct, 10) << "encoded secret key length: " << encoded_secret_key.length() << dendl;
     // Decode base64-encoded secret key
     bufferlist encoded_bl;
     encoded_bl.append(encoded_secret_key);
@@ -299,8 +297,6 @@ void RefreshParentRequest<I>::load_parent_s3_config() {
     try {
       decoded_bl.decode_base64(encoded_bl);
       s3_config.secret_key = decoded_bl.to_str();
-      ldout(cct, 10) << "decoded secret key length: " << s3_config.secret_key.length() << dendl;
-      ldout(cct, 10) << "decoded secret key (hex): " << decoded_bl.c_str() << dendl;
     } catch (buffer::error& err) {
       // If we have an access key but failed to decode the secret key,
       // this is a critical error - disable S3 configuration
@@ -345,7 +341,6 @@ void RefreshParentRequest<I>::load_parent_s3_config() {
                    << ", prefix=" << s3_config.prefix
                    << ", region=" << s3_config.region
                    << ", access_key=" << s3_config.access_key
-                   << ", secret_key=" << s3_config.secret_key
                    << ", anonymous=" << s3_config.is_anonymous()
                    << dendl;
   } else {

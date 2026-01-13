@@ -146,12 +146,8 @@ int read_and_encode_keyring(const std::string& keyring_path,
     return -EINVAL;
   }
 
-  // Base64 encode the key
-  bufferlist bl;
-  bl.append(key_value);
-  bufferlist encoded_bl;
-  bl.encode_base64(encoded_bl);
-  encoded_keyring = encoded_bl.to_str();
+  // Key is already base64-encoded in keyring file, no need to encode again
+  encoded_keyring = key_value;
 
   return 0;
 }
@@ -185,21 +181,9 @@ int connect_to_remote_cluster(CephContext* cct,
     return r;
   }
 
-  // Decode base64 keyring and set directly in memory (no temp file!)
-  bufferlist encoded_bl;
-  encoded_bl.append(keyring);
-  bufferlist decoded_bl;
-  try {
-    decoded_bl.decode_base64(encoded_bl);
-  } catch (buffer::error& err) {
-    cluster.shutdown();
-    return -EINVAL;
-  }
-
-  std::string key_value = decoded_bl.to_str();
-
   // Set the key directly via conf_set (no file needed - more secure!)
-  r = cluster.conf_set("key", key_value.c_str());
+  // Key is already base64-encoded from keyring file
+  r = cluster.conf_set("key", keyring.c_str());
   if (r < 0) {
     cluster.shutdown();
     return r;
