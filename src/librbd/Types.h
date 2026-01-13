@@ -49,6 +49,13 @@ enum {
 
   l_librbd_invalidate_cache,
 
+  // S3-backed parent performance counters
+  l_librbd_s3_fetch_count,       // Number of S3 fetch operations
+  l_librbd_s3_fetch_bytes,       // Total bytes fetched from S3
+  l_librbd_s3_fetch_latency,     // Average S3 fetch latency
+  l_librbd_s3_fetch_errors,      // Number of S3 fetch errors
+  l_librbd_s3_fetch_retries,     // Number of S3 fetch retries
+
   l_librbd_opened_time,
   l_librbd_lock_acquired_time,
 

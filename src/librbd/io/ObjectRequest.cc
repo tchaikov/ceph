@@ -453,6 +453,16 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
   ldout(image_ctx->cct, 10) << "S3 fetch result: r=" << r
                              << " bytes=" << m_read_data->length() << dendl;
 
+  // Update S3 performance counters
+  if (image_ctx->perfcounter) {
+    if (r < 0) {
+      image_ctx->perfcounter->inc(l_librbd_s3_fetch_errors);
+    } else {
+      image_ctx->perfcounter->inc(l_librbd_s3_fetch_count);
+      image_ctx->perfcounter->inc(l_librbd_s3_fetch_bytes, m_read_data->length());
+    }
+  }
+
   if (r < 0) {
     // For sparse images, objects may not exist in S3
     if (r == -ENOENT || r == -EINVAL) {

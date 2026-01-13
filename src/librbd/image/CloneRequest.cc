@@ -320,6 +320,23 @@ void CloneRequest<I>::validate_parent() {
     return;
   }
 
+  // Validate S3 configuration if parent is S3-backed
+  if (m_parent_image_ctx->s3_config.enabled) {
+    if (!m_parent_image_ctx->s3_config.is_valid()) {
+      lderr(m_cct) << "Cannot create clone: parent has invalid S3 configuration. "
+                   << "Missing required S3 metadata (bucket, endpoint, or image_name). "
+                   << "Please check S3 configuration on parent image." << dendl;
+      m_r_saved = -EINVAL;
+      close_parent();
+      return;
+    }
+    ldout(m_cct, 10) << "Parent has valid S3 configuration: "
+                     << "bucket=" << m_parent_image_ctx->s3_config.bucket
+                     << ", endpoint=" << m_parent_image_ctx->s3_config.endpoint
+                     << ", image=" << m_parent_image_ctx->s3_config.image_name
+                     << dendl;
+  }
+
   m_parent_image_ctx->snap_lock.get_read();
   uint64_t p_features = m_parent_image_ctx->features;
   m_size = m_parent_image_ctx->get_image_size(m_parent_image_ctx->snap_id);

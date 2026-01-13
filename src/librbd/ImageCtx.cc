@@ -298,6 +298,18 @@ public:
     plb.add_u64_counter(l_librbd_readahead_bytes, "readahead_bytes", "Data size in read ahead", NULL, 0, unit_t(UNIT_BYTES));
     plb.add_u64_counter(l_librbd_invalidate_cache, "invalidate_cache", "Cache invalidates");
 
+    // S3-backed parent performance counters
+    plb.add_u64_counter(l_librbd_s3_fetch_count, "s3_fetch_count",
+                        "S3 fetch operations", "s3fc", perf_prio);
+    plb.add_u64_counter(l_librbd_s3_fetch_bytes, "s3_fetch_bytes",
+                        "Bytes fetched from S3", "s3fb", perf_prio, unit_t(UNIT_BYTES));
+    plb.add_time_avg(l_librbd_s3_fetch_latency, "s3_fetch_latency",
+                     "S3 fetch latency", "s3fl", perf_prio);
+    plb.add_u64_counter(l_librbd_s3_fetch_errors, "s3_fetch_errors",
+                        "S3 fetch errors", "s3fe", perf_prio);
+    plb.add_u64_counter(l_librbd_s3_fetch_retries, "s3_fetch_retries",
+                        "S3 fetch retries", "s3fr", perf_prio);
+
     plb.add_time(l_librbd_opened_time, "opened_time", "Opened time",
                  "ots", perf_prio);
     plb.add_time(l_librbd_lock_acquired_time, "lock_acquired_time",
