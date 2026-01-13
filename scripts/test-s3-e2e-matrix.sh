@@ -1,6 +1,45 @@
 #!/bin/bash
 # Comprehensive S3-backed RBD clone E2E test matrix
 # Tests 3 scenarios × 3 operations × 2 cluster modes = 18 test cases
+#
+# This script supports two deployment modes:
+#
+# 1. MANAGED MODE - For local development and CI
+#    The script automatically sets up and tears down all infrastructure:
+#    - Starts Ceph clusters using vstart.sh
+#    - Launches MinIO in docker containers for S3 storage
+#    - Creates and configures all required resources
+#    - Cleans up everything on exit
+#
+# 2. EXTERNAL MODE - For testing with production infrastructure
+#    Developers provide existing Ceph clusters and S3 accounts:
+#    - Two running Ceph clusters with config files and keyrings
+#    - An S3-compatible storage account (AWS, MinIO, etc.)
+#    - Script only manages test images, not infrastructure
+#    - Ideal for validating against real production environments
+#
+# Usage:
+#   Managed mode (vstart + containers):
+#     ./test-s3-e2e-matrix.sh single       # Single cluster with local MinIO
+#     ./test-s3-e2e-matrix.sh cross        # Two clusters (docker) with shared MinIO
+#
+#   External mode (existing clusters + real S3):
+#     MODE=external \
+#     LOCAL_CEPH_CONF=/path/to/local.conf \
+#     LOCAL_KEYRING=/path/to/local.keyring \
+#     REMOTE_CEPH_CONF=/path/to/remote.conf \
+#     REMOTE_KEYRING=/path/to/remote.keyring \
+#     S3_ENDPOINT=https://s3.amazonaws.com \
+#     S3_BUCKET=my-bucket \
+#     S3_ACCESS_KEY=AKIAXXXXXXX \
+#     S3_SECRET_KEY=SECRET \
+#     ./test-s3-e2e-matrix.sh
+#
+# Requirements for external mode:
+#   - Both clusters must be accessible from this host
+#   - S3 bucket must exist and be accessible
+#   - Install either 'aws' CLI or 's3cmd' for S3 operations
+#   - Keyrings must have permissions to create/delete pools and images
 
 set -e
 
@@ -11,30 +50,66 @@ WORKSPACE="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/s3-test-common.sh"
 
 # Test mode
-MODE="${1:-single}"  # "single" or "cross"
+MODE="${MODE:-${1:-single}}"  # "single", "cross", or "external"
 
-# Test configuration
-POOL_NAME="s3pool"
-IMAGE_SIZE_MB=20
+# Detect external mode
+if [ "$MODE" == "external" ]; then
+    # External mode: user provides existing clusters and S3 credentials
+    log_info "Running in EXTERNAL mode with existing clusters and S3"
 
-# Mode-specific configuration
-if [ "$MODE" == "cross" ]; then
-    # Cross-cluster mode: use docker-compose MinIO
-    # Note: Remote cluster uses host networking, so access MinIO via localhost
-    MINIO_HOST="localhost"
-    MINIO_PORT=9000
-    MINIO_CONSOLE_PORT=9001
-    S3_ENDPOINT="http://${MINIO_HOST}:${MINIO_PORT}"
-    REMOTE_MON_HOST="172.20.0.20:6789"
-    REMOTE_CLUSTER_DIR="$WORKSPACE/remote-cluster"
+    # Validate required environment variables
+    REQUIRED_VARS="LOCAL_CEPH_CONF LOCAL_KEYRING REMOTE_CEPH_CONF REMOTE_KEYRING S3_ENDPOINT S3_BUCKET S3_ACCESS_KEY S3_SECRET_KEY"
+    for var in $REQUIRED_VARS; do
+        if [ -z "${!var}" ]; then
+            log_error "Missing required environment variable: $var"
+            exit 1
+        fi
+    done
+
+    # Use provided configuration
+    CEPH_CONF="$LOCAL_CEPH_CONF"
+    REMOTE_CONF_FILE="$REMOTE_CEPH_CONF"
+    REMOTE_KEYRING_FILE="$REMOTE_KEYRING"
+    MANAGED_CLUSTERS=false
+    MANAGED_S3=false
+
+    # S3 configuration
+    S3_BUCKET="${S3_BUCKET}"
+    S3_ENDPOINT="${S3_ENDPOINT}"
+    S3_ACCESS_KEY="${S3_ACCESS_KEY}"
+    S3_SECRET_KEY="${S3_SECRET_KEY}"
+
+    # For external mode, we're always in cross-cluster mode
+    CROSS_CLUSTER=true
 else
-    # Single-cluster mode: use local MinIO
-    MINIO_PORT=9002
-    MINIO_CONSOLE_PORT=9003
-    S3_ENDPOINT="http://localhost:$MINIO_PORT"
+    # Managed mode: script controls cluster lifecycle
+    MANAGED_CLUSTERS=true
+    MANAGED_S3=true
+    CROSS_CLUSTER=false
+
+    if [ "$MODE" == "cross" ]; then
+        CROSS_CLUSTER=true
+        # Cross-cluster mode: use docker-compose MinIO
+        # Note: Remote cluster uses host networking, so access MinIO via localhost
+        MINIO_HOST="localhost"
+        MINIO_PORT=9000
+        MINIO_CONSOLE_PORT=9001
+        S3_ENDPOINT="http://${MINIO_HOST}:${MINIO_PORT}"
+        REMOTE_MON_HOST="172.20.0.20:6789"
+        REMOTE_CLUSTER_DIR="$WORKSPACE/remote-cluster"
+    else
+        # Single-cluster mode: use local MinIO
+        MINIO_PORT=9002
+        MINIO_CONSOLE_PORT=9003
+        S3_ENDPOINT="http://localhost:$MINIO_PORT"
+    fi
+
+    S3_BUCKET="test-bucket"
 fi
 
-S3_BUCKET="test-bucket"
+# Test configuration
+POOL_NAME="${POOL_NAME:-s3pool}"
+IMAGE_SIZE_MB="${IMAGE_SIZE_MB:-20}"
 
 # Cleanup function
 cleanup() {
@@ -45,34 +120,40 @@ cleanup() {
     # Clean up RBD images
     for i in 1 2 3; do
         "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/child$i" 2>/dev/null || true
-        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/parent$i" 2>/dev/null || true
+        if [ "$CROSS_CLUSTER" = true ] && [ "$MANAGED_CLUSTERS" = true ]; then
+            docker exec ceph-remote-cluster bash -c "
+                ./build/bin/rbd --conf remote-cluster/ceph.conf rm $POOL_NAME/parent$i 2>/dev/null || true
+            " 2>/dev/null || true
+        else
+            "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/parent$i" 2>/dev/null || true
+        fi
     done
-
-    # Stop MinIO (only in single-cluster mode)
-    if [ "$MODE" != "cross" ]; then
-        stop_minio $MINIO_PORT
-    fi
 
     # Clean temp files
     rm -f /tmp/parent*.raw /tmp/child*.raw /tmp/verify*.raw /tmp/partial-*.raw /tmp/full-*.raw
 
-    # If cross-cluster mode, clean up docker and remote cluster
-    if [ "$MODE" == "cross" ]; then
-        log_info "Stopping remote cluster..."
-        docker exec ceph-remote-cluster bash -c "
-            pkill -9 ceph-mon || true
-            pkill -9 ceph-mgr || true
-            pkill -9 ceph-osd || true
-        " 2>/dev/null || true
+    # Only manage MinIO and clusters if in managed mode
+    if [ "$MANAGED_S3" = true ]; then
+        if [ "$CROSS_CLUSTER" = true ]; then
+            # Cross-cluster managed mode: stop docker containers
+            log_info "Stopping remote cluster..."
+            docker exec ceph-remote-cluster bash -c "
+                pkill -9 ceph-mon || true
+                pkill -9 ceph-mgr || true
+                pkill -9 ceph-osd || true
+            " 2>/dev/null || true
 
-        log_info "Stopping docker containers..."
-        docker-compose -f docker-compose-cross-cluster.yml down -v 2>/dev/null || true
+            log_info "Stopping docker containers..."
+            docker-compose -f docker-compose-cross-cluster.yml down -v 2>/dev/null || true
 
-        # Clean remote cluster directory
-        # With userns_mode: keep-id, files are owned by host user
-        if [ -d "$REMOTE_CLUSTER_DIR" ]; then
-            rm -rf "$REMOTE_CLUSTER_DIR" || \
-            log_warn "Could not clean remote-cluster directory. Please run: sudo rm -rf $REMOTE_CLUSTER_DIR"
+            # Clean remote cluster directory
+            if [ -d "$REMOTE_CLUSTER_DIR" ]; then
+                rm -rf "$REMOTE_CLUSTER_DIR" || \
+                log_warn "Could not clean remote-cluster directory. Please run: sudo rm -rf $REMOTE_CLUSTER_DIR"
+            fi
+        else
+            # Single-cluster managed mode: stop local MinIO
+            stop_minio $MINIO_PORT
         fi
     fi
 }
@@ -233,7 +314,7 @@ run_test_case() {
     local s3_image="parent${scenario}.raw"
 
     # Create S3-backed parent (mode-specific)
-    if [ "$MODE" == "cross" ]; then
+    if [ "$CROSS_CLUSTER" = true ]; then
         create_cross_cluster_parent "$POOL_NAME" "$parent" "$s3_image" "$IMAGE_SIZE_MB"
         create_cross_cluster_clone "$POOL_NAME" "$parent" "$child" "$s3_image"
     else
@@ -247,14 +328,14 @@ run_test_case() {
             setup_scenario_1_clean_slate "$POOL_NAME" "$parent" "$child"
             ;;
         2)
-            if [ "$MODE" == "cross" ]; then
+            if [ "$CROSS_CLUSTER" = true ]; then
                 setup_cross_cluster_scenario_2 "$POOL_NAME" "$parent" "$child"
             else
                 setup_scenario_2_partial_blocks "$POOL_NAME" "$parent" "$child"
             fi
             ;;
         3)
-            if [ "$MODE" == "cross" ]; then
+            if [ "$CROSS_CLUSTER" = true ]; then
                 setup_cross_cluster_scenario_3 "$POOL_NAME" "$parent" "$child"
             else
                 setup_scenario_3_full_cache "$POOL_NAME" "$parent" "$child"
@@ -286,7 +367,19 @@ run_test_case() {
 
     # Cleanup images for this test
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/$child" 2>/dev/null || true
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/$parent" 2>/dev/null || true
+
+    if [ "$CROSS_CLUSTER" = true ]; then
+        # Clean parent from remote cluster
+        if [ "$MANAGED_CLUSTERS" = true ]; then
+            docker exec ceph-remote-cluster bash -c \
+                "./build/bin/rbd --conf remote-cluster/ceph.conf rm $POOL_NAME/$parent 2>/dev/null || true" \
+                2>/dev/null || true
+        else
+            "$BUILD_DIR/bin/rbd" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" rm "$POOL_NAME/$parent" 2>/dev/null || true
+        fi
+    else
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/$parent" 2>/dev/null || true
+    fi
 
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
@@ -432,25 +525,64 @@ create_cross_cluster_parent() {
         printf "PARENT-BLOCK-%04d" $i | dd of="$temp_file" bs=4M seek=$i conv=notrunc 2>/dev/null
     done
 
-    # Upload to S3 (docker MinIO)
-    "$MINIO_BIN/mc" cp "$temp_file" "dockerminio/$S3_BUCKET/$s3_image_name" 2>&1 | grep -v "^mc:"
+    # Upload to S3
+    if [ "$MANAGED_S3" = true ]; then
+        # Managed mode: use mc to upload to docker MinIO
+        "$MINIO_BIN/mc" cp "$temp_file" "dockerminio/$S3_BUCKET/$s3_image_name" 2>&1 | grep -v "^mc:"
+    else
+        # External mode: use AWS CLI or similar
+        if command -v aws &> /dev/null; then
+            AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" \
+            AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY" \
+            aws s3 cp "$temp_file" "s3://$S3_BUCKET/$s3_image_name" --endpoint-url "$S3_ENDPOINT" 2>&1
+        elif command -v s3cmd &> /dev/null; then
+            s3cmd put "$temp_file" "s3://$S3_BUCKET/$s3_image_name" --access_key="$S3_ACCESS_KEY" --secret_key="$S3_SECRET_KEY" --host="$(echo $S3_ENDPOINT | sed 's|https\?://||')" 2>&1
+        else
+            log_error "Neither 'aws' nor 's3cmd' command found. Please install AWS CLI or s3cmd for S3 upload."
+            return 1
+        fi
+    fi
+
+    # Base64 encode the secret key for storage
+    local encoded_secret_key
+    if [ "$MANAGED_S3" = true ]; then
+        encoded_secret_key="bWluaW9hZG1pbg=="  # base64 of "minioadmin"
+    else
+        encoded_secret_key=$(echo -n "$S3_SECRET_KEY" | base64)
+    fi
 
     # Create RBD parent in remote cluster
-    docker exec -w /home/kefu/dev/ceph-nautilus ceph-remote-cluster bash -c "
-        ./build/bin/rbd --conf remote-cluster/ceph.conf rm $pool/$parent_name 2>/dev/null || true
-        ./build/bin/rbd --conf remote-cluster/ceph.conf create $pool/$parent_name --size ${size_mb}M --object-size 4M
+    if [ "$MANAGED_CLUSTERS" = true ]; then
+        # Managed mode: use docker exec
+        docker exec -w /home/kefu/dev/ceph-nautilus ceph-remote-cluster bash -c "
+            ./build/bin/rbd --conf remote-cluster/ceph.conf rm $pool/$parent_name 2>/dev/null || true
+            ./build/bin/rbd --conf remote-cluster/ceph.conf create $pool/$parent_name --size ${size_mb}M --object-size 4M
 
-        # Configure S3 metadata (with credentials for SigV4 auth)
-        ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.enabled true
-        ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.endpoint $S3_ENDPOINT
-        ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.bucket $S3_BUCKET
-        ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.image_name $s3_image_name
-        ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.image_format raw
-        ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.verify_ssl false
-        ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.access_key minioadmin
-        # Secret key must be base64-encoded for security
-        ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.secret_key bWluaW9hZG1pbg==
-    "
+            # Configure S3 metadata
+            ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.enabled true
+            ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.endpoint $S3_ENDPOINT
+            ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.bucket $S3_BUCKET
+            ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.image_name $s3_image_name
+            ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.image_format raw
+            ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.verify_ssl false
+            ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.access_key ${S3_ACCESS_KEY:-minioadmin}
+            ./build/bin/rbd --conf remote-cluster/ceph.conf image-meta set $pool/$parent_name s3.secret_key $encoded_secret_key
+        "
+    else
+        # External mode: use provided remote cluster config
+        "$BUILD_DIR/bin/rbd" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" rm "$pool/$parent_name" 2>/dev/null || true
+        "$BUILD_DIR/bin/rbd" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" create "$pool/$parent_name" --size ${size_mb}M --object-size 4M
+
+        # Configure S3 metadata
+        "$BUILD_DIR/bin/rbd" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" image-meta set "$pool/$parent_name" s3.enabled true
+        "$BUILD_DIR/bin/rbd" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" image-meta set "$pool/$parent_name" s3.endpoint "$S3_ENDPOINT"
+        "$BUILD_DIR/bin/rbd" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" image-meta set "$pool/$parent_name" s3.bucket "$S3_BUCKET"
+        "$BUILD_DIR/bin/rbd" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" image-meta set "$pool/$parent_name" s3.image_name "$s3_image_name"
+        "$BUILD_DIR/bin/rbd" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" image-meta set "$pool/$parent_name" s3.image_format raw
+        "$BUILD_DIR/bin/rbd" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" image-meta set "$pool/$parent_name" s3.verify_ssl false
+        "$BUILD_DIR/bin/rbd" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" image-meta set "$pool/$parent_name" s3.access_key "$S3_ACCESS_KEY"
+        "$BUILD_DIR/bin/rbd" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" image-meta set "$pool/$parent_name" s3.secret_key "$encoded_secret_key"
+    fi
 
     log_success "S3-backed parent created in remote cluster"
 }
@@ -463,41 +595,43 @@ create_cross_cluster_clone() {
 
     log_info "Creating cross-cluster clone: $pool/$child from remote $pool/$parent"
 
-    # Extract remote cluster credentials
-    log_info "Extracting remote cluster credentials..."
-    REMOTE_CONF="/tmp/remote-cluster-$$.conf"
-    REMOTE_KEYRING="/tmp/remote-cluster-$$.keyring"
+    # Extract or use remote cluster credentials
+    log_info "Preparing remote cluster credentials..."
 
-    # Get admin key from remote cluster
-    ADMIN_KEY=$(docker exec ceph-remote-cluster bash -c "cd /home/kefu/dev/ceph-nautilus && ./build/bin/ceph --conf remote-cluster/ceph.conf auth get-key client.admin" 2>/dev/null)
-    if [ -z "$ADMIN_KEY" ]; then
-        log_error "Failed to get remote cluster admin key"
-        return 1
-    fi
+    if [ "$MANAGED_CLUSTERS" = true ]; then
+        # Managed mode: extract credentials from docker container
+        REMOTE_CONF="/tmp/remote-cluster-$$.conf"
+        REMOTE_KEYRING="/tmp/remote-cluster-$$.keyring"
 
-    # Create keyring file with proper format
-    cat > "$REMOTE_KEYRING" <<EOF
+        # Get admin key from remote cluster
+        ADMIN_KEY=$(docker exec ceph-remote-cluster bash -c "cd /home/kefu/dev/ceph-nautilus && ./build/bin/ceph --conf remote-cluster/ceph.conf auth get-key client.admin" 2>/dev/null)
+        if [ -z "$ADMIN_KEY" ]; then
+            log_error "Failed to get remote cluster admin key"
+            return 1
+        fi
+
+        # Create keyring file with proper format
+        cat > "$REMOTE_KEYRING" <<EOF
 [client.admin]
 key = $ADMIN_KEY
 EOF
 
-    # Create config file with correct mon_host (use REMOTE_MON_HOST which points to container IP)
-    # The remote cluster's ceph.conf has localhost which won't work from host
-    cat > "$REMOTE_CONF" <<EOF
+        # Create config file with correct mon_host
+        cat > "$REMOTE_CONF" <<EOF
 [global]
 mon_host = $REMOTE_MON_HOST
 keyring = $REMOTE_KEYRING
 EOF
+    else
+        # External mode: use provided credentials
+        REMOTE_CONF="$REMOTE_CONF_FILE"
+        REMOTE_KEYRING="$REMOTE_KEYRING_FILE"
+    fi
 
     # Remove existing child if present
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$pool/$child" 2>/dev/null || true
 
-    # Use proper clone-standalone command with remote cluster authentication
-    # This will:
-    # 1. Connect to remote cluster
-    # 2. Read parent metadata (including S3 config)
-    # 3. Create local parent replica with S3 config
-    # 4. Create child with local parent reference
+    # Use clone-standalone command with remote cluster authentication
     log_info "Creating cross-cluster clone using clone-standalone command..."
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" clone-standalone \
         --remote-cluster-conf "$REMOTE_CONF" \
@@ -507,12 +641,16 @@ EOF
     local clone_result=$?
     if [ $clone_result -ne 0 ]; then
         log_error "Failed to create cross-cluster clone (exit code: $clone_result)"
-        rm -f "$REMOTE_CONF" "$REMOTE_KEYRING"
+        if [ "$MANAGED_CLUSTERS" = true ]; then
+            rm -f "$REMOTE_CONF" "$REMOTE_KEYRING"
+        fi
         return 1
     fi
 
-    # Cleanup temp files
-    rm -f "$REMOTE_CONF" "$REMOTE_KEYRING"
+    # Cleanup temp files (only in managed mode)
+    if [ "$MANAGED_CLUSTERS" = true ]; then
+        rm -f "$REMOTE_CONF" "$REMOTE_KEYRING"
+    fi
 
     log_success "Cross-cluster clone created using proper clone-standalone command"
 }
@@ -526,11 +664,20 @@ setup_cross_cluster_scenario_2() {
 
     # Pre-populate some parent blocks in remote cluster
     log_info "Pre-populating first 2 objects in remote parent..."
-    docker exec -w /home/kefu/dev/ceph-nautilus ceph-remote-cluster bash -c "
-        ./build/bin/rbd --conf remote-cluster/ceph.conf export $pool/$parent /tmp/partial-$$.raw \
+
+    if [ "$MANAGED_CLUSTERS" = true ]; then
+        # Managed mode: use docker exec
+        docker exec -w /home/kefu/dev/ceph-nautilus ceph-remote-cluster bash -c "
+            ./build/bin/rbd --conf remote-cluster/ceph.conf export $pool/$parent /tmp/partial-$$.raw \
+                --rbd-concurrent-management-ops 1 2>&1 | head -n 5 | grep -v 'Exporting' || true
+            rm -f /tmp/partial-$$.raw
+        "
+    else
+        # External mode: use provided remote cluster config
+        "$BUILD_DIR/bin/rbd" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" export "$pool/$parent" /tmp/partial-$$.raw \
             --rbd-concurrent-management-ops 1 2>&1 | head -n 5 | grep -v 'Exporting' || true
         rm -f /tmp/partial-$$.raw
-    "
+    fi
 
     # Write to child in local cluster
     log_info "Writing to child to create child-specific blocks..."
@@ -549,10 +696,18 @@ setup_cross_cluster_scenario_3() {
 
     # Pre-populate ALL parent blocks in remote cluster
     log_info "Pre-populating all blocks in remote parent..."
-    docker exec -w /home/kefu/dev/ceph-nautilus ceph-remote-cluster bash -c "
-        ./build/bin/rbd --conf remote-cluster/ceph.conf export $pool/$parent /tmp/full-$$.raw 2>&1 | grep -v 'Exporting'
+
+    if [ "$MANAGED_CLUSTERS" = true ]; then
+        # Managed mode: use docker exec
+        docker exec -w /home/kefu/dev/ceph-nautilus ceph-remote-cluster bash -c "
+            ./build/bin/rbd --conf remote-cluster/ceph.conf export $pool/$parent /tmp/full-$$.raw 2>&1 | grep -v 'Exporting'
+            rm -f /tmp/full-$$.raw
+        "
+    else
+        # External mode: use provided remote cluster config
+        "$BUILD_DIR/bin/rbd" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" export "$pool/$parent" /tmp/full-$$.raw 2>&1 | grep -v 'Exporting'
         rm -f /tmp/full-$$.raw
-    "
+    fi
 
     log_success "Scenario 3 ready for cross-cluster"
 }
@@ -560,21 +715,78 @@ setup_cross_cluster_scenario_3() {
 # Main execution
 main() {
     log_info "=== S3-Backed RBD Clone E2E Test Matrix ==="
-    log_info "Mode: $MODE cluster"
+    if [ "$MODE" == "external" ]; then
+        log_info "Mode: external (user-provided clusters and S3)"
+    else
+        log_info "Mode: $MODE cluster"
+    fi
     echo
 
     # Check prerequisites
-    if ! check_cluster_running; then
-        exit 1
+    if [ "$MODE" != "external" ]; then
+        if ! check_cluster_running; then
+            exit 1
+        fi
     fi
 
     # Mode-specific setup
-    if [ "$MODE" == "cross" ]; then
-        # Cross-cluster mode
-        if ! setup_cross_cluster; then
-            log_error "Failed to setup cross-cluster environment"
-            exit 1
+    if [ "$CROSS_CLUSTER" = true ]; then
+        # Cross-cluster mode (managed or external)
+        if [ "$MANAGED_CLUSTERS" = true ]; then
+            if ! setup_cross_cluster; then
+                log_error "Failed to setup cross-cluster environment"
+                exit 1
+            fi
+        else
+            # External mode: verify clusters are accessible
+            log_info "Verifying local cluster access..."
+            if ! "$BUILD_DIR/bin/ceph" --conf "$CEPH_CONF" --keyring "$LOCAL_KEYRING" status >/dev/null 2>&1; then
+                log_error "Cannot connect to local cluster"
+                exit 1
+            fi
+            log_success "Local cluster accessible"
+
+            log_info "Verifying remote cluster access..."
+            if ! "$BUILD_DIR/bin/ceph" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" status >/dev/null 2>&1; then
+                log_error "Cannot connect to remote cluster"
+                exit 1
+            fi
+            log_success "Remote cluster accessible"
+
+            # Create pools if they don't exist
+            log_info "Ensuring pools exist..."
+            "$BUILD_DIR/bin/ceph" --conf "$CEPH_CONF" --keyring "$LOCAL_KEYRING" osd pool create "$POOL_NAME" 8 2>&1 | grep -v 'already exists' || true
+            "$BUILD_DIR/bin/ceph" --conf "$CEPH_CONF" --keyring "$LOCAL_KEYRING" osd pool application enable "$POOL_NAME" rbd 2>&1 || true
+            "$BUILD_DIR/bin/ceph" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" osd pool create "$POOL_NAME" 8 2>&1 | grep -v 'already exists' || true
+            "$BUILD_DIR/bin/ceph" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" osd pool application enable "$POOL_NAME" rbd 2>&1 || true
+            log_success "Pools ready"
+
+            # Verify S3 access
+            log_info "Verifying S3 bucket access..."
+            if command -v aws &> /dev/null; then
+                if AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY" \
+                   AWS_SECRET_ACCESS_KEY="$S3_SECRET_KEY" \
+                   aws s3 ls "s3://$S3_BUCKET" --endpoint-url "$S3_ENDPOINT" >/dev/null 2>&1; then
+                    log_success "S3 bucket accessible"
+                else
+                    log_error "Cannot access S3 bucket: $S3_BUCKET at $S3_ENDPOINT"
+                    log_error "Please verify your S3 credentials and bucket permissions"
+                    exit 1
+                fi
+            elif command -v s3cmd &> /dev/null; then
+                if s3cmd ls "s3://$S3_BUCKET" --access_key="$S3_ACCESS_KEY" --secret_key="$S3_SECRET_KEY" --host="$(echo $S3_ENDPOINT | sed 's|https\?://||')" >/dev/null 2>&1; then
+                    log_success "S3 bucket accessible"
+                else
+                    log_error "Cannot access S3 bucket: $S3_BUCKET at $S3_ENDPOINT"
+                    log_error "Please verify your S3 credentials and bucket permissions"
+                    exit 1
+                fi
+            else
+                log_warn "Neither 'aws' nor 's3cmd' found - skipping S3 verification"
+                log_warn "Tests may fail if S3 bucket is not accessible"
+            fi
         fi
+
     else
         # Single-cluster mode
         # Start MinIO
@@ -587,11 +799,22 @@ main() {
         setup_s3_bucket $MINIO_PORT "$S3_BUCKET"
     fi
 
-    # Create pool in local cluster
-    create_pool "$POOL_NAME"
+    # Create pool in local cluster (skip if external cross-cluster, already done)
+    if [ "$MODE" != "external" ] || [ "$CROSS_CLUSTER" != true ]; then
+        create_pool "$POOL_NAME"
+    fi
 
     # Enable S3 fetch
-    enable_s3_fetch
+    if [ "$MODE" == "external" ]; then
+        # External mode: use runtime config to avoid modifying user's config files
+        log_info "Enabling S3 fetch via runtime config..."
+        "$BUILD_DIR/bin/ceph" --conf "$CEPH_CONF" --keyring "$LOCAL_KEYRING" config set osd rbd_s3_fetch_enabled true 2>&1 || true
+        if [ "$CROSS_CLUSTER" = true ]; then
+            "$BUILD_DIR/bin/ceph" --conf "$REMOTE_CONF_FILE" --keyring "$REMOTE_KEYRING_FILE" config set osd rbd_s3_fetch_enabled true 2>&1 || true
+        fi
+    else
+        enable_s3_fetch
+    fi
 
     # Run all test cases
     local failed=0
