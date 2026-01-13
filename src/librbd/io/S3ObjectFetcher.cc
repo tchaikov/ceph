@@ -316,9 +316,17 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
 
     // Check if we should retry
     if (retry_count < max_retries) {
-      // Exponential backoff: 1s, 2s, 4s
-      uint64_t delay_ms = 1000 * (1 << retry_count);
-      ldout(m_cct, 10) << "waiting " << delay_ms << "ms before retry" << dendl;
+      // Exponential backoff with jitter: base_delay * (1 ± 25%)
+      // This prevents thundering herd when many requests fail simultaneously
+      uint64_t base_delay_ms = 1000 * (1 << retry_count);  // 1s, 2s, 4s
+
+      // Add random jitter: ±25% of base delay
+      int jitter_range = base_delay_ms / 2;  // 50% range
+      int jitter = (rand() % jitter_range) - (jitter_range / 2);  // ±25%
+      uint64_t delay_ms = base_delay_ms + jitter;
+
+      ldout(m_cct, 10) << "waiting " << delay_ms << "ms before retry "
+                       << "(base=" << base_delay_ms << "ms, jitter=" << jitter << "ms)" << dendl;
 
       struct timespec ts;
       ts.tv_sec = delay_ms / 1000;
@@ -334,14 +342,14 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
   return last_error;
 }
 
-uint64_t S3ObjectFetcher::calculate_s3_offset(uint64_t object_no, uint64_t object_off) {
+uint64_t S3ObjectFetcher::calculate_s3_offset(uint64_t object_no, uint64_t object_off) const {
   // For "raw" format: disk image is stored as a single object
   // Offset = object_number * object_size + object_offset
   ceph_assert(m_s3_config.object_size > 0);
   return (object_no * m_s3_config.object_size) + object_off;
 }
 
-std::string S3ObjectFetcher::build_s3_url() {
+std::string S3ObjectFetcher::build_s3_url() const {
   // Build URL from S3 config: endpoint/bucket/image_name
   std::string url = m_s3_config.endpoint;
   if (url.back() != '/') {

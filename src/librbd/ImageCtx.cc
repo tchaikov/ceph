@@ -185,6 +185,13 @@ public:
     delete io_work_queue;
     delete operations;
     delete state;
+
+    // Shutdown remote parent cluster connection if present
+    // This prevents resource leaks (network connections, messenger threads)
+    if (remote_parent_cluster) {
+      remote_parent_cluster->shutdown();
+      remote_parent_cluster.reset();
+    }
   }
 
   void ImageCtx::init() {

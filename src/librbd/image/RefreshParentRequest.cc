@@ -299,10 +299,11 @@ void RefreshParentRequest<I>::load_parent_s3_config() {
       s3_config.secret_key = decoded_bl.to_str();
     } catch (buffer::error& err) {
       // If we have an access key but failed to decode the secret key,
-      // this is a critical error - disable S3 configuration
+      // this is a critical configuration error
       if (!s3_config.access_key.empty()) {
-        lderr(cct) << "ERROR: failed to decode s3.secret_key for authenticated access - "
-                   << "disabling S3 configuration" << dendl;
+        lderr(cct) << "CRITICAL: failed to decode s3.secret_key for authenticated access. "
+                   << "S3 configuration is invalid - all reads from this parent will fail. "
+                   << "Please check the s3.secret_key metadata on the parent image." << dendl;
         s3_config.enabled = false;
         return;
       }
