@@ -415,15 +415,15 @@ else:
             "List all NVMeoF namespaces in a gateway group",
             parameters={
                 "gw_group": Param(str, "NVMeoF gateway group", True, None),
-                "server_address": Param(str, "NVMeoF gateway address", True, None),
+                "traddr": Param(str, "NVMeoF gateway address", True, None),
             },
         )
         @convert_to_model(model.NamespaceList)
         @handle_nvmeof_error
-        def list(self, gw_group: str, server_address: Optional[str] = None):
+        def list(self, gw_group: str, traddr: Optional[str] = None):
             return NVMeoFClient(
                 gw_group=gw_group,
-                server_address=server_address
+                traddr=traddr
             ).stub.list_namespaces(
                 NVMeoFClient.pb2.list_namespaces_req()
             )

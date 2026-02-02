@@ -9414,7 +9414,7 @@ paths:
       - allowEmptyValue: true
         description: NVMeoF gateway address
         in: query
-        name: server_address
+        name: traddr
         schema:
           type: string
       responses:
@@ -9449,7 +9449,7 @@ paths:
       - allowEmptyValue: true
         description: NVMeoF gateway address
         in: query
-        name: server_address
+        name: traddr
         schema:
           type: string
       responses:
