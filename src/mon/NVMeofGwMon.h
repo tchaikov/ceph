@@ -109,6 +109,7 @@ private:
        const NvmeGroupKey& group_key, const NvmeGwId &gw_id);
   void check_beacon_timeout(ceph::coarse_mono_clock::time_point now,
        bool &propose_pending);
+
 };
 
 #endif /* MON_NVMEGWMONITOR_H_ */
