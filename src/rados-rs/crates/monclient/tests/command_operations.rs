@@ -66,7 +66,7 @@ async fn create_mon_client(
         ..Default::default()
     };
 
-    let mon_client = Arc::new(monclient::MonClient::new(mon_config).await?);
+    let mon_client = Arc::new(monclient::MonClient::new(mon_config, None).await?);
     mon_client.init_self_ref();
 
     // Initialize connection

@@ -21,6 +21,12 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, trace, warn};
 
+/// Callback for handling decoded OSDMap data
+/// 
+/// Takes the epoch and raw bytes of a full OSDMap.
+/// Returns true if the map was processed, false otherwise.
+pub type OSDMapHandler = Arc<dyn Fn(u32, Bytes) -> bool + Send + Sync>;
+
 /// Monitor client configuration
 #[derive(Debug, Clone)]
 pub struct MonClientConfig {
@@ -122,6 +128,9 @@ pub struct MonClient {
     /// Notification for MonMap arrival
     monmap_notify: Arc<tokio::sync::Notify>,
 
+    /// OSDMap handler for processing OSDMap updates
+    osdmap_handler: Option<OSDMapHandler>,
+
     /// Weak self-reference for passing to MonConnection
     self_weak: std::sync::Weak<MonClient>,
 }
@@ -138,6 +147,7 @@ impl Clone for MonClient {
             map_events: self.map_events.clone(),
             auth_notify: Arc::clone(&self.auth_notify),
             monmap_notify: Arc::clone(&self.monmap_notify),
+            osdmap_handler: self.osdmap_handler.clone(),
             self_weak: self.self_weak.clone(),
         }
     }
@@ -288,8 +298,10 @@ impl MonClient {
     /// # Arguments
     ///
     /// * `config` - MonClient configuration
+    /// * `osdmap_handler` - Optional handler for OSDMap updates
     pub async fn new(
         config: MonClientConfig,
+        osdmap_handler: Option<OSDMapHandler>,
     ) -> std::result::Result<Self, MonClientError> {
         // Parse entity name
         let entity_name: EntityName = config
@@ -346,6 +358,7 @@ impl MonClient {
             map_events,
             auth_notify: Arc::new(tokio::sync::Notify::new()),
             monmap_notify: Arc::new(tokio::sync::Notify::new()),
+            osdmap_handler,
             self_weak: std::sync::Weak::new(),
         })
     }
@@ -1055,6 +1068,10 @@ impl MonClient {
                 );
                 Self::handle_poolop_reply(&self.state, &self.map_events, msg).await?;
             }
+            CEPH_MSG_OSD_MAP => {
+                debug!("Received CEPH_MSG_OSD_MAP (0x{:04x})", CEPH_MSG_OSD_MAP);
+                Self::handle_osdmap(&self.osdmap_handler, msg).await?;
+            }
             _ => {
                 return Err(MonClientError::Other(format!(
                     "Received unknown message type 0x{:04x} - this is a bug! MonClient should only receive messages it subscribed for",
@@ -1229,6 +1246,41 @@ impl MonClient {
                 "Received pool op reply for tid {} but no pending pool operation found",
                 tid
             );
+        }
+
+        Ok(())
+    }
+
+    /// Handle OSDMap message
+    async fn handle_osdmap(
+        osdmap_handler: &Option<OSDMapHandler>,
+        msg: msgr2::message::Message,
+    ) -> Result<()> {
+        info!("Handling OSDMap message ({} bytes)", msg.front.len());
+
+        // Decode MOSDMap
+        let mosdmap = MOSDMap::decode(&msg.front)?;
+        debug!(
+            "Received MOSDMap: {} full maps, {} incremental maps, newest={}",
+            mosdmap.maps.len(),
+            mosdmap.incremental_maps.len(),
+            mosdmap.newest_map
+        );
+
+        // Call handler if available
+        if let Some(handler) = osdmap_handler {
+            // Process full maps in epoch order
+            let mut epochs: Vec<_> = mosdmap.maps.keys().copied().collect();
+            epochs.sort();
+
+            for epoch in epochs {
+                if let Some(map_data) = mosdmap.maps.get(&epoch) {
+                    debug!("Passing full OSDMap epoch {} to handler ({} bytes)", epoch, map_data.len());
+                    handler(epoch, map_data.clone());
+                }
+            }
+        } else {
+            debug!("No OSDMap handler configured, skipping OSDMap processing");
         }
 
         Ok(())
@@ -1635,7 +1687,7 @@ mod tests {
             ..Default::default()
         };
 
-        let client = MonClient::new(config).await.unwrap();
+        let client = MonClient::new(config, None).await.unwrap();
         assert!(!client.is_connected().await);
     }
 
@@ -1647,7 +1699,7 @@ mod tests {
             ..Default::default()
         };
 
-        let client = MonClient::new(config).await.unwrap();
+        let client = MonClient::new(config, None).await.unwrap();
 
         // Should fail before init
         assert!(client.subscribe("osdmap", 0, 0).await.is_err());

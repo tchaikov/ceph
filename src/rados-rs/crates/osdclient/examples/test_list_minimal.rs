@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    let mon_client = Arc::new(monclient::MonClient::new(mon_config).await?);
+    let mon_client = Arc::new(monclient::MonClient::new(mon_config, None).await?);
     mon_client.init().await?;
     println!("✓ Mon connected");
 
