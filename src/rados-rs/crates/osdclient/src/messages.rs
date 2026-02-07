@@ -110,6 +110,14 @@ impl MOSDOp {
             flags |= OsdOpFlags::PGOP;
         }
 
+        // Add compatibility flags required by OSDs
+        // ONDISK: Required for compatibility with pre-luminous OSDs
+        flags |= OsdOpFlags::ONDISK;
+        // KNOWN_REDIR: Indicates client understands redirects
+        flags |= OsdOpFlags::KNOWN_REDIR;
+        // SUPPORTSPOOLEIO: Indicates client understands pool EIO behavior
+        flags |= OsdOpFlags::SUPPORTSPOOLEIO;
+
         flags.bits()
     }
 
@@ -653,8 +661,8 @@ impl CephMessagePayload for MOSDOp {
         // 15. retry_attempt
         self.retry_attempt.encode(&mut buf, 0)?;
 
-        // 16. features (set to 0 for now)
-        0u64.encode(&mut buf, 0)?;
+        // 16. features (encode actual connection features)
+        features.encode(&mut buf, 0)?;
 
         Ok(buf.freeze())
     }
