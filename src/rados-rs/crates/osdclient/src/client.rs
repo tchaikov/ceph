@@ -21,7 +21,7 @@ use crate::types::{
 };
 
 // Type alias for the OSDMap notifier
-type OSDMapNotifierType = objecter::OSDMapNotifier<crate::osdmap::OSDMap>;
+type MapNotifierType = objecter::MapNotifier<crate::osdmap::OSDMap>;
 
 /// Configuration for OSD client
 #[derive(Debug, Clone, Default)]
@@ -54,7 +54,7 @@ pub struct OSDClient {
     /// Current OSDMap
     osdmap: Arc<RwLock<Option<Arc<crate::osdmap::OSDMap>>>>,
     /// OSDMap notifier for receiving map updates
-    osdmap_notifier: Arc<OSDMapNotifierType>,
+    map_notifier: Arc<MapNotifierType>,
     /// Notification for OSDMap arrival
     osdmap_notify: Arc<tokio::sync::Notify>,
     /// Weak self-reference for session creation
@@ -67,7 +67,7 @@ impl OSDClient {
         config: OSDClientConfig,
         fsid: denc::UuidD,
         mon_client: Arc<monclient::MonClient>,
-        osdmap_notifier: Arc<OSDMapNotifierType>,
+        map_notifier: Arc<MapNotifierType>,
     ) -> Result<Arc<Self>> {
         info!("Creating OSDClient for {}", config.entity_name);
 
@@ -94,7 +94,7 @@ impl OSDClient {
             global_id,
             fsid,
             osdmap: Arc::new(RwLock::new(None)),
-            osdmap_notifier,
+            map_notifier,
             osdmap_notify: Arc::new(tokio::sync::Notify::new()),
             self_weak: weak.clone(),
         });
@@ -109,7 +109,7 @@ impl OSDClient {
     pub async fn start_osdmap_subscription(self: Arc<Self>) -> Result<()> {
         info!("Starting OSDMap subscription for OSDClient");
 
-        let mut rx = self.osdmap_notifier.subscribe().await;
+        let mut rx = self.map_notifier.subscribe().await;
         let client = Arc::clone(&self);
 
         tokio::spawn(async move {
@@ -1348,7 +1348,7 @@ impl OSDClient {
 
             // Post to notifier for subscribers
             if let Some(osdmap_arc) = self.osdmap.read().await.as_ref() {
-                self.osdmap_notifier.post(Arc::clone(osdmap_arc)).await;
+                self.map_notifier.post(Arc::clone(osdmap_arc)).await;
             }
 
             // Notify waiters that OSDMap is available

@@ -102,8 +102,8 @@ async fn setup() -> (Arc<monclient::MonClient>, Arc<osdclient::OSDClient>, u64) 
 
     let config = TestConfig::from_env();
 
-    // Create shared OSDMapNotifier - for OSDMap updates
-    let osdmap_notifier = Arc::new(osdclient::OSDMapNotifier::new());
+    // Create shared MapNotifier - for OSDMap updates
+    let map_notifier = Arc::new(osdclient::MapNotifier::new());
 
     // Create MonClient
     let mon_config = monclient::MonClientConfig {
@@ -148,7 +148,7 @@ async fn setup() -> (Arc<monclient::MonClient>, Arc<osdclient::OSDClient>, u64) 
         osd_config,
         fsid,
         Arc::clone(&mon_client),
-        Arc::clone(&osdmap_notifier),
+        Arc::clone(&map_notifier),
     )
     .await
     .expect("Failed to create OSDClient");

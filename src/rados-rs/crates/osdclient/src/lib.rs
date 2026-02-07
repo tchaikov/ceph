@@ -33,13 +33,13 @@ pub use types::{
     StripedPgId, WriteResult,
 };
 
-// Re-export OSDMapNotifier from objecter
-pub use objecter::OSDMapNotifier;
+// Re-export MapNotifier from objecter
+pub use objecter::MapNotifier;
 
 pub type Result<T> = std::result::Result<T, OSDClientError>;
 
-// Implement OSDMapLike trait for our OSDMap
-impl objecter::osdmap_notifier::OSDMapLike for OSDMap {
+// Implement MapLike trait for our OSDMap
+impl objecter::map_notifier::MapLike for OSDMap {
     fn epoch(&self) -> u32 {
         self.epoch
     }

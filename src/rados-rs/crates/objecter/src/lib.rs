@@ -1,11 +1,11 @@
-//! Objecter - OSDMap notification and coordination
+//! Objecter - Map notification and coordination
 //!
-//! This crate provides shared coordination mechanisms for RADOS object operations,
+//! This crate provides shared coordination mechanisms for Ceph clients,
 //! inspired by Ceph's C++ Objecter.
 //!
 //! Currently provides:
-//! - OSDMapNotifier: Pub/sub mechanism for OSDMap updates between MonClient and OSDClient
+//! - MapNotifier: Pub/sub mechanism for map updates (OSDMap, MDSMap, MonMap, etc.)
 
-pub mod osdmap_notifier;
+pub mod map_notifier;
 
-pub use osdmap_notifier::OSDMapNotifier;
+pub use map_notifier::MapNotifier;

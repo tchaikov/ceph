@@ -69,8 +69,8 @@ impl TestConfig {
 async fn create_osd_client(
     config: &TestConfig,
 ) -> Result<(Arc<osdclient::OSDClient>, Arc<monclient::MonClient>), Box<dyn std::error::Error>> {
-    // Create shared OSDMapNotifier for OSDMap updates
-    let osdmap_notifier = Arc::new(osdclient::OSDMapNotifier::new());
+    // Create shared MapNotifier for OSDMap updates
+    let map_notifier = Arc::new(osdclient::MapNotifier::new());
 
     // Create MonClient
     let mon_config = monclient::MonClientConfig {
@@ -115,12 +115,12 @@ async fn create_osd_client(
     // Get FSID from MonClient
     let fsid = mon_client.get_fsid().await;
 
-    // Create OSDClient with OSDMapNotifier
+    // Create OSDClient with MapNotifier
     let osd_client = osdclient::OSDClient::new(
         osd_config,
         fsid,
         Arc::clone(&mon_client),
-        Arc::clone(&osdmap_notifier),
+        Arc::clone(&map_notifier),
     )
     .await?;
     info!("✓ OSD client created");

@@ -137,8 +137,8 @@ async fn main() -> Result<()> {
 
     debug!("Using keyring: {}", keyring_path);
 
-    // Create shared OSDMapNotifier - both MonClient and OSDClient use this for OSDMap updates
-    let osdmap_notifier = Arc::new(osdclient::OSDMapNotifier::new());
+    // Create shared MapNotifier - both MonClient and OSDClient use this for OSDMap updates
+    let map_notifier = Arc::new(osdclient::MapNotifier::new());
 
     // Create MonClient
     let mon_config = monclient::MonClientConfig {
@@ -189,7 +189,7 @@ async fn main() -> Result<()> {
         osd_config,
         fsid,
         Arc::clone(&mon_client),
-        Arc::clone(&osdmap_notifier),
+        Arc::clone(&map_notifier),
     )
     .await
     .context("Failed to create OSDClient")?;
