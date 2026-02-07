@@ -405,16 +405,10 @@ impl OSDSession {
         let ceph_msg = CephMessage::from_payload(op, features, CrcFlags::ALL)
             .map_err(|e| OSDClientError::Encoding(format!("Failed to encode MOSDOp: {}", e)))?;
 
-        // Determine version based on SERVER_SQUID feature
-        let version = if denc::features::has_feature(features, denc::features::CEPH_FEATUREMASK_SERVER_SQUID) {
-            9  // v9 with OpenTelemetry trace
-        } else {
-            8  // v8 without OpenTelemetry trace
-        };
-
+        // CephMessage::from_payload already set the correct version based on features
         let mut msg =
             msgr2::message::Message::new(crate::messages::CEPH_MSG_OSD_OP, ceph_msg.front)
-                .with_version(version)
+                .with_version(ceph_msg.header.version)
                 .with_tid(tid);
         msg.header.compat_version = ceph_msg.header.compat_version;
         msg.data = ceph_msg.data;

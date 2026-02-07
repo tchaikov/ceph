@@ -116,17 +116,47 @@ impl MOSDOp {
     /// Get the expected front section size for a PGLS operation
     ///
     /// This is useful for verifying the encoding is correct.
-    pub fn expected_front_size_pgls_v8() -> usize {
-        // Calculated from actual v8 encoding (without OpenTelemetry trace)
-        209
-    }
-    
-    /// Get the expected front section size for a PGLS operation with v9 encoding
+    /// The size varies based on message version:
+    /// - v8: Does not include OpenTelemetry trace (209 bytes for PGLS)
+    /// - v9: Includes OpenTelemetry trace (216 bytes for PGLS)
     ///
-    /// This includes the OpenTelemetry trace field added in v9.
-    pub fn expected_front_size_pgls_v9() -> usize {
-        // Calculated from actual v9 encoding (with OpenTelemetry trace)
-        216
+    /// # Arguments
+    /// * `version` - The message version (8 or 9)
+    ///
+    /// # Returns
+    /// Expected front size in bytes for a PGLS operation
+    pub fn expected_front_size_pgls(version: u16) -> usize {
+        // Base size for v8 (without OpenTelemetry trace):
+        // - spgid (StripedPgId): 28 bytes (with version 1,1)
+        // - hash: 4 bytes
+        // - osdmap_epoch: 4 bytes
+        // - flags: 4 bytes
+        // - reqid (OsdReqId): 21 bytes (with version 2,2)
+        // - blkin_trace: 24 bytes (3 x u64)
+        // - client_inc: 4 bytes
+        // - mtime: 8 bytes (2 x u32)
+        // - object_locator_t: 34 bytes
+        // - object name: 1 byte (empty string)
+        // - ops count: 2 bytes
+        // - single PGLS op: 38 bytes
+        // - snapid: 8 bytes
+        // - snap_seq: 8 bytes
+        // - snaps count: 4 bytes
+        // - retry_attempt: 4 bytes
+        // - features: 8 bytes
+        // - feature_incompat: 1 byte
+        // - num_snaps: 0 bytes
+        // Total v8: 209 bytes
+        const BASE_SIZE_V8: usize = 209;
+        
+        // JaegerSpanContext added in v9: 7 bytes
+        const OTEL_TRACE_SIZE: usize = 7;
+        
+        match version {
+            8 => BASE_SIZE_V8,
+            9 => BASE_SIZE_V8 + OTEL_TRACE_SIZE,
+            _ => BASE_SIZE_V8, // Default to v8 for unknown versions
+        }
     }
 }
 
@@ -491,14 +521,18 @@ impl CephMessagePayload for MOSDOp {
         CEPH_MSG_OSD_OP
     }
 
-    fn msg_version() -> u16 {
-        // Default to v8 for backward compatibility with Ceph v18+
-        // Production code in encode_operation() will override this with v9 when
-        // SERVER_SQUID feature is present. See session.rs encode_operation().
-        Self::VERSION
+    fn msg_version(features: u64) -> u16 {
+        // Return v9 if SERVER_SQUID feature is present (Ceph v19+)
+        // Return v8 otherwise for backward compatibility with Ceph v18
+        use denc::features::CEPH_FEATUREMASK_SERVER_SQUID;
+        if features & CEPH_FEATUREMASK_SERVER_SQUID != 0 {
+            9
+        } else {
+            8
+        }
     }
 
-    fn msg_compat_version() -> u16 {
+    fn msg_compat_version(_features: u64) -> u16 {
         Self::COMPAT_VERSION
     }
 
@@ -656,7 +690,7 @@ impl CephMessagePayload for MOSDOpReply {
         CEPH_MSG_OSD_OPREPLY
     }
 
-    fn msg_version() -> u16 {
+    fn msg_version(_features: u64) -> u16 {
         Self::VERSION
     }
 
@@ -681,7 +715,7 @@ impl CephMessagePayload for MOSDBackoff {
         CEPH_MSG_OSD_BACKOFF
     }
 
-    fn msg_version() -> u16 {
+    fn msg_version(_features: u64) -> u16 {
         Self::VERSION
     }
 
@@ -733,7 +767,7 @@ mod tests {
         // Verify front section size for v8
         assert_eq!(
             msg.front.len(),
-            MOSDOp::expected_front_size_pgls_v8(),
+            MOSDOp::expected_front_size_pgls(8),
             "Front section should be 209 bytes for v8 (no OpenTelemetry)"
         );
 
@@ -775,7 +809,7 @@ mod tests {
         // Verify front section size for v9
         assert_eq!(
             msg.front.len(),
-            MOSDOp::expected_front_size_pgls_v9(),
+            MOSDOp::expected_front_size_pgls(9),
             "Front section should be 216 bytes for v9 (with OpenTelemetry)"
         );
 
