@@ -17,6 +17,7 @@ pub mod ioctx;
 pub mod messages;
 pub mod operation;
 pub mod osdmap;
+pub mod osdmap_notifier;
 pub mod pgmap_types;
 pub mod session;
 pub mod throttle;
@@ -28,6 +29,7 @@ pub use client::{OSDClient, OSDClientConfig};
 pub use error::OSDClientError;
 pub use ioctx::IoCtx;
 pub use osdmap::{OSDMap, OSDMapIncremental, PgMergeMeta, PgPool, UuidD};
+pub use osdmap_notifier::OSDMapNotifier;
 pub use types::{
     OSDOp, ObjectId, OpCode, PoolInfo, ReadResult, SparseExtent, SparseReadResult, StatResult,
     StripedPgId, WriteResult,
