@@ -12,7 +12,6 @@ pub mod error;
 pub mod frames;
 pub mod header;
 pub mod message;
-pub mod message_bus;
 pub mod protocol;
 pub mod revocation;
 pub mod state_machine;
@@ -24,9 +23,21 @@ pub use error::*;
 pub use frames::*;
 pub use header::*;
 pub use message::*;
-pub use message_bus::*;
 pub use revocation::*;
 pub use throttle::*;
+
+/// Message handler callback type
+///
+/// Async callback for handling received messages. The callback receives a Message
+/// and returns a Future that resolves to Result<()>.
+pub type MessageHandler = std::sync::Arc<
+    dyn Fn(
+            message::Message,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = std::result::Result<(), denc::RadosError>> + Send>,
+        > + Send
+        + Sync,
+>;
 
 // Messenger configuration options from ceph.conf
 cephconfig::define_options! {

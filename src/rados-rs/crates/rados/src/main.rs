@@ -140,9 +140,6 @@ async fn main() -> Result<()> {
     // Create shared OSDMapNotifier - both MonClient and OSDClient use this for OSDMap updates
     let osdmap_notifier = Arc::new(osdclient::OSDMapNotifier::new());
 
-    // Create shared MessageBus - MonClient uses this internally
-    let message_bus = Arc::new(msgr2::MessageBus::new());
-
     // Create MonClient
     let mon_config = monclient::MonClientConfig {
         entity_name: cli.name.clone(),
@@ -152,7 +149,7 @@ async fn main() -> Result<()> {
     };
 
     let mon_client = Arc::new(
-        monclient::MonClient::new(mon_config, message_bus)
+        monclient::MonClient::new(mon_config)
             .await
             .context("Failed to create MonClient")?,
     );
@@ -162,13 +159,6 @@ async fn main() -> Result<()> {
         .init()
         .await
         .context("Failed to initialize MonClient")?;
-
-    // Register MonClient handlers on MessageBus  
-    mon_client
-        .clone()
-        .register_handlers()
-        .await
-        .context("Failed to register MonClient handlers")?;
 
     debug!("Connected to monitor");
 

@@ -105,9 +105,6 @@ async fn setup() -> (Arc<monclient::MonClient>, Arc<osdclient::OSDClient>, u64) 
     // Create shared OSDMapNotifier - for OSDMap updates
     let osdmap_notifier = Arc::new(osdclient::OSDMapNotifier::new());
 
-    // Create shared MessageBus - MonClient uses this internally
-    let message_bus = Arc::new(msgr2::MessageBus::new());
-
     // Create MonClient
     let mon_config = monclient::MonClientConfig {
         entity_name: config.entity_name.clone(),
@@ -117,7 +114,7 @@ async fn setup() -> (Arc<monclient::MonClient>, Arc<osdclient::OSDClient>, u64) 
     };
 
     let mon_client = Arc::new(
-        monclient::MonClient::new(mon_config, message_bus)
+        monclient::MonClient::new(mon_config)
             .await
             .expect("Failed to create MonClient"),
     );
@@ -127,13 +124,6 @@ async fn setup() -> (Arc<monclient::MonClient>, Arc<osdclient::OSDClient>, u64) 
         .init()
         .await
         .expect("Failed to initialize MonClient");
-
-    // Register MonClient handlers on MessageBus
-    mon_client
-        .clone()
-        .register_handlers()
-        .await
-        .expect("Failed to register MonClient handlers");
 
     // Wait for authentication to fully complete with all service tickets
     // This ensures OSD service tickets are available before creating OSDClient

@@ -10,11 +10,9 @@ use crate::paxos_service_message::PaxosServiceMessage;
 use crate::subscription::MonSub;
 use crate::types::{CommandResult, EntityName};
 use crate::wait_helper::wait_for_condition;
-use async_trait::async_trait;
 use bytes::Bytes;
 use denc::UuidD;
 use msgr2::ceph_message::{CephMessage, CrcFlags};
-use msgr2::{Dispatcher, MessageBus};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -118,9 +116,6 @@ pub struct MonClient {
     /// Event broadcaster for map updates
     map_events: broadcast::Sender<MapEvent>,
 
-    /// Global message bus for inter-component routing
-    message_bus: Arc<MessageBus>,
-
     /// Notification for authentication completion
     auth_notify: Arc<tokio::sync::Notify>,
 
@@ -138,7 +133,6 @@ impl Clone for MonClient {
             tick_task: Arc::clone(&self.tick_task),
             keepalive_state: Arc::clone(&self.keepalive_state),
             map_events: self.map_events.clone(),
-            message_bus: Arc::clone(&self.message_bus),
             auth_notify: Arc::clone(&self.auth_notify),
             monmap_notify: Arc::clone(&self.monmap_notify),
         }
@@ -285,22 +279,13 @@ struct VersionTracker {
 }
 
 impl MonClient {
-    /// Create a new MonClient with default MessageBus
-    ///
-    /// This is a convenience wrapper that creates a new MessageBus.
-    /// For production use with OSDClient integration, use `new_with_bus()`.
-    /// Create a new MonClient with a shared MessageBus
-    ///
-    /// This allows MonClient to forward messages (like OSDMap) to other components
-    /// like OSDClient through the shared message bus.
+    /// Create a new MonClient
     ///
     /// # Arguments
     ///
     /// * `config` - MonClient configuration
-    /// * `message_bus` - Shared MessageBus for inter-component communication
     pub async fn new(
         config: MonClientConfig,
-        message_bus: Arc<MessageBus>,
     ) -> std::result::Result<Self, MonClientError> {
         // Parse entity name
         let entity_name: EntityName = config
@@ -355,7 +340,6 @@ impl MonClient {
             tick_task: Arc::new(RwLock::new(None)),
             keepalive_state: Arc::new(Mutex::new(KeepaliveState::default())),
             map_events,
-            message_bus,
             auth_notify: Arc::new(tokio::sync::Notify::new()),
             monmap_notify: Arc::new(tokio::sync::Notify::new()),
         })
@@ -377,9 +361,6 @@ impl MonClient {
 
         drop(state);
 
-        // NOTE: register_handlers() must be called separately after init()
-        // This ensures MonClient is registered on MessageBus to receive messages
-
         // Start tick loop for periodic keepalive and auth renewal
         self.start_tick_loop();
 
@@ -389,10 +370,6 @@ impl MonClient {
         // Send initial subscriptions (monmap and osdmap)
         info!("Subscribing to monmap...");
         self.subscribe("monmap", 0, 0).await?;
-
-        // NOTE: OSDMap subscription removed - OSDClient handles this via MessageBus
-        // Applications should explicitly subscribe to osdmap after registering OSDClient
-        // on the MessageBus to avoid race conditions with message routing
 
         info!("MonClient initialized successfully");
         Ok(())
@@ -631,6 +608,25 @@ impl MonClient {
         };
 
         // Create actual msgr2 connection
+        // Create callback that will handle messages from this connection
+        let state_for_handler = Arc::clone(&self.state);
+        let keepalive_state_for_handler = Arc::clone(&self.keepalive_state);
+        let map_events_for_handler = self.map_events.clone();
+        let monmap_notify_for_handler = Arc::clone(&self.monmap_notify);
+        
+        let message_handler: msgr2::MessageHandler = Arc::new(move |msg| {
+            let state = Arc::clone(&state_for_handler);
+            let keepalive_state = Arc::clone(&keepalive_state_for_handler);
+            let map_events = map_events_for_handler.clone();
+            let monmap_notify = Arc::clone(&monmap_notify_for_handler);
+            
+            Box::pin(async move {
+                Self::dispatch_message(&state, &keepalive_state, &map_events, &monmap_notify, msg)
+                    .await
+                    .map_err(|e| denc::RadosError::Protocol(e.to_string()))
+            })
+        });
+
         let mon_con = Arc::new(
             MonConnection::connect(
                 socket_addr,
@@ -639,7 +635,7 @@ impl MonClient {
                 self.config.entity_name.clone(),
                 keyring_path,
                 keepalive_policy,
-                Arc::clone(&self.message_bus), // Pass MessageBus to connection
+                message_handler,
             )
             .await?,
         );
@@ -1679,26 +1675,6 @@ impl std::fmt::Debug for MonClient {
     }
 }
 
-/// Implement Dispatcher trait for MonClient to handle monitor-specific messages
-#[async_trait]
-impl Dispatcher for MonClient {
-    async fn dispatch(
-        &self,
-        msg: msgr2::message::Message,
-    ) -> std::result::Result<(), denc::RadosError> {
-        // Use From trait for error conversion
-        Self::dispatch_message(
-            &self.state,
-            &self.keepalive_state,
-            &self.map_events,
-            &self.monmap_notify,
-            msg,
-        )
-        .await
-        .map_err(Into::into)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1711,8 +1687,7 @@ mod tests {
             ..Default::default()
         };
 
-        let message_bus = Arc::new(msgr2::MessageBus::new());
-        let client = MonClient::new(config, message_bus).await.unwrap();
+        let client = MonClient::new(config).await.unwrap();
         assert!(!client.is_connected().await);
     }
 
@@ -1724,8 +1699,7 @@ mod tests {
             ..Default::default()
         };
 
-        let message_bus = Arc::new(msgr2::MessageBus::new());
-        let client = MonClient::new(config, message_bus).await.unwrap();
+        let client = MonClient::new(config).await.unwrap();
 
         // Should fail before init
         assert!(client.subscribe("osdmap", 0, 0).await.is_err());

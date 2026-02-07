@@ -16,7 +16,6 @@ use crate::error::{Error, Result};
 use crate::frames::{Frame, MessageFrame, Preamble, Tag};
 use crate::header::MsgHeader;
 use crate::message::Message;
-use crate::message_bus::{Dispatcher, MessageBus};
 use crate::state_machine::{create_frame_from_trait, StateKind, StateMachine, StateResult};
 use crate::FeatureSet;
 use std::borrow::Cow;
@@ -740,10 +739,6 @@ pub struct Connection {
     config: crate::ConnectionConfig,
     /// Optional message throttle for rate limiting
     throttle: Option<crate::throttle::MessageThrottle>,
-    /// Local message handlers registered on this connection
-    local_handlers: HashMap<u16, Arc<dyn Dispatcher>>,
-    /// Global message bus for inter-component messages
-    message_bus: Option<Arc<MessageBus>>,
     /// Background task handle for message loop
     #[allow(dead_code)] // Will be used when message loop is implemented
     recv_task: Option<JoinHandle<()>>,
@@ -884,8 +879,6 @@ impl Connection {
             target_entity_addr: Some(target_entity_addr),
             config,
             throttle,
-            local_handlers: HashMap::new(),
-            message_bus: None,
             recv_task: None,
         })
     }
@@ -946,8 +939,6 @@ impl Connection {
             target_entity_addr: None,
             config,
             throttle,
-            local_handlers: HashMap::new(),
-            message_bus: None,
             recv_task: None,
         })
     }
@@ -1178,8 +1169,6 @@ impl Connection {
             target_entity_addr: None,
             config,
             throttle,
-            local_handlers: HashMap::new(),
-            message_bus: None,
             recv_task: None,
         })
     }
@@ -1674,8 +1663,7 @@ impl Connection {
     /// Start the embedded message loop
     ///
     /// This spawns a background task that continuously receives messages from the
-    /// connection and dispatches them to registered handlers. Local handlers are
-    /// tried first, then the global message bus if no local handler is found.
+    /// connection and dispatches them to registered handlers.
     ///
     /// # Implementation Status
     ///
@@ -1693,9 +1681,7 @@ impl Connection {
     ///
     /// # Errors
     ///
-    /// Returns error if:
-    /// - No handlers (local or global) are configured
-    /// - A message is received with no handler registered
+    /// Returns error if a message is received with no handler registered
     pub fn start(&mut self) -> Result<()> {
         // TODO: Implement message loop once Connection architecture supports it
         Err(Error::Protocol(

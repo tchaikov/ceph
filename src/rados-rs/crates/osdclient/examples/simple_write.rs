@@ -28,9 +28,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Create shared MessageBus and MonClient
     println!("1️⃣  Creating MessageBus and connecting to monitor...");
 
-    // Create shared MessageBus for MonClient
-    let message_bus = Arc::new(msgr2::MessageBus::new());
-
     // Create shared OSDMapNotifier for OSDMap coordination
     let osdmap_notifier = Arc::new(osdclient::OSDMapNotifier::new());
 
@@ -41,13 +38,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    let mon_client = Arc::new(monclient::MonClient::new(mon_config, message_bus).await?);
+    let mon_client = Arc::new(monclient::MonClient::new(mon_config).await?);
 
     // Initialize connection
     mon_client.init().await?;
-
-    // Register MonClient handlers
-    mon_client.clone().register_handlers().await?;
 
     println!("   ✓ Connected to monitor\n");
 

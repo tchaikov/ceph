@@ -9,9 +9,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n🧪 List Test with Objects\n");
 
-    // Create shared MessageBus for MonClient
-    let message_bus = Arc::new(msgr2::MessageBus::new());
-
     // Create shared OSDMapNotifier for OSDMap coordination
     let osdmap_notifier = Arc::new(osdclient::OSDMapNotifier::new());
 
@@ -22,10 +19,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    let mon_client = Arc::new(monclient::MonClient::new(mon_config, message_bus).await?);
+    let mon_client = Arc::new(monclient::MonClient::new(mon_config).await?);
     mon_client.init().await?;
-
-    mon_client.clone().register_handlers().await?;
     println!("✓ Mon connected");
 
     mon_client.subscribe("osdmap", 0, 0).await?;
