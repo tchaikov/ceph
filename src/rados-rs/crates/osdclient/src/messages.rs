@@ -116,9 +116,16 @@ impl MOSDOp {
     /// Get the expected front section size for a PGLS operation
     ///
     /// This is useful for verifying the encoding is correct.
-    /// The size should be 216 bytes for v9 (based on actual encoding)
-    pub fn expected_front_size_pgls() -> usize {
-        // Calculated from actual v9 encoding
+    pub fn expected_front_size_pgls_v8() -> usize {
+        // Calculated from actual v8 encoding (without OpenTelemetry trace)
+        209
+    }
+    
+    /// Get the expected front section size for a PGLS operation with v9 encoding
+    ///
+    /// This includes the OpenTelemetry trace field added in v9.
+    pub fn expected_front_size_pgls_v9() -> usize {
+        // Calculated from actual v9 encoding (with OpenTelemetry trace)
         216
     }
 }
@@ -485,9 +492,10 @@ impl CephMessagePayload for MOSDOp {
     }
 
     fn msg_version() -> u16 {
-        // Version is determined dynamically in encode_operation() based on SERVER_SQUID feature
-        // See session.rs encode_operation() for actual version selection logic
-        9
+        // Default to v8 for backward compatibility with Ceph v18+
+        // Production code in encode_operation() will override this with v9 when
+        // SERVER_SQUID feature is present. See session.rs encode_operation().
+        Self::VERSION
     }
 
     fn msg_compat_version() -> u16 {
@@ -697,6 +705,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_mosdop_encoding_v8() {
+        use crate::types::{OSDOp, ObjectId, RequestId, StripedPgId};
+        use msgr2::ceph_message::{CephMessage, CrcFlags};
+
+        // Create a PGLS operation
+        let object = ObjectId::new(3, "");
+        let pgid = StripedPgId::from_pg(3, 0);
+        let ops = vec![OSDOp::pgls(100, denc::HObject::empty_cursor(3), 20)];
+        let reqid = RequestId::new("client.0", 1, 1);
+
+        let mosdop = MOSDOp::new(
+            1,
+            20,
+            MOSDOp::calculate_flags(&ops),
+            object,
+            pgid,
+            ops,
+            reqid,
+            0,
+        );
+
+        // Encode using CephMessage framework with features=0 (no SERVER_SQUID)
+        // This should produce v8 encoding without OpenTelemetry trace
+        let msg = CephMessage::from_payload(&mosdop, 0, CrcFlags::ALL).unwrap();
+
+        // Verify front section size for v8
+        assert_eq!(
+            msg.front.len(),
+            MOSDOp::expected_front_size_pgls_v8(),
+            "Front section should be 209 bytes for v8 (no OpenTelemetry)"
+        );
+
+        // Verify data section (should contain the 39-byte HObject cursor)
+        assert_eq!(
+            msg.data.len(),
+            39,
+            "Data section should contain 39-byte HObject cursor"
+        );
+    }
+
+    #[test]
     fn test_mosdop_encoding_v9() {
         use crate::types::{OSDOp, ObjectId, RequestId, StripedPgId};
         use msgr2::ceph_message::{CephMessage, CrcFlags};
@@ -718,20 +767,19 @@ mod tests {
             0,
         );
 
-        // Encode using CephMessage framework
-        let msg = CephMessage::from_payload(&mosdop, 0, CrcFlags::ALL).unwrap();
+        // Encode using CephMessage framework with SERVER_SQUID feature
+        // This should produce v9 encoding with OpenTelemetry trace
+        let features = denc::features::CEPH_FEATUREMASK_SERVER_SQUID;
+        let msg = CephMessage::from_payload(&mosdop, features, CrcFlags::ALL).unwrap();
 
-        // Verify front section size
-        // Expected: 216 bytes for v9 (based on actual encoding)
-
+        // Verify front section size for v9
         assert_eq!(
             msg.front.len(),
-            MOSDOp::expected_front_size_pgls(),
-            "Front section should be 216 bytes for v9"
+            MOSDOp::expected_front_size_pgls_v9(),
+            "Front section should be 216 bytes for v9 (with OpenTelemetry)"
         );
 
         // Verify data section (should contain the 39-byte HObject cursor)
-
         assert_eq!(
             msg.data.len(),
             39,
