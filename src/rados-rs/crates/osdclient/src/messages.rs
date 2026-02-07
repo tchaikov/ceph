@@ -47,8 +47,10 @@ pub struct MOSDOp {
 }
 
 impl MOSDOp {
-    /// Message version (from MOSDOp.h HEAD_VERSION)
-    pub const VERSION: u16 = 9;
+    /// Message version (using v8 for compatibility with Ceph v18+)
+    /// v8: hobject_t hash separate from pgid, no reassert version
+    /// v9: adds OpenTelemetry trace (requires Ceph v19+ / SERVER_SQUID feature)
+    pub const VERSION: u16 = 8;
 
     /// Message compat version (from MOSDOp.h COMPAT_VERSION)
     pub const COMPAT_VERSION: u16 = 3;
@@ -493,13 +495,11 @@ impl CephMessagePayload for MOSDOp {
     fn encode_payload(&self, _features: u64) -> std::result::Result<Bytes, msgr2::Error> {
         use crate::denc_types::OsdReqId;
         use crate::types::{
-            BlkinTraceInfo, EntityName, JaegerSpanContext, CEPH_ENTITY_TYPE_CLIENT,
+            BlkinTraceInfo, EntityName, CEPH_ENTITY_TYPE_CLIENT,
         };
         use denc::denc::Denc;
 
         let mut buf = BytesMut::new();
-
-        // Debug logging for MOSDOp message
 
         // 1. spgid (spg_t) - with version header (1,1)
         self.pgid.encode(&mut buf, 0)?;
@@ -526,9 +526,7 @@ impl CephMessagePayload for MOSDOp {
         let trace = BlkinTraceInfo::empty();
         trace.encode(&mut buf, 0)?;
 
-        // 6b. otel_trace (jspan_context) - added in v9
-        let otel_trace = JaegerSpanContext::invalid();
-        otel_trace.encode(&mut buf, 0)?;
+        // Note: v9 adds otel_trace (jspan_context) here, but we use v8 for v18 compatibility
 
         // --- Above decoded up front; below decoded post-dispatch ---
 
