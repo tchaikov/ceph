@@ -2,7 +2,6 @@
 //!
 //! Main entry point for performing object operations against a Ceph cluster.
 
-use async_trait::async_trait;
 use monclient::wait_helper::wait_for_condition;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -279,7 +278,6 @@ impl OSDClient {
             self.config.entity_name.clone(),
             self.config.client_inc,
             auth_provider,
-            Arc::clone(&self.message_bus),
             self.self_weak.clone(),
         );
 

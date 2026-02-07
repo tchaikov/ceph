@@ -27,7 +27,6 @@ struct IoTaskContext {
     pending_ops: Arc<RwLock<HashMap<u64, PendingOp>>>,
     #[allow(dead_code)]
     backoffs: Arc<RwLock<HashMap<StripedPgId, HashMap<denc::HObject, OSDBackoff>>>>,
-    message_bus: Arc<msgr2::MessageBus>,
     client: std::sync::Weak<crate::client::OSDClient>,
 }
 
@@ -59,8 +58,6 @@ pub struct OSDSession {
     /// Outer map: pgid -> inner map
     /// Inner map: begin hobject -> backoff info
     backoffs: Arc<RwLock<HashMap<StripedPgId, HashMap<denc::HObject, OSDBackoff>>>>,
-    /// Message bus for broadcasting messages (OSDMAP)
-    message_bus: Arc<msgr2::MessageBus>,
     /// Weak reference to OSDClient for session-specific message dispatch
     client: std::sync::Weak<crate::client::OSDClient>,
     /// Negotiated features with this OSD
@@ -93,7 +90,6 @@ impl OSDSession {
         entity_name: String,
         client_inc: u32,
         auth_provider: Option<Box<dyn auth::AuthProvider>>,
-        message_bus: Arc<msgr2::MessageBus>,
         client: std::sync::Weak<crate::client::OSDClient>,
     ) -> Self {
         // Create channel for outgoing messages (like Linux kernel's out_queue)
@@ -109,7 +105,6 @@ impl OSDSession {
             client_inc,
             auth_provider,
             backoffs: Arc::new(RwLock::new(HashMap::new())),
-            message_bus,
             client,
             peer_features: Arc::new(AtomicU64::new(0)),
         }
@@ -175,7 +170,6 @@ impl OSDSession {
             osd_id: self.osd_id,
             pending_ops: Arc::clone(&self.pending_ops),
             backoffs: Arc::clone(&self.backoffs),
-            message_bus: Arc::clone(&self.message_bus),
             client: self.client.clone(),
         };
         // IMPORTANT: Keep a clone of send_tx alive in the io_task to prevent premature channel closure.
@@ -246,10 +240,14 @@ impl OSDSession {
                             // Route messages based on their scope (broadcast vs session-specific)
                             match msg_type {
                                 msgr2::message::CEPH_MSG_OSD_MAP => {
-                                    // Broadcast message: Forward to MessageBus
-                                    // Multiple components (MonClient, OSDClient) may need this
-                                    if let Err(e) = ctx.message_bus.dispatch(msg).await {
-                                        error!("Failed to dispatch OSDMap to MessageBus: {}", e);
+                                    // OSDMap from OSD: Forward to OSDClient for processing
+                                    // OSDClient will decode, apply, and post to notifier
+                                    if let Some(client_arc) = ctx.client.upgrade() {
+                                        if let Err(e) = client_arc.handle_osdmap(msg).await {
+                                            error!("Failed to handle OSDMap from OSD {}: {}", ctx.osd_id, e);
+                                        }
+                                    } else {
+                                        warn!("OSDClient dropped, ignoring OSDMap from OSD {}", ctx.osd_id);
                                     }
                                 }
                                 crate::messages::CEPH_MSG_OSD_OPREPLY | crate::messages::CEPH_MSG_OSD_BACKOFF => {
