@@ -153,6 +153,9 @@ async fn main() -> Result<()> {
             .await
             .context("Failed to create MonClient")?,
     );
+    
+    // Initialize self-reference for MonConnection callbacks
+    mon_client.init_self_ref();
 
     // Initialize connection
     mon_client

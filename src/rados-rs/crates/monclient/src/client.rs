@@ -121,6 +121,9 @@ pub struct MonClient {
 
     /// Notification for MonMap arrival
     monmap_notify: Arc<tokio::sync::Notify>,
+
+    /// Weak self-reference for passing to MonConnection
+    self_weak: std::sync::Weak<MonClient>,
 }
 
 impl Clone for MonClient {
@@ -135,6 +138,7 @@ impl Clone for MonClient {
             map_events: self.map_events.clone(),
             auth_notify: Arc::clone(&self.auth_notify),
             monmap_notify: Arc::clone(&self.monmap_notify),
+            self_weak: self.self_weak.clone(),
         }
     }
 }
@@ -342,7 +346,19 @@ impl MonClient {
             map_events,
             auth_notify: Arc::new(tokio::sync::Notify::new()),
             monmap_notify: Arc::new(tokio::sync::Notify::new()),
+            self_weak: std::sync::Weak::new(),
         })
+    }
+
+    /// Initialize self-reference (must be called immediately after wrapping in Arc)
+    pub fn init_self_ref(self: &Arc<Self>) {
+        // SAFETY: This is safe because we're only writing to the field once,
+        // immediately after construction and before any other use
+        unsafe {
+            let self_ptr = self as *const Arc<Self> as *mut Arc<Self>;
+            let client_ptr = (*self_ptr).as_ref() as *const MonClient as *mut MonClient;
+            (*client_ptr).self_weak = Arc::downgrade(self);
+        }
     }
 
     /// Initialize and connect to monitors
@@ -608,25 +624,6 @@ impl MonClient {
         };
 
         // Create actual msgr2 connection
-        // Create callback that will handle messages from this connection
-        let state_for_handler = Arc::clone(&self.state);
-        let keepalive_state_for_handler = Arc::clone(&self.keepalive_state);
-        let map_events_for_handler = self.map_events.clone();
-        let monmap_notify_for_handler = Arc::clone(&self.monmap_notify);
-        
-        let message_handler = Arc::new(move |msg| {
-            let state = Arc::clone(&state_for_handler);
-            let keepalive_state = Arc::clone(&keepalive_state_for_handler);
-            let map_events = map_events_for_handler.clone();
-            let monmap_notify = Arc::clone(&monmap_notify_for_handler);
-            
-            Box::pin(async move {
-                Self::dispatch_message(&state, &keepalive_state, &map_events, &monmap_notify, msg)
-                    .await
-                    .map_err(|e| denc::RadosError::Protocol(e.to_string()))
-            }) as std::pin::Pin<Box<dyn std::future::Future<Output = std::result::Result<(), denc::RadosError>> + Send>>
-        });
-
         let mon_con = Arc::new(
             MonConnection::connect(
                 socket_addr,
@@ -635,7 +632,7 @@ impl MonClient {
                 self.config.entity_name.clone(),
                 keyring_path,
                 keepalive_policy,
-                message_handler,
+                self.self_weak.clone(),
             )
             .await?,
         );
@@ -998,13 +995,7 @@ impl MonClient {
     }
 
     /// Dispatch received message to appropriate handler
-    async fn dispatch_message(
-        state: &Arc<RwLock<MonClientState>>,
-        _keepalive_state: &Arc<Mutex<KeepaliveState>>,
-        map_events: &broadcast::Sender<MapEvent>,
-        monmap_notify: &Arc<tokio::sync::Notify>,
-        msg: msgr2::message::Message,
-    ) -> Result<()> {
+    pub async fn dispatch(&self, msg: msgr2::message::Message) -> Result<()> {
         let msg_type = msg.msg_type();
         debug!(
             "Dispatching message type: 0x{:04x} ({}), front.len()={}",
@@ -1016,14 +1007,14 @@ impl MonClient {
         match msg_type {
             msgr2::message::CEPH_MSG_MON_MAP => {
                 info!("Received CEPH_MSG_MON_MAP");
-                Self::handle_monmap(state, map_events, monmap_notify, msg).await?;
+                Self::handle_monmap(&self.state, &self.map_events, &self.monmap_notify, msg).await?;
             }
             msgr2::message::CEPH_MSG_PING => {
                 trace!("Received CEPH_MSG_PING, sending PING_ACK");
                 // Respond to monitor's ping with PING_ACK
                 // Clone connection before async operation to avoid holding lock
                 let active_con = {
-                    let state_guard = state.read().await;
+                    let state_guard = self.state.read().await;
                     state_guard.active_con.clone()
                 };
 
@@ -1044,25 +1035,25 @@ impl MonClient {
             }
             CEPH_MSG_MON_SUBSCRIBE_ACK => {
                 info!("Received CEPH_MSG_MON_SUBSCRIBE_ACK");
-                Self::handle_subscribe_ack(state, msg).await?;
+                Self::handle_subscribe_ack(&self.state, msg).await?;
             }
             CEPH_MSG_MON_GET_VERSION_REPLY => {
                 debug!("Received CEPH_MSG_MON_GET_VERSION_REPLY");
-                Self::handle_version_reply(state, msg).await?;
+                Self::handle_version_reply(&self.state, msg).await?;
             }
             msgr2::message::CEPH_MSG_MON_COMMAND_ACK => {
                 debug!(
                     "Received CEPH_MSG_MON_COMMAND_ACK (0x{:04x})",
                     msgr2::message::CEPH_MSG_MON_COMMAND_ACK
                 );
-                Self::handle_command_ack(state, msg).await?;
+                Self::handle_command_ack(&self.state, msg).await?;
             }
             msgr2::message::CEPH_MSG_POOLOP_REPLY => {
                 debug!(
                     "Received CEPH_MSG_POOLOP_REPLY (0x{:04x})",
                     msgr2::message::CEPH_MSG_POOLOP_REPLY
                 );
-                Self::handle_poolop_reply(state, map_events, msg).await?;
+                Self::handle_poolop_reply(&self.state, &self.map_events, msg).await?;
             }
             _ => {
                 return Err(MonClientError::Other(format!(

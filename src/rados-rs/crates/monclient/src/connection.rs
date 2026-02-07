@@ -5,9 +5,9 @@
 use crate::error::{MonClientError, Result};
 use crate::types::EntityAddrVec;
 use msgr2::protocol::Connection as Msgr2Connection;
-use msgr2::{ConnectionConfig, MessageHandler};
+use msgr2::ConnectionConfig;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 
@@ -70,6 +70,10 @@ pub struct MonConnection {
     /// Channel for receiving keepalive timeout notifications
     /// The background task sends () when a keepalive timeout occurs
     timeout_rx: Arc<Mutex<mpsc::UnboundedReceiver<()>>>,
+
+    /// Weak reference to the MonClient for dispatching messages
+    #[allow(dead_code)] // Used in background task via upgrade()
+    client: Weak<crate::MonClient>,
 }
 
 #[derive(Debug)]
@@ -100,7 +104,7 @@ impl MonConnection {
         entity_name: String,
         keyring_path: Option<String>,
         keepalive_policy: KeepalivePolicy,
-        message_handler: MessageHandler,
+        client: Weak<crate::MonClient>,
     ) -> Result<Self> {
         tracing::info!("Connecting to monitor rank {} at {}", rank, addr);
 
@@ -170,9 +174,10 @@ impl MonConnection {
         let (timeout_tx, timeout_rx) = mpsc::unbounded_channel::<()>();
 
         let mut connection_for_task = connection;
+        let client_for_task = client.clone();
 
         // Spawn a unified task to handle sending, receiving, and keepalive
-        // ALL received messages are forwarded to the message handler
+        // ALL received messages are forwarded to the MonClient's dispatch method
         tokio::spawn(async move {
             tracing::debug!("Send/Receive/Keepalive task started");
 
@@ -199,17 +204,22 @@ impl MonConnection {
                         tracing::trace!("Send/Recv task: Message sent successfully");
                     }
 
-                    // Handle incoming messages - forward ALL to message handler
+                    // Handle incoming messages - forward ALL to MonClient's dispatch
                     result = connection_for_task.recv_message() => {
                         match result {
                             Ok(msg) => {
                                 let msg_type = msg.header.msg_type;
-                                tracing::trace!("Received message type 0x{:04x}, forwarding to handler", msg_type);
+                                tracing::trace!("Received message type 0x{:04x}, forwarding to client", msg_type);
 
-                                // Forward ALL messages to handler
-                                if let Err(e) = message_handler(msg).await {
-                                    tracing::error!("Failed to handle message 0x{:04x}: {}", msg_type, e);
-                                    // Continue processing other messages even if one fails
+                                // Forward ALL messages to client's dispatch method
+                                if let Some(client) = client_for_task.upgrade() {
+                                    if let Err(e) = client.dispatch(msg).await {
+                                        tracing::error!("Failed to handle message 0x{:04x}: {}", msg_type, e);
+                                        // Continue processing other messages even if one fails
+                                    }
+                                } else {
+                                    tracing::warn!("MonClient dropped, stopping connection task");
+                                    break;
                                 }
                             }
                             Err(e) => {
@@ -289,6 +299,7 @@ impl MonConnection {
             auth_provider: auth_provider.map(|p| Arc::new(Mutex::new(p))),
             send_tx,
             timeout_rx: Arc::new(Mutex::new(timeout_rx)),
+            client,
         };
 
         tracing::debug!("✓ MonConnection created, connection is wrapped in Arc<Mutex>");

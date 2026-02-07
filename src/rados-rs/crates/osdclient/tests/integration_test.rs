@@ -118,6 +118,7 @@ async fn setup() -> (Arc<monclient::MonClient>, Arc<osdclient::OSDClient>, u64) 
             .await
             .expect("Failed to create MonClient"),
     );
+    mon_client.init_self_ref();
 
     // Initialize connection
     mon_client

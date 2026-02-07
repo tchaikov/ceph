@@ -67,11 +67,13 @@ async fn create_mon_client(
     };
 
     let mon_client = Arc::new(monclient::MonClient::new(mon_config).await?);
+    mon_client.init_self_ref();
 
     // Initialize connection
     mon_client.init().await?;
 
     info!("✓ Connected to monitor");
+    mon_client.init_self_ref();
 
     // Wait for authentication to complete - use event-driven wait
     mon_client

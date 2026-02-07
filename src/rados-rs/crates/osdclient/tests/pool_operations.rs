@@ -81,11 +81,13 @@ async fn create_osd_client(
     };
 
     let mon_client = Arc::new(monclient::MonClient::new(mon_config).await?);
+    mon_client.init_self_ref();
 
     // Initialize connection
     mon_client.init().await?;
 
     info!("✓ Connected to monitor");
+    mon_client.init_self_ref();
 
     // Wait for authentication to fully complete with all service tickets
     mon_client
