@@ -24,6 +24,7 @@
 //!
 
 use bytes::Bytes;
+use denc::VersionedEncode;
 use std::path::Path;
 use std::sync::Arc;
 use tracing::info;
@@ -82,7 +83,7 @@ async fn create_osd_client(
     // Create OSDMap handler that decodes and posts to the notifier
     let map_notifier_clone = Arc::clone(&map_notifier);
     let osdmap_handler: monclient::OSDMapHandler = Arc::new(move |epoch, data| {
-        match osdclient::OSDMap::decode(&data) {
+        match osdclient::OSDMap::decode_versioned(&mut data.as_ref(), 0) {
             Ok(osdmap) => {
                 let notifier = Arc::clone(&map_notifier_clone);
                 tokio::spawn(async move {

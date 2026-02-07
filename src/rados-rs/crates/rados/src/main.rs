@@ -5,6 +5,7 @@
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
+use denc::VersionedEncode;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
@@ -143,7 +144,7 @@ async fn main() -> Result<()> {
     // Create OSDMap handler that decodes and posts to the notifier
     let map_notifier_clone = Arc::clone(&map_notifier);
     let osdmap_handler: monclient::OSDMapHandler = Arc::new(move |epoch, data| {
-        match osdclient::OSDMap::decode(&data) {
+        match osdclient::OSDMap::decode_versioned(&mut data.as_ref(), 0) {
             Ok(osdmap) => {
                 let notifier = Arc::clone(&map_notifier_clone);
                 tokio::spawn(async move {

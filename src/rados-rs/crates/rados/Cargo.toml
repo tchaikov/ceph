@@ -12,6 +12,7 @@ osdclient = { path = "../osdclient" }
 monclient = { path = "../monclient" }
 msgr2 = { path = "../msgr2" }
 cephconfig = { path = "../cephconfig" }
+denc = { path = "../denc" }
 clap = { version = "4.5", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
