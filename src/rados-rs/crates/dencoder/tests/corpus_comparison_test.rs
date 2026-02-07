@@ -381,6 +381,10 @@ fn test_corpus_comparison() {
     let requested_version = env::var("CORPUS_VERSION").ok();
     let requested_type = env::var("CORPUS_TYPE").ok();
 
+    // Define versions to test
+    // These are the primary stable versions we validate against
+    const TESTED_VERSIONS: [&str; 2] = ["18.2.0", "19.2.0"];
+
     let versions_to_test = if let Some(version) = &requested_version {
         vec![version.clone()]
     } else {
@@ -389,12 +393,15 @@ fn test_corpus_comparison() {
             Ok(all_versions) => {
                 let mut versions = Vec::new();
                 for v in &all_versions {
-                    if v.starts_with("18.2.0") || v.starts_with("19.2.0") {
-                        versions.push(v.clone());
+                    for tested in TESTED_VERSIONS {
+                        if v.starts_with(tested) {
+                            versions.push(v.clone());
+                            break;
+                        }
                     }
                 }
                 if versions.is_empty() {
-                    eprintln!("⚠ No 18.2.0 or 19.2.0 versions found, testing all available versions");
+                    eprintln!("⚠ No tested versions ({:?}) found, using all available versions", TESTED_VERSIONS);
                     all_versions
                 } else {
                     versions

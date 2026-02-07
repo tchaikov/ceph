@@ -485,8 +485,8 @@ impl CephMessagePayload for MOSDOp {
     }
 
     fn msg_version() -> u16 {
-        // This is only used as a default/fallback
-        // Actual version is determined in encode_payload based on features
+        // Version is determined dynamically in encode_operation() based on SERVER_SQUID feature
+        // See session.rs encode_operation() for actual version selection logic
         9
     }
 
