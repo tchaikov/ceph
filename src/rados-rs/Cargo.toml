@@ -1,0 +1,19 @@
+[workspace]
+members = ["crates/denc", "crates/dencoder", "crates/msgr2", "crates/auth", "crates/monclient", "crates/crush", "crates/osdclient", "crates/rados", "crates/cephconfig"]
+resolver = "2"
+
+[workspace.dependencies]
+bytes = { version = "1.5", features = ["serde"] }
+tokio = { version = "1.35", features = ["full"] }
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+thiserror = "1.0"
+anyhow = "1.0"
+rand = "0.8"
+crc32c = "0.6"
+serde = { version = "1.0", features = ["derive"] }
+base64 = "0.21"
+hmac = "0.12"
+sha2 = "0.10"
+futures = "0.3"

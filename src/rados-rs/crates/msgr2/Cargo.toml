@@ -1,0 +1,36 @@
+[package]
+name = "msgr2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+denc = { path = "../denc" }
+auth = { path = "../auth" }
+cephconfig = { path = "../cephconfig" }
+async-trait = "0.1"
+tokio = { workspace = true, features = ["net", "io-util", "rt-multi-thread", "macros"] }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rand = { workspace = true }
+crc32c = { workspace = true }
+serde = { workspace = true }
+bitflags = "2.4"
+hmac = { workspace = true }
+sha2 = { workspace = true }
+aes-gcm = "0.10"
+hex = "0.4"
+num_enum = "0.7"
+snap = "1.1"           # Snappy compression (most common in Ceph)
+zstd = "0.13"          # Zstandard compression
+lz4 = "1.24"           # LZ4 compression
+flate2 = "1.0"         # Zlib/gzip compression
+
+[dev-dependencies]
+tempfile = "3"
+cephconfig = { path = "../cephconfig" }
+
+[lib]
+name = "msgr2"
+path = "src/lib.rs"
