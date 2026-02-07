@@ -31,11 +31,11 @@ pub use throttle::*;
 /// Async callback for handling received messages. The callback receives a Message
 /// and returns a Future that resolves to Result<()>.
 pub type MessageHandler = std::sync::Arc<
-    dyn Fn(
-            message::Message,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = std::result::Result<(), denc::RadosError>> + Send>,
-        > + Send
+    dyn Fn(message::Message)
+            -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = std::result::Result<(), denc::RadosError>> + Send>,
+            >
+        + Send
         + Sync,
 >;
 

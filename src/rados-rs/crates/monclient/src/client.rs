@@ -614,7 +614,7 @@ impl MonClient {
         let map_events_for_handler = self.map_events.clone();
         let monmap_notify_for_handler = Arc::clone(&self.monmap_notify);
         
-        let message_handler: msgr2::MessageHandler = Arc::new(move |msg| {
+        let message_handler = Arc::new(move |msg| {
             let state = Arc::clone(&state_for_handler);
             let keepalive_state = Arc::clone(&keepalive_state_for_handler);
             let map_events = map_events_for_handler.clone();
@@ -624,7 +624,7 @@ impl MonClient {
                 Self::dispatch_message(&state, &keepalive_state, &map_events, &monmap_notify, msg)
                     .await
                     .map_err(|e| denc::RadosError::Protocol(e.to_string()))
-            })
+            }) as std::pin::Pin<Box<dyn std::future::Future<Output = std::result::Result<(), denc::RadosError>> + Send>>
         });
 
         let mon_con = Arc::new(
