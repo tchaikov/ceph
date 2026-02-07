@@ -63,6 +63,8 @@ pub struct OSDSession {
     message_bus: Arc<msgr2::MessageBus>,
     /// Weak reference to OSDClient for session-specific message dispatch
     client: std::sync::Weak<crate::client::OSDClient>,
+    /// Negotiated features with this OSD
+    peer_features: Arc<AtomicU64>,
 }
 
 /// Tracking information for a pending operation
@@ -109,6 +111,7 @@ impl OSDSession {
             backoffs: Arc::new(RwLock::new(HashMap::new())),
             message_bus,
             client,
+            peer_features: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -156,6 +159,11 @@ impl OSDSession {
         })?;
 
         info!("✓ Session established with OSD {}", self.osd_id);
+
+        // Get and store negotiated features
+        let features = connection.get_peer_features();
+        self.peer_features.store(features, Ordering::Relaxed);
+        debug!("OSD {} negotiated features: 0x{:x}", self.osd_id, features);
 
         // Create new channel for this connection
         let (send_tx, send_rx) = mpsc::channel(100);
@@ -342,7 +350,8 @@ impl OSDSession {
         pending_op.op.retry_attempt = pending_op.attempts - 1;
 
         // Resubmit the operation
-        Self::resubmit_operation(tid, pending_op, &self.send_tx, &self.pending_ops).await
+        let features = self.peer_features.load(Ordering::Relaxed);
+        Self::resubmit_operation(tid, pending_op, &self.send_tx, &self.pending_ops, features).await
     }
 
     /// Resubmit an operation (for retries)
@@ -353,9 +362,10 @@ impl OSDSession {
         mut pending_op: PendingOp,
         send_tx: &mpsc::Sender<msgr2::message::Message>,
         pending_ops: &Arc<RwLock<HashMap<u64, PendingOp>>>,
+        features: u64,
     ) -> Result<()> {
         // Encode the operation
-        let msg = Self::encode_operation(&pending_op.op, tid)?;
+        let msg = Self::encode_operation(&pending_op.op, tid, features)?;
 
         // Update tid in pending_op
         pending_op.tid = tid;
@@ -393,13 +403,20 @@ impl OSDSession {
     /// Encode an operation into a msgr2 message
     ///
     /// Helper to eliminate duplication between submit_op and retry logic
-    fn encode_operation(op: &MOSDOp, tid: u64) -> Result<msgr2::message::Message> {
-        let ceph_msg = CephMessage::from_payload(op, 0, CrcFlags::ALL)
+    fn encode_operation(op: &MOSDOp, tid: u64, features: u64) -> Result<msgr2::message::Message> {
+        let ceph_msg = CephMessage::from_payload(op, features, CrcFlags::ALL)
             .map_err(|e| OSDClientError::Encoding(format!("Failed to encode MOSDOp: {}", e)))?;
+
+        // Determine version based on SERVER_SQUID feature
+        let version = if denc::features::has_feature(features, denc::features::CEPH_FEATUREMASK_SERVER_SQUID) {
+            9  // v9 with OpenTelemetry trace
+        } else {
+            8  // v8 without OpenTelemetry trace
+        };
 
         let mut msg =
             msgr2::message::Message::new(crate::messages::CEPH_MSG_OSD_OP, ceph_msg.front)
-                .with_version(ceph_msg.header.version)
+                .with_version(version)
                 .with_tid(tid);
         msg.header.compat_version = ceph_msg.header.compat_version;
         msg.data = ceph_msg.data;
@@ -462,7 +479,8 @@ impl OSDSession {
         }
 
         // Encode the operation using shared helper
-        let msg = Self::encode_operation(&op, tid)?;
+        let features = self.peer_features.load(Ordering::Relaxed);
+        let msg = Self::encode_operation(&op, tid, features)?;
 
         // Send to channel (non-blocking, like Linux kernel's list_add_tail + queue_con)
         debug!("Submitting operation tid={} to OSD {}", tid, self.osd_id);
@@ -592,8 +610,9 @@ impl OSDSession {
 
         // Resend the operations
         // IMPORTANT: Use try_send() to avoid deadlock (we're in the io_task)
+        let features = self.peer_features.load(Ordering::Relaxed);
         for (tid, op) in ops_to_resend {
-            match Self::encode_operation(&op, tid) {
+            match Self::encode_operation(&op, tid, features) {
                 Ok(msg) => match send_tx.try_send(msg) {
                     Ok(()) => {
                         info!(
@@ -745,7 +764,8 @@ impl OSDSession {
         drop(pending);
 
         // Encode and send the operation using shared helper
-        let msg = Self::encode_operation(&op, tid)?;
+        let features = self.peer_features.load(Ordering::Relaxed);
+        let msg = Self::encode_operation(&op, tid, features)?;
 
         // Send to channel
         self.send_tx

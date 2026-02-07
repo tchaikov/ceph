@@ -70,6 +70,8 @@ pub enum StateResult {
     },
     /// Update last keepalive ACK timestamp
     SetKeepAliveAck(std::time::Instant),
+    /// Update negotiated features
+    SetNegotiatedFeatures(u64),
     /// Connection should be closed due to error
     Fault(String),
 }
@@ -1286,15 +1288,17 @@ impl State for SessionConnecting {
                     self.peer_addrs = addrs;
                     self.peer_gid = gid;
                     self.peer_global_seq = global_seq;
-                    self.negotiated_features = our_features & features_supported;
+                    let negotiated_features = our_features & features_supported;
+                    self.negotiated_features = negotiated_features;
 
                     tracing::info!(
                         "Session established successfully - negotiated features: 0x{:x}",
-                        self.negotiated_features
+                        negotiated_features
                     );
 
-                    // Session established successfully
-                    Ok(StateResult::Ready)
+                    // Session established successfully - first set features, then transition to Ready
+                    // Return as Continue so state machine processes SetNegotiatedFeatures first
+                    return Ok(StateResult::SetNegotiatedFeatures(negotiated_features));
                 } else {
                     Err(Error::protocol_error("SERVER_IDENT frame missing payload"))
                 }
@@ -1940,6 +1944,8 @@ pub struct StateMachine {
     in_seq: u64,
     /// Last time we received a Keepalive2Ack (for timeout detection)
     last_keepalive_ack: Option<std::time::Instant>,
+    /// Negotiated features with peer (set after session establishment)
+    negotiated_features: u64,
 }
 
 impl StateMachine {
@@ -1981,6 +1987,7 @@ impl StateMachine {
             connect_seq: 0,
             in_seq: 0,
             last_keepalive_ack: None, // Will be set when we receive first Keepalive2Ack
+            negotiated_features: 0,    // Will be set after session establishment
         }
     }
 
@@ -2053,6 +2060,11 @@ impl StateMachine {
         self.global_id
     }
 
+    /// Get negotiated features with peer
+    pub fn peer_features(&self) -> u64 {
+        self.negotiated_features
+    }
+
     /// Get the last keepalive ACK timestamp
     /// Returns None if no keepalive ACK has been received yet
     pub fn last_keepalive_ack(&self) -> Option<std::time::Instant> {
@@ -2089,6 +2101,7 @@ impl StateMachine {
             connect_seq: 0,
             in_seq: 0,
             last_keepalive_ack: None,
+            negotiated_features: 0,
         }
     }
 
@@ -2574,6 +2587,12 @@ impl StateMachine {
                 // Update last_keepalive_ack timestamp
                 self.last_keepalive_ack = Some(timestamp);
                 Ok(StateResult::Continue)
+            }
+            StateResult::SetNegotiatedFeatures(features) => {
+                // Update negotiated features and transition to Ready
+                self.negotiated_features = features;
+                self.current_state = Box::new(Ready);
+                Ok(StateResult::Ready)
             }
             StateResult::Ready => {
                 // Transition to Ready state

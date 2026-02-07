@@ -1929,6 +1929,11 @@ impl Connection {
         self.state.state_machine.global_id()
     }
 
+    /// Get negotiated features with peer
+    pub fn get_peer_features(&self) -> u64 {
+        self.state.state_machine.peer_features()
+    }
+
     /// Send a keepalive frame to the peer
     ///
     /// This sends a Keepalive2 frame with the current timestamp.

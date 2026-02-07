@@ -485,19 +485,24 @@ impl CephMessagePayload for MOSDOp {
     }
 
     fn msg_version() -> u16 {
-        Self::VERSION
+        // This is only used as a default/fallback
+        // Actual version is determined in encode_payload based on features
+        9
     }
 
     fn msg_compat_version() -> u16 {
         Self::COMPAT_VERSION
     }
 
-    fn encode_payload(&self, _features: u64) -> std::result::Result<Bytes, msgr2::Error> {
+    fn encode_payload(&self, features: u64) -> std::result::Result<Bytes, msgr2::Error> {
         use crate::denc_types::OsdReqId;
         use crate::types::{
-            BlkinTraceInfo, EntityName, CEPH_ENTITY_TYPE_CLIENT,
+            BlkinTraceInfo, EntityName, JaegerSpanContext, CEPH_ENTITY_TYPE_CLIENT,
         };
         use denc::denc::Denc;
+
+        // Check if peer supports SERVER_SQUID feature for v9 encoding
+        let has_squid = denc::features::has_feature(features, denc::features::CEPH_FEATUREMASK_SERVER_SQUID);
 
         let mut buf = BytesMut::new();
 
@@ -526,7 +531,11 @@ impl CephMessagePayload for MOSDOp {
         let trace = BlkinTraceInfo::empty();
         trace.encode(&mut buf, 0)?;
 
-        // Note: v9 adds otel_trace (jspan_context) here, but we use v8 for v18 compatibility
+        // 6b. otel_trace (jspan_context) - added in v9, only if SERVER_SQUID present
+        if has_squid {
+            let otel_trace = JaegerSpanContext::invalid();
+            otel_trace.encode(&mut buf, 0)?;
+        }
 
         // --- Above decoded up front; below decoded post-dispatch ---
 
