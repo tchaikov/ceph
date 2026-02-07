@@ -79,6 +79,9 @@ async fn create_osd_client(
     // Create shared OSDMapNotifier for OSDMap updates
     let osdmap_notifier = Arc::new(osdclient::OSDMapNotifier::new());
 
+    // Create shared MessageBus - MonClient uses this internally
+    let message_bus = Arc::new(msgr2::MessageBus::new());
+
     // Create MonClient
     let mon_config = monclient::MonClientConfig {
         entity_name: config.entity_name.clone(),
@@ -87,11 +90,13 @@ async fn create_osd_client(
         ..Default::default()
     };
 
-    let mon_client =
-        Arc::new(monclient::MonClient::new_simple(mon_config).await?);
+    let mon_client = Arc::new(monclient::MonClient::new(mon_config, message_bus).await?);
 
     // Initialize connection
     mon_client.init().await?;
+
+    // Register MonClient handlers on MessageBus
+    mon_client.clone().register_handlers().await?;
 
     info!("✓ Connected to monitor");
 

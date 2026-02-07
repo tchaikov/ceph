@@ -69,7 +69,10 @@ impl TestConfig {
 async fn create_osd_client(
     config: &TestConfig,
 ) -> Result<(Arc<osdclient::OSDClient>, Arc<monclient::MonClient>), Box<dyn std::error::Error>> {
-    // Create shared MessageBus FIRST - both MonClient and OSDClient must use the same bus
+    // Create shared OSDMapNotifier for OSDMap updates
+    let osdmap_notifier = Arc::new(osdclient::OSDMapNotifier::new());
+
+    // Create shared MessageBus - MonClient uses this internally
     let message_bus = Arc::new(msgr2::MessageBus::new());
 
     // Create MonClient with shared MessageBus
@@ -80,8 +83,7 @@ async fn create_osd_client(
         ..Default::default()
     };
 
-    let mon_client =
-        Arc::new(monclient::MonClient::new(mon_config, Arc::clone(&message_bus)).await?);
+    let mon_client = Arc::new(monclient::MonClient::new(mon_config, message_bus).await?);
 
     // Initialize connection
     mon_client.init().await?;
@@ -117,19 +119,19 @@ async fn create_osd_client(
     // Get FSID from MonClient
     let fsid = mon_client.get_fsid().await;
 
-    // Create OSDClient with the SAME MessageBus that MonClient is using
+    // Create OSDClient with OSDMapNotifier
     let osd_client = osdclient::OSDClient::new(
         osd_config,
         fsid,
         Arc::clone(&mon_client),
-        Arc::clone(&message_bus),
+        Arc::clone(&osdmap_notifier),
     )
     .await?;
     info!("✓ OSD client created");
 
-    // Register OSDClient on MessageBus to receive OSDMap messages
-    osd_client.clone().register_handlers().await?;
-    info!("✓ OSDClient registered on MessageBus");
+    // Start OSDClient subscription to OSDMap updates
+    osd_client.clone().start_osdmap_subscription().await?;
+    info!("✓ OSDClient subscribed to OSDMap updates");
 
     // NOW subscribe to OSDMap - OSDClient is ready to receive
     mon_client.subscribe("osdmap", 0, 0).await?;
