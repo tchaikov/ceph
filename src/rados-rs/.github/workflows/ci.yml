@@ -97,9 +97,14 @@ jobs:
   corpus-test:
     name: Corpus Comparison Test
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        corpus_version: ['18.2.0', '19.2.0-404-g78ddc7f9027']
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -108,10 +113,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ceph-common
-
-      - name: Clone ceph-object-corpus
-        run: |
-          git clone --depth=1 https://github.com/ceph/ceph-object-corpus.git /tmp/ceph-object-corpus
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -134,5 +135,7 @@ jobs:
       - name: Build dencoder
         run: cargo build -p dencoder
 
-      - name: Run corpus comparison test
-        run: cd crates/denc && cargo test --test corpus_comparison_test -- --ignored --nocapture
+      - name: Run corpus comparison test for ${{ matrix.corpus_version }}
+        env:
+          CORPUS_VERSION: ${{ matrix.corpus_version }}
+        run: cargo test -p dencoder --test corpus_comparison_test -- --ignored --nocapture
