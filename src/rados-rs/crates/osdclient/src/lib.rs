@@ -17,7 +17,6 @@ pub mod ioctx;
 pub mod messages;
 pub mod operation;
 pub mod osdmap;
-pub mod osdmap_notifier;
 pub mod pgmap_types;
 pub mod session;
 pub mod throttle;
@@ -29,10 +28,19 @@ pub use client::{OSDClient, OSDClientConfig};
 pub use error::OSDClientError;
 pub use ioctx::IoCtx;
 pub use osdmap::{OSDMap, OSDMapIncremental, PgMergeMeta, PgPool, UuidD};
-pub use osdmap_notifier::OSDMapNotifier;
 pub use types::{
     OSDOp, ObjectId, OpCode, PoolInfo, ReadResult, SparseExtent, SparseReadResult, StatResult,
     StripedPgId, WriteResult,
 };
 
+// Re-export OSDMapNotifier from objecter
+pub use objecter::OSDMapNotifier;
+
 pub type Result<T> = std::result::Result<T, OSDClientError>;
+
+// Implement OSDMapLike trait for our OSDMap
+impl objecter::osdmap_notifier::OSDMapLike for OSDMap {
+    fn epoch(&self) -> u32 {
+        self.epoch
+    }
+}

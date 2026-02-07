@@ -76,10 +76,10 @@ impl TestConfig {
 async fn create_osd_client(
     config: &TestConfig,
 ) -> Result<(Arc<osdclient::OSDClient>, Arc<monclient::MonClient>), Box<dyn std::error::Error>> {
-    // Create shared MessageBus FIRST - both MonClient and OSDClient must use the same bus
-    let message_bus = Arc::new(msgr2::MessageBus::new());
+    // Create shared OSDMapNotifier for OSDMap updates
+    let osdmap_notifier = Arc::new(osdclient::OSDMapNotifier::new());
 
-    // Create MonClient with shared MessageBus
+    // Create MonClient
     let mon_config = monclient::MonClientConfig {
         entity_name: config.entity_name.clone(),
         mon_addrs: config.mon_addrs.clone(),
@@ -88,13 +88,10 @@ async fn create_osd_client(
     };
 
     let mon_client =
-        Arc::new(monclient::MonClient::new(mon_config, Arc::clone(&message_bus)).await?);
+        Arc::new(monclient::MonClient::new_simple(mon_config).await?);
 
     // Initialize connection
     mon_client.init().await?;
-
-    // Register MonClient handlers on MessageBus
-    mon_client.clone().register_handlers().await?;
 
     info!("✓ Connected to monitor");
 
@@ -125,19 +122,19 @@ async fn create_osd_client(
     // Get FSID from MonClient
     let fsid = mon_client.get_fsid().await;
 
-    // Create OSDClient with the SAME MessageBus that MonClient is using
+    // Create OSDClient
     let osd_client = osdclient::OSDClient::new(
         osd_config,
         fsid,
         Arc::clone(&mon_client),
-        Arc::clone(&message_bus),
+        Arc::clone(&osdmap_notifier),
     )
     .await?;
     info!("✓ OSD client created");
 
-    // Register OSDClient on MessageBus to receive OSDMap messages
-    osd_client.clone().register_handlers().await?;
-    info!("✓ OSDClient registered on MessageBus");
+    // Start OSDClient subscription to OSDMap updates
+    osd_client.clone().start_osdmap_subscription().await?;
+    info!("✓ OSDClient subscribed to OSDMap updates");
 
     // NOW subscribe to OSDMap - OSDClient is ready to receive
     mon_client.subscribe("osdmap", 0, 0).await?;

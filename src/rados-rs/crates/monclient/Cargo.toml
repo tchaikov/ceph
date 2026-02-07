@@ -21,6 +21,7 @@ futures = { workspace = true }
 msgr2 = { path = "../msgr2" }
 auth = { path = "../auth" }
 denc = { path = "../denc" }
+objecter = { path = "../objecter" }
 hex = "0.4.3"
 
 [dev-dependencies]

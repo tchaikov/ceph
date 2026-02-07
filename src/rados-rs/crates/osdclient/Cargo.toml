@@ -19,6 +19,7 @@ auth = { path = "../auth" }
 denc = { path = "../denc" }
 monclient = { path = "../monclient" }
 crush = { path = "../crush" }
+objecter = { path = "../objecter" }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

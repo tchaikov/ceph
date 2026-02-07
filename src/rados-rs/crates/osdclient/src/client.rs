@@ -12,7 +12,6 @@ use denc::{Denc, VersionedEncode};
 
 use crate::error::{OSDClientError, Result};
 use crate::messages::MOSDOp;
-use crate::osdmap_notifier::OSDMapNotifier;
 use crate::session::OSDSession;
 use crate::throttle::Throttle;
 use crate::tracker::{Tracker, TrackerConfig};
@@ -20,6 +19,9 @@ use crate::types::{
     calc_op_budget, ListObjectEntry, ListResult, OSDOp, ObjectId, OsdOpFlags, PoolFlags,
     ReadResult, RequestRedirect, StatResult, StripedPgId, WriteResult,
 };
+
+// Type alias for the OSDMap notifier
+type OSDMapNotifierType = objecter::OSDMapNotifier<crate::osdmap::OSDMap>;
 
 /// Configuration for OSD client
 #[derive(Debug, Clone, Default)]
@@ -52,7 +54,7 @@ pub struct OSDClient {
     /// Current OSDMap
     osdmap: Arc<RwLock<Option<Arc<crate::osdmap::OSDMap>>>>,
     /// OSDMap notifier for receiving map updates
-    osdmap_notifier: Arc<OSDMapNotifier>,
+    osdmap_notifier: Arc<OSDMapNotifierType>,
     /// Notification for OSDMap arrival
     osdmap_notify: Arc<tokio::sync::Notify>,
     /// Weak self-reference for session creation
@@ -65,7 +67,7 @@ impl OSDClient {
         config: OSDClientConfig,
         fsid: denc::UuidD,
         mon_client: Arc<monclient::MonClient>,
-        osdmap_notifier: Arc<OSDMapNotifier>,
+        osdmap_notifier: Arc<OSDMapNotifierType>,
     ) -> Result<Arc<Self>> {
         info!("Creating OSDClient for {}", config.entity_name);
 
@@ -107,7 +109,7 @@ impl OSDClient {
     pub async fn start_osdmap_subscription(self: Arc<Self>) -> Result<()> {
         info!("Starting OSDMap subscription for OSDClient");
 
-        let mut rx = self.osdmap_notifier.subscribe();
+        let mut rx = self.osdmap_notifier.subscribe().await;
         let client = Arc::clone(&self);
 
         tokio::spawn(async move {

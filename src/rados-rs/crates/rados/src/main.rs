@@ -137,10 +137,10 @@ async fn main() -> Result<()> {
 
     debug!("Using keyring: {}", keyring_path);
 
-    // Create shared MessageBus FIRST - both MonClient and OSDClient must use the same bus
-    let message_bus = Arc::new(msgr2::MessageBus::new());
+    // Create shared OSDMapNotifier - both MonClient and OSDClient use this for OSDMap updates
+    let osdmap_notifier = Arc::new(osdclient::OSDMapNotifier::new());
 
-    // Create MonClient with shared MessageBus
+    // Create MonClient
     let mon_config = monclient::MonClientConfig {
         entity_name: cli.name.clone(),
         mon_addrs,
@@ -149,7 +149,7 @@ async fn main() -> Result<()> {
     };
 
     let mon_client = Arc::new(
-        monclient::MonClient::new(mon_config, Arc::clone(&message_bus))
+        monclient::MonClient::new_simple(mon_config)
             .await
             .context("Failed to create MonClient")?,
     );
@@ -159,13 +159,6 @@ async fn main() -> Result<()> {
         .init()
         .await
         .context("Failed to initialize MonClient")?;
-
-    // Register MonClient handlers on MessageBus
-    mon_client
-        .clone()
-        .register_handlers()
-        .await
-        .context("Failed to register MonClient handlers")?;
 
     debug!("Connected to monitor");
 
@@ -193,17 +186,17 @@ async fn main() -> Result<()> {
         osd_config,
         fsid,
         Arc::clone(&mon_client),
-        Arc::clone(&message_bus),
+        Arc::clone(&osdmap_notifier),
     )
     .await
     .context("Failed to create OSDClient")?;
 
-    // Register OSDClient handlers on MessageBus
+    // Start OSDClient subscription to receive OSDMap updates from notifier
     osd_client
         .clone()
-        .register_handlers()
+        .start_osdmap_subscription()
         .await
-        .context("Failed to register OSDClient handlers")?;
+        .context("Failed to start OSDMap subscription")?;
 
     debug!("OSD client created");
 
