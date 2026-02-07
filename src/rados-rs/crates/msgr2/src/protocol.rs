@@ -4,9 +4,7 @@
 //! handling frame I/O, encryption, and state machine coordination.
 
 use bytes::{Bytes, BytesMut};
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
@@ -1631,62 +1629,6 @@ impl Connection {
             "Failed to {} after {} attempts",
             operation_name, MAX_RECONNECT_ATTEMPTS
         )))
-    }
-
-    /// Register a local handler for a message type
-    ///
-    /// The handler will be called when messages of this type are received on this
-    /// connection. Local handlers are checked first before falling back to the global
-    /// message bus.
-    ///
-    /// # Arguments
-    ///
-    /// * `msg_type` - The message type to register for (e.g., CEPH_MSG_OSD_OPREPLY)
-    /// * `dispatcher` - The dispatcher to invoke for this message type
-    pub fn register_local_handler(&mut self, msg_type: u16, dispatcher: Arc<dyn Dispatcher>) {
-        self.local_handlers.insert(msg_type, dispatcher);
-    }
-
-    /// Set the global message bus
-    ///
-    /// Messages that are not handled by local handlers will be dispatched through
-    /// the global message bus. This allows inter-component communication without
-    /// tight coupling.
-    ///
-    /// # Arguments
-    ///
-    /// * `bus` - The message bus to use for unhandled messages
-    pub fn set_message_bus(&mut self, bus: Arc<MessageBus>) {
-        self.message_bus = Some(bus);
-    }
-
-    /// Start the embedded message loop
-    ///
-    /// This spawns a background task that continuously receives messages from the
-    /// connection and dispatches them to registered handlers.
-    ///
-    /// # Implementation Status
-    ///
-    /// **TODO**: Not yet implemented. Requires architectural refactoring of Connection
-    /// to support interior mutability or split send/receive paths. The current design
-    /// with `recv_message(&mut self)` cannot be called from a spawned task without
-    /// wrapping Connection in Arc<Mutex<...>>.
-    ///
-    /// Possible approaches:
-    /// 1. Wrap ConnectionState in Arc<Mutex<...>> for shared access
-    /// 2. Split Connection into send/receive halves (like tokio::net::TcpStream::split)
-    /// 3. Use channels between the task and Connection methods
-    ///
-    /// For now, applications should call recv_message() manually in their own loops.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if a message is received with no handler registered
-    pub fn start(&mut self) -> Result<()> {
-        // TODO: Implement message loop once Connection architecture supports it
-        Err(Error::Protocol(
-            "Embedded message loop not yet implemented - use recv_message() manually".into(),
-        ))
     }
 
     /// Send a Ceph message over the established session

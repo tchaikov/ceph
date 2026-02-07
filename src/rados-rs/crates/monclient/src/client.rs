@@ -800,49 +800,6 @@ impl MonClient {
         Ok(())
     }
 
-    /// Register MonClient as a handler on the MessageBus for messages it handles
-    pub async fn register_handlers(self: Arc<Self>) -> Result<()> {
-        use msgr2::message::*;
-        use msgr2::Dispatcher;
-
-        info!("Registering MonClient handlers on MessageBus");
-
-        // Register for all message types that MonClient handles
-        self.message_bus
-            .register(CEPH_MSG_MON_MAP, self.clone() as Arc<dyn Dispatcher>)
-            .await;
-        self.message_bus
-            .register(CEPH_MSG_PING, self.clone() as Arc<dyn Dispatcher>)
-            .await;
-        self.message_bus
-            .register(CEPH_MSG_PING_ACK, self.clone() as Arc<dyn Dispatcher>)
-            .await;
-        self.message_bus
-            .register(
-                CEPH_MSG_MON_SUBSCRIBE_ACK,
-                self.clone() as Arc<dyn Dispatcher>,
-            )
-            .await;
-        self.message_bus
-            .register(
-                CEPH_MSG_MON_GET_VERSION_REPLY,
-                self.clone() as Arc<dyn Dispatcher>,
-            )
-            .await;
-        self.message_bus
-            .register(
-                CEPH_MSG_MON_COMMAND_ACK,
-                self.clone() as Arc<dyn Dispatcher>,
-            )
-            .await;
-        self.message_bus
-            .register(CEPH_MSG_POOLOP_REPLY, self.clone() as Arc<dyn Dispatcher>)
-            .await;
-
-        info!("✓ MonClient handlers registered");
-        Ok(())
-    }
-
     /// Start background tick loop for periodic maintenance
     fn start_tick_loop(&self) {
         let state = Arc::clone(&self.state);
