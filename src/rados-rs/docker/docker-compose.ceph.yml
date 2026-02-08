@@ -1,6 +1,6 @@
 services:
   ceph-mon:
-    image: quay.io/ceph/ceph:v18.2.7
+    image: quay.io/ceph/ceph:v20.2.0
     pull_policy: missing
     hostname: ceph-mon
     container_name: ceph-mon
@@ -86,7 +86,7 @@ services:
     privileged: true
 
   ceph-mgr:
-    image: quay.io/ceph/ceph:v18.2.7
+    image: quay.io/ceph/ceph:v20.2.0
     pull_policy: missing
     hostname: ceph-mgr
     container_name: ceph-mgr
@@ -137,7 +137,7 @@ services:
     privileged: true
 
   ceph-osd:
-    image: quay.io/ceph/ceph:v18.2.7
+    image: quay.io/ceph/ceph:v20.2.0
     pull_policy: missing
     hostname: ceph-osd
     container_name: ceph-osd
