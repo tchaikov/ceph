@@ -141,25 +141,7 @@ async fn main() -> Result<()> {
     // Create shared MapNotifier - both MonClient and OSDClient use this for OSDMap updates
     let map_notifier = Arc::new(osdclient::MapNotifier::new());
 
-    // Create OSDMap handler that decodes and posts to the notifier
-    let map_notifier_clone = Arc::clone(&map_notifier);
-    let osdmap_handler: monclient::OSDMapHandler = Arc::new(move |epoch, data| {
-        match osdclient::OSDMap::decode_versioned(&mut data.as_ref(), 0) {
-            Ok(osdmap) => {
-                let notifier = Arc::clone(&map_notifier_clone);
-                tokio::spawn(async move {
-                    notifier.post(Arc::new(osdmap)).await;
-                });
-                true
-            }
-            Err(e) => {
-                eprintln!("Failed to decode OSDMap epoch {}: {}", epoch, e);
-                false
-            }
-        }
-    });
-
-    // Create MonClient
+    // Create MonClient - it will post OSDMaps to the notifier
     let mon_config = monclient::MonClientConfig {
         entity_name: cli.name.clone(),
         mon_addrs,
@@ -168,7 +150,7 @@ async fn main() -> Result<()> {
     };
 
     let mon_client = Arc::new(
-        monclient::MonClient::new(mon_config, Some(osdmap_handler))
+        monclient::MonClient::new(mon_config, Some(Arc::clone(&map_notifier)))
             .await
             .context("Failed to create MonClient")?,
     );

@@ -21,11 +21,7 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, trace, warn};
 
-/// Callback for handling decoded OSDMap data
-/// 
-/// Takes the epoch and raw bytes of a full OSDMap.
-/// Returns true if the map was processed, false otherwise.
-pub type OSDMapHandler = Arc<dyn Fn(u32, Bytes) -> bool + Send + Sync>;
+// OSDMapHandler removed - MonClient now posts directly to MapNotifier
 
 /// Monitor client configuration
 #[derive(Debug, Clone)]
@@ -128,8 +124,9 @@ pub struct MonClient {
     /// Notification for MonMap arrival
     monmap_notify: Arc<tokio::sync::Notify>,
 
-    /// OSDMap handler for processing OSDMap updates
-    osdmap_handler: Option<OSDMapHandler>,
+    /// OSDMap notifier for distributing OSDMap updates
+    /// MonClient posts decoded OSDMaps here, subscribers (like OSDClient) receive them
+    osdmap_notifier: Option<Arc<objecter::map_notifier::MapNotifier<osdclient::OSDMap>>>,
 
     /// Weak self-reference for passing to MonConnection
     self_weak: std::sync::Weak<MonClient>,
@@ -147,7 +144,7 @@ impl Clone for MonClient {
             map_events: self.map_events.clone(),
             auth_notify: Arc::clone(&self.auth_notify),
             monmap_notify: Arc::clone(&self.monmap_notify),
-            osdmap_handler: self.osdmap_handler.clone(),
+            osdmap_notifier: self.osdmap_notifier.clone(),
             self_weak: self.self_weak.clone(),
         }
     }
@@ -301,7 +298,7 @@ impl MonClient {
     /// * `osdmap_handler` - Optional handler for OSDMap updates
     pub async fn new(
         config: MonClientConfig,
-        osdmap_handler: Option<OSDMapHandler>,
+        osdmap_notifier: Option<Arc<objecter::map_notifier::MapNotifier<osdclient::OSDMap>>>,
     ) -> std::result::Result<Self, MonClientError> {
         // Parse entity name
         let entity_name: EntityName = config
@@ -358,7 +355,7 @@ impl MonClient {
             map_events,
             auth_notify: Arc::new(tokio::sync::Notify::new()),
             monmap_notify: Arc::new(tokio::sync::Notify::new()),
-            osdmap_handler,
+            osdmap_notifier,
             self_weak: std::sync::Weak::new(),
         })
     }
@@ -1070,7 +1067,7 @@ impl MonClient {
             }
             CEPH_MSG_OSD_MAP => {
                 debug!("Received CEPH_MSG_OSD_MAP (0x{:04x})", CEPH_MSG_OSD_MAP);
-                Self::handle_osdmap(&self.osdmap_handler, msg).await?;
+                Self::handle_osdmap(&self.osdmap_notifier, msg).await?;
             }
             _ => {
                 return Err(MonClientError::Other(format!(
@@ -1253,7 +1250,7 @@ impl MonClient {
 
     /// Handle OSDMap message
     async fn handle_osdmap(
-        osdmap_handler: &Option<OSDMapHandler>,
+        osdmap_notifier: &Option<Arc<objecter::map_notifier::MapNotifier<osdclient::OSDMap>>>,
         msg: msgr2::message::Message,
     ) -> Result<()> {
         info!("Handling OSDMap message ({} bytes)", msg.front.len());
@@ -1267,20 +1264,37 @@ impl MonClient {
             mosdmap.newest_map
         );
 
-        // Call handler if available
-        if let Some(handler) = osdmap_handler {
+        // Post full maps to notifier if available
+        if let Some(notifier) = osdmap_notifier {
             // Process full maps in epoch order
             let mut epochs: Vec<_> = mosdmap.maps.keys().copied().collect();
             epochs.sort();
 
             for epoch in epochs {
                 if let Some(map_data) = mosdmap.maps.get(&epoch) {
-                    debug!("Passing full OSDMap epoch {} to handler ({} bytes)", epoch, map_data.len());
-                    handler(epoch, map_data.clone());
+                    debug!("Decoding and posting OSDMap epoch {} ({} bytes)", epoch, map_data.len());
+                    
+                    // Decode the OSDMap from raw bytes
+                    match osdclient::osdmap::OSDMap::decode_versioned(&mut map_data.as_ref(), 0) {
+                        Ok(osdmap) => {
+                            debug!("Decoded OSDMap epoch {}, posting to notifier", osdmap.epoch);
+                            
+                            // Post to notifier - subscribers will receive it
+                            let posted = notifier.post(Arc::new(osdmap)).await;
+                            if posted {
+                                debug!("✓ Posted OSDMap epoch {} to notifier", epoch);
+                            } else {
+                                debug!("Notifier ignored OSDMap epoch {} (older or equal to current)", epoch);
+                            }
+                        }
+                        Err(err) => {
+                            warn!("Failed to decode OSDMap epoch {}: {}", epoch, err);
+                        }
+                    }
                 }
             }
         } else {
-            debug!("No OSDMap handler configured, skipping OSDMap processing");
+            debug!("No OSDMap notifier configured, skipping OSDMap processing");
         }
 
         Ok(())

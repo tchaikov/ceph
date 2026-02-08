@@ -48,7 +48,7 @@ pub mod subscription;
 pub mod types;
 pub mod wait_helper;
 
-pub use client::{MonClient, MonClientConfig, OSDMapHandler, PoolOpResult};
+pub use client::{MonClient, MonClientConfig, PoolOpResult};
 pub use error::{MonClientError, Result};
 pub use messages::{
     MAuth, MAuthReply, MMonCommand, MMonCommandAck, MMonGetVersion, MMonGetVersionReply, MMonMap,
