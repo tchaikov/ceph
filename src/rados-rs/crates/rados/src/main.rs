@@ -5,7 +5,6 @@
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
-use denc::VersionedEncode;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
