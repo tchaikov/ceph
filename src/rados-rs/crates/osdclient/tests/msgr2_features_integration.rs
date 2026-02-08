@@ -83,7 +83,32 @@ async fn setup(
     let config = TestConfig::from_env();
     let map_notifier = Arc::new(osdclient::MapNotifier::new());
 
-    // Create MonClient - it will post OSDMaps to the notifier
+    // Create OSDMap receiver that decodes and posts to notifier
+    struct OSDMapHandler {
+        notifier: Arc<osdclient::MapNotifier<osdclient::OSDMap>>,
+    }
+    
+    impl objecter::OSDMapReceiver for OSDMapHandler {
+        fn handle_osdmap(&self, epoch: u32, data: bytes::Bytes) {
+            let notifier = Arc::clone(&self.notifier);
+            tokio::spawn(async move {
+                match osdclient::OSDMap::decode_versioned(&mut data.as_ref(), 0) {
+                    Ok(osdmap) => {
+                        notifier.post(Arc::new(osdmap)).await;
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to decode OSDMap epoch {}: {}", epoch, e);
+                    }
+                }
+            });
+        }
+    }
+    
+    let osdmap_receiver = Arc::new(OSDMapHandler {
+        notifier: Arc::clone(&map_notifier),
+    });
+
+    // Create MonClient - it will forward OSDMaps to the receiver
     let mon_config = monclient::MonClientConfig {
         entity_name: config.entity_name.clone(),
         mon_addrs: config.mon_addrs.clone(),
@@ -92,7 +117,7 @@ async fn setup(
     };
 
     let mon_client = Arc::new(
-        monclient::MonClient::new(mon_config, Some(Arc::clone(&map_notifier)))
+        monclient::MonClient::new(mon_config, Some(osdmap_receiver))
             .await
             .expect("Failed to create MonClient"),
     );

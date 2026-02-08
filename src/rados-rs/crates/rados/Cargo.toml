@@ -8,6 +8,7 @@ name = "rados"
 path = "src/main.rs"
 
 [dependencies]
+objecter = { path = "../objecter" }
 osdclient = { path = "../osdclient" }
 monclient = { path = "../monclient" }
 msgr2 = { path = "../msgr2" }
