@@ -124,9 +124,9 @@ pub struct MonClient {
     /// Notification for MonMap arrival
     monmap_notify: Arc<tokio::sync::Notify>,
 
-    /// OSDMap receiver for handling OSDMap updates
-    /// MonClient forwards received OSDMaps to this receiver
-    osdmap_receiver: Option<Arc<dyn objecter::OSDMapReceiver>>,
+    /// Channel for forwarding OSDMap messages to OSDClient
+    /// MonClient forwards received MOSDMap messages through this channel
+    osdmap_tx: Option<tokio::sync::mpsc::UnboundedSender<msgr2::message::Message>>,
 
     /// Weak self-reference for passing to MonConnection
     self_weak: std::sync::Weak<MonClient>,
@@ -144,7 +144,7 @@ impl Clone for MonClient {
             map_events: self.map_events.clone(),
             auth_notify: Arc::clone(&self.auth_notify),
             monmap_notify: Arc::clone(&self.monmap_notify),
-            osdmap_receiver: self.osdmap_receiver.clone(),
+            osdmap_tx: self.osdmap_tx.clone(),
             self_weak: self.self_weak.clone(),
         }
     }
@@ -298,7 +298,7 @@ impl MonClient {
     /// * `osdmap_handler` - Optional handler for OSDMap updates
     pub async fn new(
         config: MonClientConfig,
-        osdmap_receiver: Option<Arc<dyn objecter::OSDMapReceiver>>,
+        osdmap_tx: Option<tokio::sync::mpsc::UnboundedSender<msgr2::message::Message>>,
     ) -> std::result::Result<Self, MonClientError> {
         // Parse entity name
         let entity_name: EntityName = config
@@ -355,7 +355,7 @@ impl MonClient {
             map_events,
             auth_notify: Arc::new(tokio::sync::Notify::new()),
             monmap_notify: Arc::new(tokio::sync::Notify::new()),
-            osdmap_receiver,
+            osdmap_tx,
             self_weak: std::sync::Weak::new(),
         })
     }
@@ -1067,7 +1067,7 @@ impl MonClient {
             }
             CEPH_MSG_OSD_MAP => {
                 debug!("Received CEPH_MSG_OSD_MAP (0x{:04x})", CEPH_MSG_OSD_MAP);
-                Self::handle_osdmap(&self.osdmap_receiver, msg).await?;
+                Self::handle_osdmap(&self.osdmap_tx, msg).await?;
             }
             _ => {
                 return Err(MonClientError::Other(format!(
@@ -1248,36 +1248,20 @@ impl MonClient {
         Ok(())
     }
 
-    /// Handle OSDMap message
+    /// Handle OSDMap message by forwarding to OSDClient via channel
     async fn handle_osdmap(
-        osdmap_receiver: &Option<Arc<dyn objecter::OSDMapReceiver>>,
+        osdmap_tx: &Option<tokio::sync::mpsc::UnboundedSender<msgr2::message::Message>>,
         msg: msgr2::message::Message,
     ) -> Result<()> {
         info!("Handling OSDMap message ({} bytes)", msg.front.len());
 
-        // Decode MOSDMap
-        let mosdmap = MOSDMap::decode(&msg.front)?;
-        debug!(
-            "Received MOSDMap: {} full maps, {} incremental maps, newest={}",
-            mosdmap.maps.len(),
-            mosdmap.incremental_maps.len(),
-            mosdmap.newest_map
-        );
-
-        // Forward full maps to receiver if available
-        if let Some(receiver) = osdmap_receiver {
-            // Process full maps in epoch order
-            let mut epochs: Vec<_> = mosdmap.maps.keys().copied().collect();
-            epochs.sort();
-
-            for epoch in epochs {
-                if let Some(map_data) = mosdmap.maps.get(&epoch) {
-                    debug!("Forwarding OSDMap epoch {} to receiver ({} bytes)", epoch, map_data.len());
-                    receiver.handle_osdmap(epoch, map_data.clone());
-                }
-            }
+        // Forward message to OSDClient if channel configured
+        if let Some(tx) = osdmap_tx {
+            debug!("Forwarding OSDMap message to OSDClient");
+            tx.send(msg)
+                .map_err(|e| MonClientError::Other(format!("Failed to forward OSDMap: {}", e)))?;
         } else {
-            debug!("No OSDMap receiver configured, skipping OSDMap processing");
+            debug!("No OSDMap channel configured, skipping OSDMap processing");
         }
 
         Ok(())

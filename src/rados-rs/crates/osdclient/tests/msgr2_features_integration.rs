@@ -117,7 +117,7 @@ async fn setup(
     };
 
     let mon_client = Arc::new(
-        monclient::MonClient::new(mon_config, Some(osdmap_receiver))
+        monclient::MonClient::new(mon_config, Some(osdmap_tx))
             .await
             .expect("Failed to create MonClient"),
     );

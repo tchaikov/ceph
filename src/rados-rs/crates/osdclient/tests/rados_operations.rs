@@ -113,7 +113,7 @@ async fn create_osd_client(
         ..Default::default()
     };
 
-    let mon_client = Arc::new(monclient::MonClient::new(mon_config, Some(osdmap_receiver)).await?);
+    let mon_client = Arc::new(monclient::MonClient::new(mon_config, Some(osdmap_tx)).await?);
     mon_client.init_self_ref();
 
     // Initialize connection

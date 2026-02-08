@@ -141,32 +141,10 @@ async fn main() -> Result<()> {
     // Create shared MapNotifier - both MonClient and OSDClient use this for OSDMap updates
     let map_notifier = Arc::new(osdclient::MapNotifier::new());
 
-    // Create OSDMap receiver that decodes and posts to notifier
-    struct OSDMapHandler {
-        notifier: Arc<osdclient::MapNotifier<osdclient::OSDMap>>,
-    }
-    
-    impl objecter::OSDMapReceiver for OSDMapHandler {
-        fn handle_osdmap(&self, epoch: u32, data: bytes::Bytes) {
-            let notifier = Arc::clone(&self.notifier);
-            tokio::spawn(async move {
-                match osdclient::OSDMap::decode_versioned(&mut data.as_ref(), 0) {
-                    Ok(osdmap) => {
-                        notifier.post(Arc::new(osdmap)).await;
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to decode OSDMap epoch {}: {}", epoch, e);
-                    }
-                }
-            });
-        }
-    }
-    
-    let osdmap_receiver = Arc::new(OSDMapHandler {
-        notifier: Arc::clone(&map_notifier),
-    });
+    // Create channel for forwarding OSDMap messages from MonClient to OSDClient
+    let (osdmap_tx, mut osdmap_rx) = tokio::sync::mpsc::unbounded_channel::<msgr2::message::Message>();
 
-    // Create MonClient - it will forward OSDMaps to the receiver
+    // Create MonClient - it will forward OSDMaps through the channel
     let mon_config = monclient::MonClientConfig {
         entity_name: cli.name.clone(),
         mon_addrs,
@@ -175,7 +153,7 @@ async fn main() -> Result<()> {
     };
 
     let mon_client = Arc::new(
-        monclient::MonClient::new(mon_config, Some(osdmap_receiver))
+        monclient::MonClient::new(mon_config, Some(osdmap_tx))
             .await
             .context("Failed to create MonClient")?,
     );
@@ -227,7 +205,19 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to start OSDMap subscription")?;
 
+    // Spawn task to forward OSDMap messages from MonClient to OSDClient
+    // This is the ONLY place where OSDMaps are decoded and processed
+    let osd_client_for_handler = osd_client.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = osdmap_rx.recv().await {
+            if let Err(e) = osd_client_for_handler.handle_osdmap(msg).await {
+                eprintln!("Failed to handle OSDMap: {}", e);
+            }
+        }
+    });
+
     debug!("OSD client created");
+
 
     // NOW subscribe to OSDMap - both MonClient and OSDClient are ready
     mon_client
