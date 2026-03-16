@@ -12,6 +12,7 @@
 #include "librbd/ObjectMap.h"
 #include "librbd/io/Types.h"
 #include <map>
+#include <memory>
 
 class Context;
 class ObjectExtent;
@@ -24,6 +25,7 @@ namespace io {
 
 struct AioCompletion;
 template <typename> class CopyupRequest;
+class S3ObjectFetcher;
 
 /**
  * This class represents an I/O operation to a single RBD data object.
@@ -146,6 +148,11 @@ private:
 
   ceph::bufferlist* m_read_data;
   ExtentMap* m_extent_map;
+
+  // Heap-allocated so its lifetime is tied to ObjectReadRequest, not the stack
+  // frame of read_from_s3(). The detached pthread writes into m_read_data
+  // which is a member of this class, so both must outlive the in-flight fetch.
+  std::unique_ptr<S3ObjectFetcher> m_s3_fetcher;
 
   void read_object();
   void handle_read_object(int r);

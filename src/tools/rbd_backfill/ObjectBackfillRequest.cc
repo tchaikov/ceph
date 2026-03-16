@@ -7,7 +7,10 @@
 #include "common/errno.h"
 #include "common/WorkQueue.h"
 #include "cls/lock/cls_lock_client.h"
+#include "cls/rbd/cls_rbd_client.h"
+#include "librbd/ObjectMap.h"
 #include "librbd/Utils.h"
+#include <boost/optional.hpp>
 #include <sstream>
 
 #define dout_context m_cct
@@ -24,12 +27,14 @@ ObjectBackfillRequest::ObjectBackfillRequest(
   const std::string& parent_oid,
   uint64_t object_no,
   const ceph::bufferlist& data,
+  const std::string& image_id,
   CephContext* cct,
   Threads* threads,
   Context* on_finish)
   : m_parent_ioctx(parent_ioctx),  // Copy IoCtx - safe for async use
     m_parent_oid(parent_oid),
     m_object_no(object_no),
+    m_image_id(image_id),
     m_threads(threads),
     m_cct(cct),
     m_on_finish(on_finish),
@@ -48,7 +53,7 @@ ObjectBackfillRequest::ObjectBackfillRequest(
   m_lock_cookie = ss.str();
 
   // Lock name is the object name
-  m_lock_name = "rbd_lock";
+  m_lock_name = "s3_fetch_lock";
   m_lock_tag = "";  // No tag for exclusive locks
 }
 
@@ -209,16 +214,31 @@ void ObjectBackfillRequest::handle_write_rados(int r) {
 void ObjectBackfillRequest::update_object_map() {
   dout(15) << dendl;
 
+  // Update the parent image's object map via direct RADOS operation.
+  // We use cls_rbd directly rather than the in-memory ObjectMap because
+  // the backfill daemon does not hold the image's exclusive lock.
+  std::string object_map_name = librbd::ObjectMap<>::object_map_name(
+    m_image_id, CEPH_NOSNAP);
+
+  librados::ObjectWriteOperation map_op;
+  librbd::cls_client::object_map_update(
+    &map_op, m_object_no, m_object_no + 1,
+    OBJECT_EXISTS, boost::optional<uint8_t>());
+
   Context* ctx = new C_Request(
     this, &ObjectBackfillRequest::handle_update_object_map);
+  librados::AioCompletion* rados_completion =
+    librbd::util::create_rados_callback(ctx);
 
-  // Update object map to mark this object as OBJECT_COPIEDUP
-  // This will be implemented using cls_rbd in the parent's object map
-  // For now, we'll skip this step and move directly to release_lock
-  // TODO: Implement object map update using cls_rbd
+  int r = m_parent_ioctx.aio_operate(object_map_name, rados_completion, &map_op);
+  rados_completion->release();
 
-  dout(10) << "object map update not yet implemented, skipping" << dendl;
-  m_threads->work_queue->queue(ctx, 0);
+  if (r < 0) {
+    dout(5) << "failed to submit object map update: " << cpp_strerror(r) << dendl;
+    // Queue immediate completion with error so state machine can proceed
+    m_threads->work_queue->queue(
+      new C_Request(this, &ObjectBackfillRequest::handle_update_object_map), r);
+  }
 }
 
 void ObjectBackfillRequest::handle_update_object_map(int r) {

@@ -253,7 +253,8 @@ void ImageBackfiller::backfill_object(uint64_t object_no) {
     m_image_ctx->data_ctx,
     object_name,
     object_no,
-    data_bl,  // Pass pre-fetched data
+    data_bl,          // Pass pre-fetched data
+    m_image_ctx->id,  // Image ID for object map updates
     m_cct,
     m_threads,
     on_complete

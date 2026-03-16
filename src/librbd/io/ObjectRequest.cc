@@ -437,14 +437,16 @@ void ObjectReadRequest<I>::read_from_s3() {
 
   snap_locker.unlock();
 
-  // Create S3 fetcher
-  io::S3ObjectFetcher fetcher(cct, s3_config);
+  // Heap-allocate S3 fetcher so it outlives this stack frame.
+  // The detached pthread writes into m_read_data (a member pointer),
+  // so both must remain alive until handle_read_from_s3() is called.
+  m_s3_fetcher.reset(new io::S3ObjectFetcher(cct, s3_config));
 
   // Fetch entire object from S3
   using klass = ObjectReadRequest<I>;
   Context *ctx = util::create_context_callback<klass, &klass::handle_read_from_s3>(this);
 
-  fetcher.fetch_url(s3_url, m_read_data, ctx, byte_start, byte_length);
+  m_s3_fetcher->fetch_url(s3_url, m_read_data, ctx, byte_start, byte_length);
 }
 
 template <typename I>

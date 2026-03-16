@@ -184,7 +184,7 @@ log_info "Waiting for backfill to complete (up to 30s)..."
 for i in $(seq 1 30); do
     sleep 1
     OBJ_COUNT=$("$BUILD_DIR/bin/rados" --conf "$CEPH_CONF" -p "$POOL" ls 2>/dev/null \
-        | grep -c "^rbd_data\." || true)
+        | grep -c "^${BLOCK_PREFIX}\." || true)
     if [ "${OBJ_COUNT:-0}" -ge 5 ]; then
         log_info "All 5 objects backfilled after ${i}s"
         break
@@ -202,7 +202,7 @@ log_step "6. Verify object naming format"
 # ============================================================================
 
 log_info "Listing objects in RADOS pool..."
-RADOS_OBJECTS=$("$BUILD_DIR/bin/rados" --conf "$CEPH_CONF" -p "$POOL" ls | grep "rbd_data" | sort)
+RADOS_OBJECTS=$("$BUILD_DIR/bin/rados" --conf "$CEPH_CONF" -p "$POOL" ls | grep "^${BLOCK_PREFIX}\." | sort)
 
 if [ -z "$RADOS_OBJECTS" ]; then
     log_error "No rbd_data objects found!"

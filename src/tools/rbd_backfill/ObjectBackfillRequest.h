@@ -40,6 +40,7 @@ public:
     const std::string& parent_oid,
     uint64_t object_no,
     const ceph::bufferlist& data,  // Pre-fetched data from S3
+    const std::string& image_id,   // Parent image ID for object map updates
     CephContext* cct,
     Threads* threads,
     Context* on_finish);
@@ -94,6 +95,7 @@ private:
   librados::IoCtx m_parent_ioctx;  // Copy, not reference - must remain valid for async operations
   std::string m_parent_oid;
   uint64_t m_object_no;
+  std::string m_image_id;          // Parent image ID for object map updates
   Threads* m_threads;
   CephContext* m_cct;
   Context* m_on_finish;

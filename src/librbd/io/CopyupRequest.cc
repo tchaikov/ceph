@@ -1013,12 +1013,27 @@ void CopyupRequest<I>::write_back_to_parent_async() {
   } else {
     ldout(cct, 10) << "submitted parent cache write-back for " << m_parent_oid << dendl;
 
-    // Queue parent object map update to work queue (fire-and-forget)
-    // This prevents blocking on parent->object_map_lock which would serialize
-    // all concurrent I/O operations
-    m_image_ctx->op_work_queue->queue(new FunctionContext(
-      [this](int r) {
-        update_parent_object_map();
+    // Queue parent object map update to work queue (fire-and-forget).
+    // Capture image_ctx and object_no by value — CopyupRequest may be deleted
+    // before this lambda runs, so we cannot capture 'this'.
+    auto* image_ctx = m_image_ctx;
+    uint64_t object_no = m_object_no;
+    image_ctx->op_work_queue->queue(new FunctionContext(
+      [image_ctx, object_no](int r) {
+        // Check if object map feature is enabled on the parent
+        if (image_ctx->parent == nullptr ||
+            !image_ctx->parent->test_features(RBD_FEATURE_OBJECT_MAP)) {
+          return;
+        }
+        std::string parent_object_map_name = ObjectMap<>::object_map_name(
+          image_ctx->parent->id, CEPH_NOSNAP);
+        librados::ObjectWriteOperation map_op;
+        cls_client::object_map_update(&map_op, object_no, object_no + 1,
+                                      OBJECT_EXISTS, boost::optional<uint8_t>());
+        auto rados_completion = librados::Rados::aio_create_completion();
+        image_ctx->parent->data_ctx.aio_operate(
+          parent_object_map_name, rados_completion, &map_op);
+        rados_completion->release();
       }), 0);
   }
   rados_completion->release();
