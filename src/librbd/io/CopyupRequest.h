@@ -12,6 +12,7 @@
 #include "librbd/io/AsyncOperation.h"
 #include "librbd/io/Types.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,7 @@ struct ImageCtx;
 
 namespace io {
 
+class S3ObjectFetcher;
 template <typename I> class AbstractObjectWriteRequest;
 
 template <typename ImageCtxT = librbd::ImageCtx>
@@ -109,6 +111,10 @@ private:
   ceph::bufferlist m_s3_data;
   std::string m_parent_oid;
   librados::IoCtx m_parent_ioctx;
+  // Heap-allocated so its lifetime is tied to CopyupRequest, not the stack
+  // frame of fetch_from_s3_async(). The detached pthread writes into m_s3_data
+  // which is a member here, so both must outlive the in-flight fetch.
+  std::unique_ptr<S3ObjectFetcher> m_s3_fetcher;
 
   void read_from_parent();
   void handle_read_from_parent(int r);

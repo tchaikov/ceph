@@ -6,6 +6,7 @@
 #include "common/dout.h"
 #include "common/errno.h"
 #include "common/Mutex.h"
+#include "common/Timer.h"
 #include "common/WorkQueue.h"
 #include "librbd/AsyncObjectThrottle.h"
 #include "librbd/ExclusiveLock.h"
@@ -863,10 +864,20 @@ void CopyupRequest<I>::retry_read_from_parent() {
   ldout(cct, 10) << "retry #" << m_s3_retry_count << " after " << delay_ms
                  << "ms (another child may be writing parent object)" << dendl;
 
-  // Schedule retry after delay - retry by reading from parent again
-  // The retry will go through read_from_parent() which may find the object
-  // (written by the other child) or trigger S3 fetch again
-  read_from_parent();
+  // Schedule the retry via SafeTimer so we actually wait the computed delay.
+  // The timer callback must be fast (runs under timer lock), so it simply
+  // re-queues read_from_parent() onto the op_work_queue.
+  SafeTimer *timer;
+  Mutex *timer_lock;
+  ImageCtx::get_timer_instance(cct, &timer, &timer_lock);
+  {
+    Mutex::Locker locker(*timer_lock);
+    timer->add_event_after(delay_ms / 1000.0,
+      new FunctionContext([this](int r) {
+        m_image_ctx->op_work_queue->queue(
+          new FunctionContext([this](int r) { read_from_parent(); }), 0);
+      }));
+  }
 }
 
 template <typename I>
@@ -896,9 +907,10 @@ void CopyupRequest<I>::fetch_from_s3_async() {
   // Build full S3 URL for the raw image
   std::string s3_url = s3_config.build_url();
 
-  // Calculate byte range based on object number
-  // Each RBD object maps to a contiguous range in the raw image
-  uint64_t object_size = m_image_ctx->get_object_size();
+  // Calculate byte range based on object number.
+  // Must use the *parent's* object size: the child may have a different order,
+  // and the raw S3 image is laid out according to the parent's block size.
+  uint64_t object_size = m_image_ctx->parent->get_object_size();
   uint64_t byte_start = m_object_no * object_size;
   uint64_t byte_length = object_size;
 
@@ -908,13 +920,15 @@ void CopyupRequest<I>::fetch_from_s3_async() {
 
   parent_locker.unlock();
 
-  // Create S3 fetcher and fetch object range
-  S3ObjectFetcher fetcher(cct, s3_config);
+  // Heap-allocate the fetcher so it stays alive until this CopyupRequest is
+  // destroyed, keeping its lifetime coupled to m_s3_data which the async
+  // pthread writes into.
+  m_s3_fetcher.reset(new S3ObjectFetcher(cct, s3_config));
 
   auto ctx = util::create_context_callback<
     CopyupRequest<I>, &CopyupRequest<I>::handle_s3_fetch>(this);
 
-  fetcher.fetch_url(s3_url, &m_s3_data, ctx, byte_start, byte_length);
+  m_s3_fetcher->fetch_url(s3_url, &m_s3_data, ctx, byte_start, byte_length);
 }
 
 template <typename I>

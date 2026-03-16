@@ -512,7 +512,8 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
                                  bufferlist* data,
                                  Context* on_finish,
                                  uint64_t byte_start,
-                                 uint64_t byte_length) {
+                                 uint64_t byte_length,
+                                 std::atomic<bool>* cancel_flag) {
   auto cct = m_cct;
 
   if (byte_length > 0) {
@@ -536,7 +537,7 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
   ctx->byte_length = byte_length;
   ctx->out_bl = data;
   ctx->on_finish = on_finish;
-  ctx->cancel_flag = nullptr;  // No cancellation for fetch_url
+  ctx->cancel_flag = cancel_flag;
 
   // Setup curl handle
   ctx->curl_handle = setup_curl_handle(url, data, byte_start, byte_length,
@@ -584,9 +585,7 @@ void S3ObjectFetcher::fetch(uint64_t object_no, uint64_t object_off,
                    << " s3_offset=" << s3_offset
                    << " length=" << length << dendl;
 
-  // Async fetch using pthread (cancellation support via cancel_flag)
-  // TODO: Consider migrating to Ceph's work queue for better thread management
-  fetch_url(url, out_bl, on_finish, s3_offset, length);
+  fetch_url(url, out_bl, on_finish, s3_offset, length, cancel_flag);
 }
 
 int S3ObjectFetcher::fetch_sync(uint64_t object_no, uint64_t object_off,

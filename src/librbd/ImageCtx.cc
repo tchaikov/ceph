@@ -842,7 +842,18 @@ public:
       } else if (key == "access_key") {
         s3_config.access_key = val;
       } else if (key == "secret_key") {
-        s3_config.secret_key = val;
+        // The metadata value is stored base64-encoded (set by `rbd s3-config set`).
+        // Decode it here so HMAC signing uses the raw key, not the encoded form.
+        try {
+          bufferlist encoded_bl;
+          encoded_bl.append(val);
+          bufferlist decoded_bl;
+          decoded_bl.decode_base64(encoded_bl);
+          s3_config.secret_key = decoded_bl.to_str();
+        } catch (const buffer::error&) {
+          // Not valid base64 — store as-is (handles unencoded legacy keys)
+          s3_config.secret_key = val;
+        }
       } else if (key == "image_name") {
         s3_config.image_name = val;
       } else if (key == "image_format") {

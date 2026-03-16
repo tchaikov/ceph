@@ -64,7 +64,8 @@ public:
     bufferlist* data,
     Context* on_finish,
     uint64_t byte_start = 0,
-    uint64_t byte_length = 0);
+    uint64_t byte_length = 0,
+    std::atomic<bool>* cancel_flag = nullptr);
 
   /**
    * Fetch data from S3 parent image using RBD object number (for backfill daemon)
