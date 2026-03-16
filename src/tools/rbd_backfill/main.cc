@@ -9,7 +9,6 @@
 #include "global/global_init.h"
 #include "global/signal_handler.h"
 
-#include <atomic>
 #include <vector>
 #include <iostream>
 
@@ -20,13 +19,15 @@
 
 namespace {
 
-// Global flag to track if we've already shut down
-static std::atomic<bool> shutdown_initiated{false};
+// Global pointer set before signal handlers are registered so handle_signal
+// can call daemon.shutdown() — safe because Ceph's async signal handler runs
+// the callback in a dedicated thread (not the signal context).
+static rbd::backfill::BackfillDaemon* g_daemon = nullptr;
 
 void handle_signal(int signum) {
-  // Don't call shutdown_async_signal_handler() here
-  // It will be called in the cleanup section of main()
-  // Just set a flag or do minimal work
+  if (g_daemon) {
+    g_daemon->shutdown();
+  }
 }
 
 void usage() {
@@ -38,18 +39,19 @@ void usage() {
   std::cout << "scheduled for backfill using 'rbd backfill schedule <image>'." << std::endl;
   std::cout << std::endl;
   std::cout << "Options:" << std::endl;
-  std::cout << "  --daemon                Run in daemon mode (default: foreground)" << std::endl;
-  std::cout << "  --foreground            Run in foreground mode" << std::endl;
-  std::cout << "  -c, --conf <file>       Configuration file" << std::endl;
+  std::cout << "  --foreground            Run in foreground (logs to stderr; default when" << std::endl;
+  std::cout << "                          not daemonized)" << std::endl;
+  std::cout << "  -c, --conf <file>       Configuration file (REQUIRED)" << std::endl;
   std::cout << "  --log-file <file>       Log file path" << std::endl;
+  std::cout << "  --debug <subsys> <lvl>  Set debug level (e.g. --debug rbd 20)" << std::endl;
   std::cout << std::endl;
   std::cout << "Example:" << std::endl;
   std::cout << "  # Schedule images for backfill" << std::endl;
   std::cout << "  rbd backfill schedule rbd/parent1" << std::endl;
   std::cout << "  rbd backfill schedule rbd/parent2" << std::endl;
   std::cout << std::endl;
-  std::cout << "  # Start the daemon (will discover scheduled images)" << std::endl;
-  std::cout << "  rbd-backfill --foreground" << std::endl;
+  std::cout << "  # Start in foreground with debug output visible on terminal" << std::endl;
+  std::cout << "  rbd-backfill --foreground --debug rbd 20 --conf /etc/ceph/ceph.conf" << std::endl;
   std::cout << std::endl;
 }
 
@@ -70,32 +72,33 @@ int main(int argc, const char **argv) {
                          CODE_ENVIRONMENT_DAEMON,
                          CINIT_FLAG_UNPRIVILEGED_DAEMON_DEFAULTS);
 
-  // Parse command-line arguments
-  bool daemon_mode = false;
-
-  for (auto i = args.begin(); i != args.end(); ) {
-    if (ceph_argparse_flag(args, i, "-h", "--help", (char*)nullptr)) {
+  // Handle --help (must check before common_init_finish so output goes to stdout)
+  for (auto& arg : args) {
+    if (std::string(arg) == "-h" || std::string(arg) == "--help") {
       usage();
       return 0;
-    } else if (ceph_argparse_flag(args, i, "--daemon", (char*)nullptr)) {
-      daemon_mode = true;
-    } else if (ceph_argparse_flag(args, i, "--foreground", (char*)nullptr)) {
-      daemon_mode = false;
-    } else {
-      ++i;
     }
+  }
+
+  // When --foreground is passed, global_init sets daemonize=false.
+  // In that case also redirect logs to stderr so users see output on the terminal.
+  // (CODE_ENVIRONMENT_DAEMON defaults to logging to a file, not stderr.)
+  if (!g_conf()->daemonize) {
+    g_ceph_context->_conf.set_val("log_to_stderr", "true");
+    g_ceph_context->_conf.apply_changes(nullptr);
   }
 
   // Initialize logging
   common_init_finish(g_ceph_context);
 
-  dout(0) << "rbd-backfill starting (will discover images via metadata)" << dendl;
-
-  // Daemonize if requested
-  if (daemon_mode) {
-    dout(0) << "entering daemon mode" << dendl;
+  // Daemonize if not running in foreground mode (standard Ceph daemon pattern;
+  // mirrors src/tools/rbd_mirror/main.cc — do not add custom --daemon/--foreground
+  // parsing here; global_init already handles those flags via conf.parse_argv()).
+  if (g_conf()->daemonize) {
     global_init_daemonize(g_ceph_context);
   }
+
+  dout(0) << "rbd-backfill starting (will discover images via metadata)" << dendl;
 
   // Install signal handlers
   init_async_signal_handler();
@@ -107,16 +110,19 @@ int main(int argc, const char **argv) {
   int r = 0;
   {
     rbd::backfill::BackfillDaemon daemon(g_ceph_context);
+    g_daemon = &daemon;  // allow signal handler to call daemon.shutdown()
 
     r = daemon.init();
     if (r < 0) {
       derr << "failed to initialize daemon: " << cpp_strerror(r) << dendl;
+      g_daemon = nullptr;
       goto cleanup;
     }
 
     dout(0) << "daemon initialized, starting main loop" << dendl;
     daemon.run();
 
+    g_daemon = nullptr;
     dout(0) << "shutting down daemon" << dendl;
     daemon.shutdown();
   }

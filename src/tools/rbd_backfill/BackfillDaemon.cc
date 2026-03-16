@@ -118,6 +118,12 @@ void BackfillDaemon::run() {
 void BackfillDaemon::shutdown() {
   dout(10) << dendl;
 
+  // Guard against double-shutdown (signal handler + main() both call shutdown)
+  if (m_shutdown.exchange(true)) {
+    dout(10) << "already shut down, ignoring" << dendl;
+    return;
+  }
+
   {
     Mutex::Locker locker(m_lock);
     m_stopping = true;

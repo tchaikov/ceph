@@ -12,6 +12,7 @@
 #include <vector>
 #include <map>
 #include <memory>
+#include <atomic>
 
 class CephContext;
 class ContextWQ;
@@ -68,6 +69,7 @@ private:
   Mutex m_lock;
   Cond m_cond;
   bool m_stopping = false;
+  std::atomic<bool> m_shutdown{false};
 };
 
 } // namespace backfill

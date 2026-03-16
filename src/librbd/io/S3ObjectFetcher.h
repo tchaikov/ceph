@@ -94,7 +94,6 @@ private:
   S3Config m_s3_config;
 
   struct FetchContext {
-    S3ObjectFetcher* fetcher;
     std::string url;
     uint64_t byte_start;
     uint64_t byte_length;

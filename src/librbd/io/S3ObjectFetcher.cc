@@ -25,6 +25,14 @@ namespace {
   void init_curl_once() {
     curl_global_init(CURL_GLOBAL_DEFAULT);
   }
+
+  // Concurrency limiter: cap simultaneous S3 HTTP connections to avoid
+  // overloading the S3 server when many child clones trigger COW reads
+  // simultaneously. Excess threads block here (cheaply) until a slot frees.
+  static constexpr int S3_MAX_CONCURRENT_FETCHES = 8;
+  std::mutex s3_fetch_mutex;
+  std::condition_variable s3_fetch_cv;
+  int s3_active_fetches = 0;
 }
 
 S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config)
@@ -372,9 +380,24 @@ std::string S3ObjectFetcher::build_s3_url() const {
 void* S3ObjectFetcher::async_fetch_thread(void* arg) {
   FetchContext* ctx = static_cast<FetchContext*>(arg);
 
+  // Acquire a concurrency slot before performing any network I/O.
+  // This prevents S3 server overload when many clones trigger simultaneous
+  // COW reads from the same parent (e.g., 4 VMs booting concurrently).
+  {
+    std::unique_lock<std::mutex> lock(s3_fetch_mutex);
+    s3_fetch_cv.wait(lock,
+      [] { return s3_active_fetches < S3_MAX_CONCURRENT_FETCHES; });
+    ++s3_active_fetches;
+  }
+
   // Create multi handle
   CURLM* multi_handle = curl_multi_init();
   if (!multi_handle) {
+    {
+      std::unique_lock<std::mutex> lock(s3_fetch_mutex);
+      --s3_active_fetches;
+    }
+    s3_fetch_cv.notify_one();
     ctx->on_finish->complete(-ENOMEM);
     curl_slist_free_all(ctx->headers);
     curl_easy_cleanup(ctx->curl_handle);
@@ -397,6 +420,11 @@ void* S3ObjectFetcher::async_fetch_thread(void* arg) {
       curl_multi_cleanup(multi_handle);
       curl_slist_free_all(ctx->headers);
       curl_easy_cleanup(ctx->curl_handle);
+      {
+        std::unique_lock<std::mutex> lock(s3_fetch_mutex);
+        --s3_active_fetches;
+      }
+      s3_fetch_cv.notify_one();
       ctx->on_finish->complete(-ECANCELED);
       delete ctx;
       return nullptr;
@@ -465,6 +493,14 @@ void* S3ObjectFetcher::async_fetch_thread(void* arg) {
   curl_slist_free_all(ctx->headers);
   curl_easy_cleanup(ctx->curl_handle);
 
+  // Release concurrency slot before invoking the completion callback so a
+  // waiting thread can start its S3 fetch while we handle the result.
+  {
+    std::unique_lock<std::mutex> lock(s3_fetch_mutex);
+    --s3_active_fetches;
+  }
+  s3_fetch_cv.notify_one();
+
   // Call completion callback
   ctx->on_finish->complete(result);
 
@@ -495,7 +531,6 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
 
   // Create fetch context for async operation
   FetchContext* ctx = new FetchContext();
-  ctx->fetcher = this;
   ctx->url = url;
   ctx->byte_start = byte_start;
   ctx->byte_length = byte_length;

@@ -30,29 +30,25 @@ start_minio() {
 
     log_info "Starting MinIO on port $port..."
 
-    # Kill any existing MinIO on this port
-    pkill -9 -f "minio.*:$port" 2>/dev/null || true
-    sleep 1
-
     # Create data directory
     mkdir -p "$data_dir"
 
-    # Start MinIO
-    export MINIO_ROOT_USER=minioadmin
-    export MINIO_ROOT_PASSWORD=minioadmin
-
+    # Start MinIO — credentials must be env vars on the server process, not just exported
+    MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
     "$MINIO_BIN/minio" server "$data_dir" \
-        --address ":$port" \
-        --console-address ":$console_port" \
+        --address "127.0.0.1:$port" \
+        --console-address "127.0.0.1:$console_port" \
         > /tmp/minio-$port.log 2>&1 &
 
     local minio_pid=$!
     echo $minio_pid > /tmp/minio-$port.pid
 
-    # Wait for MinIO to be ready
+    # Wait for MinIO to be ready using mc admin info (reliable across Minio versions)
     log_info "Waiting for MinIO to be ready..."
-    for i in {1..30}; do
-        if curl -sf "http://localhost:$port/minio/health/live" > /dev/null 2>&1; then
+    for i in $(seq 1 30); do
+        sleep 1
+        if "$MINIO_BIN/mc" alias set local "http://127.0.0.1:$port" minioadmin minioadmin > /dev/null 2>&1 && \
+           "$MINIO_BIN/mc" admin info local > /dev/null 2>&1; then
             log_success "MinIO started (PID: $minio_pid)"
             return 0
         fi
@@ -61,7 +57,6 @@ start_minio() {
             cat /tmp/minio-$port.log
             return 1
         fi
-        sleep 1
     done
 
     log_error "MinIO failed to start within 30 seconds"
@@ -92,7 +87,7 @@ setup_s3_bucket() {
     log_info "Setting up S3 bucket: $bucket"
 
     # Configure mc alias
-    "$MINIO_BIN/mc" alias set local http://localhost:$port minioadmin minioadmin 2>&1 | grep -v "^mc:" || true
+    "$MINIO_BIN/mc" alias set local "http://127.0.0.1:$port" minioadmin minioadmin 2>&1 | grep -v "^mc:" || true
 
     # Create bucket
     "$MINIO_BIN/mc" mb "local/$bucket" 2>&1 | grep -v "^mc:" || log_info "Bucket already exists"
@@ -162,16 +157,18 @@ create_s3_parent() {
     local s3_endpoint=${5:-http://localhost:9000}
     local s3_bucket=${6:-test-bucket}
     local conf=${7:-$CEPH_CONF}
+    local s3_access_key=${8:-minioadmin}
+    local s3_secret_key=${9:-minioadmin}
 
     log_info "Creating S3-backed parent: $pool/$parent_name ($size_mb MB)"
 
     # Create parent image file with recognizable pattern
     local temp_file="/tmp/${s3_image_name}"
-    dd if=/dev/zero of="$temp_file" bs=1M count=$size_mb 2>/dev/null
+    dd if=/dev/zero of="$temp_file" bs=1M count=$size_mb status=none
 
     # Write block markers for verification
     for i in $(seq 0 $((size_mb/4 - 1))); do
-        printf "PARENT-BLOCK-%04d" $i | dd of="$temp_file" bs=4M seek=$i conv=notrunc 2>/dev/null
+        printf "PARENT-BLOCK-%04d" $i | dd of="$temp_file" bs=4M seek=$i conv=notrunc status=none
     done
 
     # Upload to S3
@@ -181,13 +178,13 @@ create_s3_parent() {
     "$BUILD_DIR/bin/rbd" --conf "$conf" rm "$pool/$parent_name" 2>/dev/null || true
     "$BUILD_DIR/bin/rbd" --conf "$conf" create "$pool/$parent_name" --size ${size_mb}M --object-size 4M
 
-    # Configure S3 metadata
-    "$BUILD_DIR/bin/rbd" --conf "$conf" image-meta set "$pool/$parent_name" s3.enabled true
-    "$BUILD_DIR/bin/rbd" --conf "$conf" image-meta set "$pool/$parent_name" s3.endpoint "$s3_endpoint"
-    "$BUILD_DIR/bin/rbd" --conf "$conf" image-meta set "$pool/$parent_name" s3.bucket "$s3_bucket"
-    "$BUILD_DIR/bin/rbd" --conf "$conf" image-meta set "$pool/$parent_name" s3.image_name "$s3_image_name"
-    "$BUILD_DIR/bin/rbd" --conf "$conf" image-meta set "$pool/$parent_name" s3.image_format "raw"
-    "$BUILD_DIR/bin/rbd" --conf "$conf" image-meta set "$pool/$parent_name" s3.verify_ssl false
+    # Configure S3 via s3-config set (sets s3.enabled, base64-encodes secret key, uses correct key names)
+    "$BUILD_DIR/bin/rbd" --conf "$conf" s3-config set "$pool/$parent_name" \
+        --s3-endpoint   "$s3_endpoint" \
+        --s3-bucket     "$s3_bucket" \
+        --s3-image-name "$s3_image_name" \
+        --s3-access-key "$s3_access_key" \
+        --s3-secret-key "$s3_secret_key"
 
     log_success "S3-backed parent created: $pool/$parent_name"
 }
