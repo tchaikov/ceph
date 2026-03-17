@@ -1034,27 +1034,34 @@ void CopyupRequest<I>::write_back_to_parent_async() {
     ldout(cct, 10) << "submitted parent cache write-back for " << m_parent_oid << dendl;
 
     // Queue parent object map update to work queue (fire-and-forget).
-    // Capture image_ctx and object_no by value — CopyupRequest may be deleted
-    // before this lambda runs, so we cannot capture 'this'.
-    auto* image_ctx = m_image_ctx;
-    uint64_t object_no = m_object_no;
-    image_ctx->op_work_queue->queue(new FunctionContext(
-      [image_ctx, object_no](int r) {
-        // Check if object map feature is enabled on the parent
-        if (image_ctx->parent == nullptr ||
-            !image_ctx->parent->test_features(RBD_FEATURE_OBJECT_MAP)) {
-          return;
-        }
-        std::string parent_object_map_name = ObjectMap<>::object_map_name(
-          image_ctx->parent->id, CEPH_NOSNAP);
-        librados::ObjectWriteOperation map_op;
-        cls_client::object_map_update(&map_op, object_no, object_no + 1,
-                                      OBJECT_EXISTS, boost::optional<uint8_t>());
-        auto rados_completion = librados::Rados::aio_create_completion();
-        image_ctx->parent->data_ctx.aio_operate(
-          parent_object_map_name, rados_completion, &map_op);
-        rados_completion->release();
-      }), 0);
+    // We must NOT access image_ctx->parent from inside the lambda: a concurrent
+    // refresh can change or null out parent between enqueueing and execution.
+    // Snapshot everything we need under parent_lock NOW, before queuing.
+    std::string parent_object_map_name;
+    librados::IoCtx parent_data_ctx;
+    {
+      RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+      if (m_image_ctx->parent != nullptr &&
+          m_image_ctx->parent->test_features(RBD_FEATURE_OBJECT_MAP)) {
+        parent_object_map_name = ObjectMap<>::object_map_name(
+          m_image_ctx->parent->id, CEPH_NOSNAP);
+        parent_data_ctx = m_image_ctx->parent->data_ctx;
+      }
+    }
+
+    if (!parent_object_map_name.empty()) {
+      uint64_t object_no = m_object_no;
+      m_image_ctx->op_work_queue->queue(new FunctionContext(
+        [parent_data_ctx, parent_object_map_name, object_no](int r) mutable {
+          librados::ObjectWriteOperation map_op;
+          cls_client::object_map_update(&map_op, object_no, object_no + 1,
+                                        OBJECT_EXISTS, boost::optional<uint8_t>());
+          auto rados_completion = librados::Rados::aio_create_completion();
+          parent_data_ctx.aio_operate(
+            parent_object_map_name, rados_completion, &map_op);
+          rados_completion->release();
+        }), 0);
+    }
   }
   rados_completion->release();
 }
@@ -1071,14 +1078,16 @@ void CopyupRequest<I>::unlock_parent_object() {
   // Construct the same lock cookie we used to acquire the lock
   std::string lock_cookie = m_image_ctx->id + "_" + stringify(m_object_no);
 
-  // Release the lock
+  // Release the lock asynchronously (fire-and-forget) to avoid blocking the
+  // I/O path on a RADOS round-trip.  Lock auto-expires on crash via timeout.
   librados::ObjectWriteOperation unlock_op;
   rados::cls::lock::unlock(&unlock_op, "s3_fetch_lock", lock_cookie);
 
-  // Fire and forget - we don't wait for completion
-  int r = m_parent_ioctx.operate(m_parent_lock_oid, &unlock_op);
+  auto rados_completion = librados::Rados::aio_create_completion();
+  int r = m_parent_ioctx.aio_operate(m_parent_lock_oid, rados_completion, &unlock_op);
+  rados_completion->release();
   if (r < 0) {
-    ldout(cct, 5) << "warning: failed to unlock parent object: "
+    ldout(cct, 5) << "warning: failed to submit async unlock for parent object: "
                   << cpp_strerror(r) << dendl;
   }
 

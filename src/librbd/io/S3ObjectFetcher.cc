@@ -9,7 +9,6 @@
 
 #include <curl/curl.h>
 #include <pthread.h>
-#include <regex>
 #include <mutex>
 
 #define dout_subsys ceph_subsys_rbd
@@ -59,30 +58,33 @@ size_t S3ObjectFetcher::write_callback(void* ptr, size_t size, size_t nmemb,
 }
 
 std::string S3ObjectFetcher::extract_host_from_url(const std::string& url) {
-  // Extract host from URL like "http://host:port/path" or "https://host/path"
-  // Static to avoid recompiling the NFA on every S3 request.
-  static const std::regex url_regex("^https?://([^/:]+)(:[0-9]+)?(/.*)?$");
-  std::smatch match;
-  if (std::regex_match(url, match, url_regex)) {
-    std::string host = match[1].str();
-    if (match[2].matched) {
-      // Include port if present
-      host += match[2].str();
-    }
-    return host;
+  // Extract host[:port] from URL like "http://host:port/path" or "https://host/path".
+  // Avoid std::regex to prevent data-race risks with static regex objects on
+  // older libstdc++ versions used in the Nautilus-era build toolchain.
+  auto scheme_end = url.find("://");
+  if (scheme_end == std::string::npos) {
+    return "";
   }
-  return "";
+  auto host_start = scheme_end + 3;
+  // Host ends at the first '/' or end-of-string after the authority component.
+  auto host_end = url.find('/', host_start);
+  return url.substr(host_start,
+                    host_end == std::string::npos ? std::string::npos
+                                                  : host_end - host_start);
 }
 
 std::string S3ObjectFetcher::extract_uri_from_url(const std::string& url) {
-  // Extract URI path from URL
-  // Static to avoid recompiling the NFA on every S3 request.
-  static const std::regex url_regex("^https?://[^/]+(/.*)$");
-  std::smatch match;
-  if (std::regex_match(url, match, url_regex)) {
-    return match[1].str();
+  // Extract URI path from URL (the part after the authority component).
+  // Avoid std::regex for the same reason as extract_host_from_url.
+  auto scheme_end = url.find("://");
+  if (scheme_end == std::string::npos) {
+    return "/";
   }
-  return "/";
+  auto path_start = url.find('/', scheme_end + 3);
+  if (path_start == std::string::npos) {
+    return "/";
+  }
+  return url.substr(path_start);
 }
 
 void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
