@@ -661,6 +661,9 @@ void CopyupRequest<I>::compute_deep_copy_snap_ids() {
 
 template <typename I>
 bool CopyupRequest<I>::should_fetch_from_s3() {
+  // Caller MUST already hold parent_lock (at least read mode).
+  // We must NOT re-acquire it here: RWLock::RLocker is non-recursive and will
+  // deadlock if a writer is waiting (PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP).
   auto cct = m_image_ctx->cct;
 
   // Check if S3 back-fill feature is enabled globally
@@ -670,8 +673,7 @@ bool CopyupRequest<I>::should_fetch_from_s3() {
     return false;
   }
 
-  // Check if we have a parent image
-  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+  // parent_lock is held by caller (read_from_parent)
   if (m_image_ctx->parent == nullptr) {
     return false;
   }

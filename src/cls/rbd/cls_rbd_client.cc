@@ -399,7 +399,7 @@ int parent_get_finish(bufferlist::const_iterator* it,
 
     // Try to decode additional remote parent metadata (backward compatible)
     // Only decode if parent exists - OSD only encodes these fields when parent.exists()
-    if (parent_image_spec->exists() && !it->end()) {
+    if (parent_image_spec->exists_or_standalone() && !it->end()) {
       decode(*parent_type, *it);
       decode(*remote_cluster_name, *it);
       decode(*remote_mon_hosts, *it);

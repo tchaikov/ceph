@@ -197,7 +197,13 @@ struct ParentImageSpec {
   }
 
   bool exists() const {
-    // Allow snap_id == CEPH_NOSNAP for standalone clones (cloning from mutable parent)
+    return (pool_id >= 0 && !image_id.empty() && snap_id != CEPH_NOSNAP);
+  }
+
+  // Like exists() but also recognises standalone clones whose snap_id is
+  // CEPH_NOSNAP.  Use this in code paths that handle both snapshot-based
+  // and standalone parents.
+  bool exists_or_standalone() const {
     return (pool_id >= 0 && !image_id.empty());
   }
 

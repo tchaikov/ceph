@@ -560,7 +560,7 @@ int write(cls_method_context_t hctx, const std::string& snap_key,
       return r;
     }
 
-    if (!on_disk_parent.exists()) {
+    if (!on_disk_parent.exists_or_standalone()) {
       on_disk_parent = snap.parent;
       on_disk_parent.head_overlap = std::nullopt;
 
@@ -606,7 +606,7 @@ int attach(cls_method_context_t hctx, cls_rbd_parent parent,
           parent.pool_id, parent.pool_namespace.c_str(),
           parent.image_id.c_str(), parent.snap_id.val,
           parent.head_overlap.value_or(0ULL));
-  if (!parent.exists() || parent.head_overlap.value_or(0ULL) == 0ULL) {
+  if (!parent.exists_or_standalone() || parent.head_overlap.value_or(0ULL) == 0ULL) {
     return -EINVAL;
   }
 
@@ -1052,7 +1052,7 @@ int set_size(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
       r = 0;
     if (r < 0)
       return r;
-    if (parent.exists() && parent.head_overlap.value_or(0ULL) > size) {
+    if (parent.exists_or_standalone() && parent.head_overlap.value_or(0ULL) > size) {
       parent.head_overlap = size;
       r = write_key(hctx, "parent", parent, get_encode_features(hctx));
       if (r < 0) {
@@ -1633,7 +1633,7 @@ int get_parent(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
         parent = snap.parent;
       } else if (snap.parent_overlap) {
         // normalized parent reference
-        if (!parent.exists()) {
+        if (!parent.exists_or_standalone()) {
           CLS_ERR("get_parent: snap_id=%" PRIu64 ": invalid parent spec",
                   snap_id);
           return -EINVAL;
@@ -1753,7 +1753,7 @@ int parent_get(cls_method_context_t hctx, bufferlist *in, bufferlist *out) {
 
   // Encode parent type and remote cluster metadata only if parent exists
   // This prevents decoding issues when batched with parent_overlap_get
-  if (parent.exists()) {
+  if (parent.exists_or_standalone()) {
     encode(static_cast<uint8_t>(parent.parent_type), *out);
     encode(parent.remote_cluster_name, *out);
     encode(parent.remote_mon_hosts, *out);
@@ -2630,7 +2630,7 @@ int snapshot_remove(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return r;
   }
 
-  bool has_parent = (r >= 0 && parent.exists());
+  bool has_parent = (r >= 0 && parent.exists_or_standalone());
   bool is_head_child = (has_parent && parent.head_overlap);
   int8_t require_osd_release = cls_get_required_osd_release(hctx);
   if (has_parent && !is_head_child && !has_child_snaps &&

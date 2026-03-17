@@ -45,7 +45,11 @@ struct cls_rbd_parent {
   }
 
   inline bool exists() const {
-    // Allow snap_id == CEPH_NOSNAP for standalone clones (cloning from mutable parent)
+    return (pool_id >= 0 && !image_id.empty() && snap_id != CEPH_NOSNAP);
+  }
+
+  /// Like exists(), but also matches standalone clones (snap_id == CEPH_NOSNAP)
+  inline bool exists_or_standalone() const {
     return (pool_id >= 0 && !image_id.empty());
   }
 
@@ -204,7 +208,7 @@ struct cls_rbd_snap {
 
   bool migrate_parent_format(uint64_t features) const {
     return (((features & CEPH_FEATURE_SERVER_NAUTILUS) != 0) &&
-            (parent.exists()));
+            (parent.exists_or_standalone()));
   }
 
   void encode(bufferlist& bl, uint64_t features) const {
@@ -270,7 +274,7 @@ struct cls_rbd_snap {
     f->dump_unsigned("id", id);
     f->dump_string("name", name);
     f->dump_unsigned("image_size", image_size);
-    if (parent.exists()) {
+    if (parent.exists_or_standalone()) {
       f->open_object_section("parent");
       parent.dump(f);
       f->close_section();

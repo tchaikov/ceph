@@ -488,12 +488,23 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
   bufferlist full_object_data;
   full_object_data.claim(*m_read_data);  // Take ownership of full data
 
+  // The S3 response may be shorter than object_size (e.g., the last object of
+  // an image whose size isn't an exact multiple of object_size).  Zero-pad so
+  // that substr_of never reads past the end.
+  uint64_t needed = this->m_object_off + this->m_object_len;
+  if (full_object_data.length() < needed) {
+    ldout(image_ctx->cct, 10) << "S3 returned " << full_object_data.length()
+                               << " bytes, zero-padding to " << needed << dendl;
+    full_object_data.append_zero(needed - full_object_data.length());
+  }
+
   // Extract requested range
   m_read_data->substr_of(full_object_data, this->m_object_off, this->m_object_len);
 
   ldout(image_ctx->cct, 10) << "extracted requested range: offset=" << this->m_object_off
                              << " len=" << this->m_object_len
-                             << " from full object" << dendl;
+                             << " from full object (" << full_object_data.length()
+                             << " bytes)" << dendl;
 
   // Write-back FULL object to parent RADOS pool in the background (fire-and-forget)
   // This populates the cache without blocking the read completion
