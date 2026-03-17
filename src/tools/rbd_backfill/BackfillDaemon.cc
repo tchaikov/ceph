@@ -130,13 +130,23 @@ void BackfillDaemon::shutdown() {
     m_cond.Signal();
   }
 
-  // Stop all image backfillers
+  // Move all backfillers out before stopping to avoid iterator invalidation.
+  // stop() joins the backfiller thread; that thread calls m_on_finish->complete()
+  // -> handle_image_complete() -> m_image_backfillers.erase() BEFORE join()
+  // returns.  Clearing the map first makes handle_image_complete() a safe no-op
+  // (it finds nothing to erase), and the unique_ptrs in to_stop keep the
+  // objects alive until stop() returns.
+  std::vector<std::unique_ptr<ImageBackfiller>> to_stop;
+  to_stop.reserve(m_image_backfillers.size());
   for (auto& pair : m_image_backfillers) {
     dout(10) << "stopping backfiller for " << pair.first.pool_name
              << "/" << pair.first.image_name << dendl;
-    pair.second->stop();
+    to_stop.push_back(std::move(pair.second));
   }
   m_image_backfillers.clear();
+  for (auto& backfiller : to_stop) {
+    backfiller->stop();
+  }
 
   // Cleanup throttler
   if (m_throttler) {

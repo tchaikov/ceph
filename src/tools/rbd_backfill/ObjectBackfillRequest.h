@@ -113,7 +113,6 @@ private:
   std::string m_lock_name;
   std::string m_lock_cookie;
   std::string m_lock_tag;
-  uint64_t m_watch_handle;
 
   // Data buffer for RADOS write (pre-fetched from S3)
   ceph::bufferlist m_data_bl;

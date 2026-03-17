@@ -44,7 +44,6 @@ ObjectBackfillRequest::ObjectBackfillRequest(
     m_cancel_flag(false),
     m_lock_acquired(false),
     m_finished(false),
-    m_watch_handle(0),
     m_data_bl(data) {  // Store pre-fetched data
 
   // Generate unique lock cookie using thread ID and timestamp
@@ -109,13 +108,19 @@ void ObjectBackfillRequest::handle_acquire_lock(int r) {
 
   if (r < 0) {
     if (r == -EBUSY || r == -EEXIST) {
-      // Lock already held - client I/O preempted daemon backfill
+      // Lock already held by a CopyupRequest (client COW) that raced with the
+      // daemon.  The COW operation is in progress and will write the parent
+      // RADOS object before releasing the lock.  Treat this as success: the
+      // object will be populated by the COW, so the daemon does not need to
+      // write it.  Counting this as a failure would make the daemon report
+      // -EIO for images that were correctly populated via COW.
       dout(5) << "lock busy on object " << m_object_no
-              << ", client I/O has preempted daemon backfill" << dendl;
+              << ", client I/O has preempted daemon backfill — treating as success" << dendl;
+      finish(0);
     } else {
       derr << "failed to acquire lock: " << cpp_strerror(r) << dendl;
+      finish(r);
     }
-    finish(r);
     return;
   }
 
@@ -194,15 +199,12 @@ void ObjectBackfillRequest::update_object_map() {
   librados::AioCompletion* rados_completion =
     librbd::util::create_rados_callback(ctx);
 
+  // aio_operate() returns non-zero only if the request cannot be submitted at
+  // all (e.g., connection broken).  In practice this should never happen at
+  // this stage; assert for consistency with write_rados() above.
   int r = m_parent_ioctx.aio_operate(object_map_name, rados_completion, &map_op);
+  ceph_assert(r == 0);
   rados_completion->release();
-
-  if (r < 0) {
-    dout(5) << "failed to submit object map update: " << cpp_strerror(r) << dendl;
-    // Queue immediate completion with error so state machine can proceed
-    m_threads->work_queue->queue(
-      new C_Request(this, &ObjectBackfillRequest::handle_update_object_map), r);
-  }
 }
 
 void ObjectBackfillRequest::handle_update_object_map(int r) {
@@ -224,15 +226,6 @@ void ObjectBackfillRequest::handle_update_object_map(int r) {
 
 void ObjectBackfillRequest::release_lock() {
   dout(15) << dendl;
-
-  // First, remove the watch if it was established
-  if (m_watch_handle != 0) {
-    int r = m_parent_ioctx.unwatch2(m_watch_handle);
-    if (r < 0) {
-      dout(5) << "failed to remove watch: " << cpp_strerror(r) << dendl;
-    }
-    m_watch_handle = 0;
-  }
 
   Context* ctx = new C_Request(
     this, &ObjectBackfillRequest::handle_release_lock);
@@ -293,15 +286,6 @@ void ObjectBackfillRequest::finish(int r) {
 
   if (already_finished) {
     return;
-  }
-
-  // Clean up watch if still active
-  if (m_watch_handle != 0) {
-    int watch_r = m_parent_ioctx.unwatch2(m_watch_handle);
-    if (watch_r < 0) {
-      dout(5) << "failed to remove watch: " << cpp_strerror(watch_r) << dendl;
-    }
-    m_watch_handle = 0;
   }
 
   // If we still hold the lock, release it before completing

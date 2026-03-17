@@ -11,6 +11,7 @@
 #include "librbd/Types.h"
 #include "librbd/internal.h"
 #include "librbd/io/S3ObjectFetcher.h"
+#include "cls/rbd/cls_rbd_client.h"
 #include "common/debug.h"
 #include "common/errno.h"
 
@@ -143,9 +144,42 @@ void ImageBackfiller::run_backfill() {
   // The throttler tracks all ObjectBackfillRequests that haven't finished yet
   m_throttler->wait_for_ops();
 
-  dout(5) << "initial backfill complete: completed=" << m_completed_objects.load()
-          << " failed=" << m_failed_objects.load()
+  uint64_t completed = m_completed_objects.load();
+  uint64_t failed    = m_failed_objects.load();
+  dout(5) << "initial backfill complete: completed=" << completed
+          << " failed=" << failed
           << " total=" << m_num_objects << dendl;
+
+  // Update metadata so the daemon does not re-backfill this image on restart.
+  // Clear backfill_scheduled (daemon discovery key) and record final status.
+  // Use the synchronous cls_rbd path — we are in the ImageBackfiller thread
+  // (not a RADOS completion callback), so blocking is acceptable.
+  if (!m_stopping.load()) {
+    std::string final_status = (failed == 0) ? "complete" : "failed";
+
+    // Remove the scheduling flag so a restarted daemon does not re-queue
+    // this image.  Ignore ENOENT in case it was already cleared externally.
+    int mr = librbd::cls_client::metadata_remove(
+               &m_ioctx, m_image_ctx->header_oid, "backfill_scheduled");
+    if (mr < 0 && mr != -ENOENT) {
+      dout(5) << "warning: failed to remove backfill_scheduled: "
+              << cpp_strerror(mr) << dendl;
+    }
+
+    // Update status for 'rbd backfill status' output
+    std::map<std::string, bufferlist> pairs;
+    bufferlist bl;
+    bl.append(final_status);
+    pairs["backfill_status"] = bl;
+    mr = librbd::cls_client::metadata_set(
+           &m_ioctx, m_image_ctx->header_oid, pairs);
+    if (mr < 0) {
+      dout(5) << "warning: failed to update backfill_status: "
+              << cpp_strerror(mr) << dendl;
+    } else {
+      dout(5) << "backfill_status updated to '" << final_status << "'" << dendl;
+    }
+  }
 
   // Keep daemon running - enter idle state waiting for shutdown signal
   // Don't call m_on_finish->complete() - that would trigger daemon shutdown
