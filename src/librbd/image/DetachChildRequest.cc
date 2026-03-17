@@ -47,8 +47,10 @@ void DetachChildRequest<I>::send() {
     }
   }
 
-  if (m_parent_spec.pool_id == -1) {
-    // ignore potential race with parent disappearing
+  if (m_parent_spec.pool_id == -1 && m_parent_spec.pool_name.empty()) {
+    // No parent at all — ignore potential race with parent disappearing.
+    // NOTE: pool_id == -1 alone is NOT sufficient to skip detach, because
+    // remote standalone parents use pool_id == -1 with pool_name set.
     m_image_ctx.op_work_queue->queue(create_context_callback<
       DetachChildRequest<I>,
       &DetachChildRequest<I>::finish>(this), 0);

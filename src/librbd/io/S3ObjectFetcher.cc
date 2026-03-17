@@ -60,7 +60,8 @@ size_t S3ObjectFetcher::write_callback(void* ptr, size_t size, size_t nmemb,
 
 std::string S3ObjectFetcher::extract_host_from_url(const std::string& url) {
   // Extract host from URL like "http://host:port/path" or "https://host/path"
-  std::regex url_regex("^https?://([^/:]+)(:[0-9]+)?(/.*)?$");
+  // Static to avoid recompiling the NFA on every S3 request.
+  static const std::regex url_regex("^https?://([^/:]+)(:[0-9]+)?(/.*)?$");
   std::smatch match;
   if (std::regex_match(url, match, url_regex)) {
     std::string host = match[1].str();
@@ -75,7 +76,8 @@ std::string S3ObjectFetcher::extract_host_from_url(const std::string& url) {
 
 std::string S3ObjectFetcher::extract_uri_from_url(const std::string& url) {
   // Extract URI path from URL
-  std::regex url_regex("^https?://[^/]+(/.*)$");
+  // Static to avoid recompiling the NFA on every S3 request.
+  static const std::regex url_regex("^https?://[^/]+(/.*)$");
   std::smatch match;
   if (std::regex_match(url, match, url_regex)) {
     return match[1].str();

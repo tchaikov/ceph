@@ -589,27 +589,14 @@ void ObjectReadRequest<I>::update_object_map_for_s3_write_back() {
       }
     }
   } else {
-    // Object map is not in memory - update via direct RADOS operation (fire-and-forget)
-    ldout(cct, 10) << "object_map is nullptr, updating via direct RADOS operation" << dendl;
-
-    std::string object_map_name = ObjectMap<>::object_map_name(
-      image_ctx->id, CEPH_NOSNAP);
-
-    librados::ObjectWriteOperation map_op;
-    cls_client::object_map_update(&map_op, this->m_object_no, this->m_object_no + 1,
-                                  OBJECT_EXISTS, boost::optional<uint8_t>());
-
-    auto map_completion = librados::Rados::aio_create_completion();
-    int r = image_ctx->data_ctx.aio_operate(object_map_name, map_completion, &map_op);
-
-    if (r == 0) {
-      ldout(cct, 10) << "submitted async object map update for object " << this->m_object_no << dendl;
-    } else {
-      ldout(cct, 5) << "warning: failed to submit object map update: "
-                    << cpp_strerror(r) << dendl;
-    }
-
-    map_completion->release();
+    // object_map == nullptr means the exclusive lock is not held by this client.
+    // Directly writing the RADOS object map without exclusive lock ownership would
+    // bypass the cooperative locking protocol that RBD uses to serialise object map
+    // mutations.  Skip the update here; the map will be repaired by the next
+    // exclusive-lock holder (e.g. on flatten or the next open with fast-diff).
+    ldout(cct, 10) << "object_map is nullptr (no exclusive lock), "
+                   << "skipping object map update for object "
+                   << this->m_object_no << dendl;
   }
 }
 

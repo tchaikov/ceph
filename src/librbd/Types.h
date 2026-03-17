@@ -122,7 +122,7 @@ struct S3Config {
   /// Build full S3 URL for the image object
   std::string build_url() const {
     std::string url = endpoint;
-    if (url.back() != '/') {
+    if (url.empty() || url.back() != '/') {
       url += '/';
     }
     url += bucket;
