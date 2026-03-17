@@ -28,47 +28,6 @@ MINIO_CONSOLE_PORT=9005
 S3_ENDPOINT="http://localhost:$MINIO_PORT"
 S3_BUCKET="failure-test-bucket"
 
-# Test results tracking
-TEST_RESULTS=()
-TEST_NAMES=()
-TEST_DURATIONS=()
-
-record_test_result() {
-    TEST_NAMES+=("$1")
-    TEST_RESULTS+=("$2")
-    TEST_DURATIONS+=("$3")
-}
-
-print_test_summary() {
-    echo
-    echo "=========================================="
-    echo "           TEST SUMMARY"
-    echo "=========================================="
-    echo
-
-    local passed=0
-    local failed=0
-
-    for i in "${!TEST_NAMES[@]}"; do
-        if [ "${TEST_RESULTS[$i]}" == "PASSED" ]; then
-            log_success "${TEST_NAMES[$i]}: PASSED (${TEST_DURATIONS[$i]}s)"
-            passed=$((passed + 1))
-        else
-            log_fail "${TEST_NAMES[$i]}: FAILED (${TEST_DURATIONS[$i]}s)"
-            failed=$((failed + 1))
-        fi
-    done
-
-    echo
-    echo "=========================================="
-    if [ $failed -eq 0 ]; then
-        log_success "ALL $passed TESTS PASSED!"
-    else
-        log_error "$failed TESTS FAILED, $passed PASSED"
-    fi
-    echo "=========================================="
-    echo
-}
 
 # Cleanup function
 cleanup() {
@@ -79,7 +38,7 @@ cleanup() {
     # Clean up RBD images
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/parent-test" 2>/dev/null || true
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/child-test" 2>/dev/null || true
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" pool rm "$POOL_NAME" "$POOL_NAME" --yes-i-really-really-mean-it 2>/dev/null || true
+    "$BUILD_DIR/bin/ceph" --conf "$CEPH_CONF" osd pool delete "$POOL_NAME" "$POOL_NAME" --yes-i-really-really-mean-it 2>/dev/null || true
 
     # Clean temp files
     rm -f /tmp/failure-test-*.raw
@@ -205,18 +164,38 @@ test_s3_object_not_found() {
     local start_time=$(date +%s)
     local result="FAILED"
 
-    # Create parent WITHOUT uploading to S3
-    create_s3_parent "$POOL_NAME" "parent-test" "nonexistent.raw" "$IMAGE_SIZE_MB" "$S3_ENDPOINT" "$S3_BUCKET"
+    # Create parent pointing to a non-existent S3 object (do NOT upload anything).
+    # We use rbd image-meta set directly here so the file is never uploaded.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$POOL_NAME/parent-test" --size ${IMAGE_SIZE_MB}M
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$POOL_NAME/parent-test" \
+        --s3-endpoint   "$S3_ENDPOINT" \
+        --s3-bucket     "$S3_BUCKET" \
+        --s3-image-name "this-object-does-not-exist-in-bucket.raw" \
+        --s3-access-key minioadmin \
+        --s3-secret-key minioadmin
     create_standalone_clone "$POOL_NAME" "parent-test" "child-test"
 
-    # Try to read from child (should fail with 404)
-    log_info "Attempting to read from child (should fail with not found error)..."
-    if "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" export "$POOL_NAME/child-test" /tmp/failure-test-export3.raw 2>&1 | grep -q "No such file or directory\|404\|not found"; then
-        log_success "Correctly failed with not found error"
+    # Write a PARTIAL 4K write to trigger copyup → S3 fetch → 404.
+    # NOTE: a full-object write (--io-size 4M == object size) is a "write-full"
+    # which replaces the object entirely without reading parent data, so the
+    # S3 fetch is never triggered.  A sub-object partial write forces RBD to
+    # read parent data (copyup) before filling in the write.
+    log_info "Partial-writing to child (triggers copyup → S3 fetch → should fail)..."
+    set +e
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" bench "$POOL_NAME/child-test" \
+        --io-type write --io-size 4096 --io-total 4096 --io-threads 1 \
+        > /tmp/failure-test-write3.log 2>&1
+    local write_rc=$?
+    set -e
+
+    if [ $write_rc -ne 0 ] || grep -qi "Input/output error\|failed\|error" /tmp/failure-test-write3.log 2>/dev/null; then
+        log_success "Correctly failed when S3 object does not exist (rc=$write_rc)"
         result="PASSED"
     else
-        log_error "Did not fail with expected not found error"
+        log_error "Expected write failure but it succeeded (rc=$write_rc)"
+        cat /tmp/failure-test-write3.log
     fi
+    rm -f /tmp/failure-test-write3.log
 
     # Cleanup
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/child-test" 2>/dev/null || true
@@ -241,20 +220,38 @@ test_sparse_image() {
     local start_time=$(date +%s)
     local result="FAILED"
 
-    # Create sparse image (only write first and last 1MB)
+    # Create sparse image (first 1MB random, middle 18MB zeros, last 1MB random)
+    # NOTE: We do NOT use create_s3_parent() here because that helper overwrites
+    # the S3 object with its own "PARENT-BLOCK-XXXX" pattern, clobbering the
+    # sparse file we just created.  We set up parent + S3 config manually.
     log_info "Creating sparse image..."
     dd if=/dev/urandom of=/tmp/failure-test-sparse.raw bs=1M count=1 2>/dev/null
     dd if=/dev/zero of=/tmp/failure-test-sparse.raw bs=1M seek=1 count=18 2>/dev/null
     dd if=/dev/urandom of=/tmp/failure-test-sparse.raw bs=1M seek=19 count=1 conv=notrunc 2>/dev/null
 
-    "$MINIO_BIN/mc" cp /tmp/failure-test-sparse.raw "local/$S3_BUCKET/parent-sparse.raw" 2>&1 | grep -v "^mc:" || true
+    "$MINIO_BIN/mc" cp /tmp/failure-test-sparse.raw "local/$S3_BUCKET/parent-sparse.raw" \
+        2>&1 | grep -v "^mc:" || true
 
-    create_s3_parent "$POOL_NAME" "parent-test" "parent-sparse.raw" "$IMAGE_SIZE_MB" "$S3_ENDPOINT" "$S3_BUCKET"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/parent-test" 2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$POOL_NAME/parent-test" \
+        --size ${IMAGE_SIZE_MB}M --object-size 4M
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$POOL_NAME/parent-test" \
+        --s3-endpoint   "$S3_ENDPOINT" \
+        --s3-bucket     "$S3_BUCKET" \
+        --s3-image-name "parent-sparse.raw" \
+        --s3-access-key minioadmin \
+        --s3-secret-key minioadmin
     create_standalone_clone "$POOL_NAME" "parent-test" "child-test"
 
     # Read entire image
     log_info "Reading sparse image..."
-    if "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" export "$POOL_NAME/child-test" /tmp/failure-test-sparse-export.raw 2>&1 | grep -v "Exporting"; then
+    set +e
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" export "$POOL_NAME/child-test" /tmp/failure-test-sparse-export.raw \
+        > /tmp/failure-test-sparse-export.log 2>&1
+    local export_rc=$?
+    set -e
+
+    if [ $export_rc -eq 0 ]; then
         # Verify data integrity
         if cmp -s /tmp/failure-test-sparse.raw /tmp/failure-test-sparse-export.raw; then
             log_success "Sparse image data integrity verified"
@@ -263,13 +260,14 @@ test_sparse_image() {
             log_error "Sparse image data mismatch"
         fi
     else
-        log_error "Failed to read sparse image"
+        log_error "Failed to read sparse image (exit code: $export_rc)"
+        cat /tmp/failure-test-sparse-export.log
     fi
 
     # Cleanup
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/child-test" 2>/dev/null || true
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/parent-test" 2>/dev/null || true
-    rm -f /tmp/failure-test-sparse*.raw
+    rm -f /tmp/failure-test-sparse*.raw /tmp/failure-test-sparse-export.log
 
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))

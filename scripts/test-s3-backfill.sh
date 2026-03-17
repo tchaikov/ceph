@@ -228,13 +228,15 @@ test_backfill_object_naming() {
     local hex_names=0
     while IFS= read -r obj; do
         local suffix="${obj##*.}"
-        # Decimal-only suffix: all digits, no letters
-        if echo "$suffix" | grep -qE '^[0-9]+$'; then
-            log_warn "Decimal-named object: $obj"
-            decimal_names=$((decimal_names + 1))
-        # Hex suffix: exactly 16 hex chars
-        elif echo "$suffix" | grep -qE '^[0-9a-f]{16}$'; then
+        # Check hex format first: exactly 16 hex chars (properly zero-padded).
+        # This must come before the decimal check because hex suffixes composed
+        # entirely of digits (e.g. "0000000000000000") also match ^[0-9]+$.
+        if echo "$suffix" | grep -qE '^[0-9a-f]{16}$'; then
             hex_names=$((hex_names + 1))
+        # Decimal suffix: short unpadded number (old bug, e.g. "0", "1", "12")
+        elif echo "$suffix" | grep -qE '^[0-9]+$'; then
+            log_warn "Decimal-named object (unpadded): $obj"
+            decimal_names=$((decimal_names + 1))
         fi
     done <<< "$objects"
 

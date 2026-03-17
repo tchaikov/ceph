@@ -316,6 +316,7 @@ static int do_show_info(librados::IoCtx &io_ctx, librbd::Image& image,
   librbd::snap_spec_t parent_snap_spec;
   if ((image.get_parent(&parent_image_spec, &parent_snap_spec) == 0) &&
       (parent_image_spec.image_name.length() > 0)) {
+    bool is_standalone = parent_snap_spec.name.empty();
     if (f) {
       f->open_object_section("parent");
       f->dump_string("pool", parent_image_spec.pool_name);
@@ -323,6 +324,7 @@ static int do_show_info(librados::IoCtx &io_ctx, librbd::Image& image,
       f->dump_string("image", parent_image_spec.image_name);
       f->dump_string("id", parent_image_spec.image_id);
       f->dump_string("snapshot", parent_snap_spec.name);
+      f->dump_string("parent_type", is_standalone ? "standalone" : "snapshot");
       f->dump_bool("trash", parent_image_spec.trash);
       f->dump_unsigned("overlap", overlap);
       f->close_section();
@@ -331,12 +333,15 @@ static int do_show_info(librados::IoCtx &io_ctx, librbd::Image& image,
       if (!parent_image_spec.pool_namespace.empty()) {
         std::cout << parent_image_spec.pool_namespace << "/";
       }
-      std::cout << parent_image_spec.image_name << "@"
-                << parent_snap_spec.name;
+      std::cout << parent_image_spec.image_name;
+      if (!is_standalone) {
+        std::cout << "@" << parent_snap_spec.name;
+      }
       if (parent_image_spec.trash) {
         std::cout << " (trash " << parent_image_spec.image_id << ")";
       }
       std::cout << std::endl;
+      std::cout << "\tparent_type: " << (is_standalone ? "standalone" : "snapshot") << std::endl;
       std::cout << "\toverlap: " << byte_u_t(overlap) << std::endl;
     }
   }
