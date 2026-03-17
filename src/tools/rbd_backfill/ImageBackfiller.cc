@@ -272,10 +272,22 @@ void ImageBackfiller::backfill_object(uint64_t object_no) {
     return;
   }
   if (data_bl.length() < expected_size) {
-    // Partial last-object: S3 may return fewer bytes than requested when the
-    // stored file does not fill the final RBD object slot.  Zero-pad to the
-    // full object size so the written RADOS object has the expected length.
-    dout(15) << "padding short object " << object_no
+    if (object_no < m_num_objects - 1) {
+      // Short read on a non-last object means the S3 HTTP response was
+      // truncated or the stored file is smaller than the image.  Do not
+      // silently zero-pad: write the wrong data once and it is very hard
+      // to detect.  Fail loudly instead.
+      derr << "S3 returned short data for non-last object " << object_no
+           << ": expected=" << expected_size << " got=" << data_bl.length()
+           << " — aborting (S3 file may be truncated or wrong image size)" << dendl;
+      m_failed_objects++;
+      m_throttler->finish_op(object_no);
+      return;
+    }
+    // Last object: the S3 file may not fill the final RBD object slot
+    // (image size is not a multiple of object_size).  Zero-pad to the full
+    // object size so the written RADOS object has the canonical length.
+    dout(15) << "padding last object " << object_no
              << " from " << data_bl.length() << " to " << expected_size << dendl;
     data_bl.append_zero(expected_size - data_bl.length());
   }

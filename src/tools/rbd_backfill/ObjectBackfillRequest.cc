@@ -41,7 +41,6 @@ ObjectBackfillRequest::ObjectBackfillRequest(
     m_lock("ObjectBackfillRequest::m_lock"),
     m_state(STATE_INIT),
     m_ret_val(0),
-    m_cancel_flag(false),
     m_lock_acquired(false),
     m_finished(false),
     m_data_bl(data) {  // Store pre-fetched data
@@ -70,11 +69,6 @@ void ObjectBackfillRequest::send() {
 
   m_state = STATE_ACQUIRE_LOCK;
   acquire_lock();
-}
-
-void ObjectBackfillRequest::cancel() {
-  dout(10) << "cancelling backfill for object_no=" << m_object_no << dendl;
-  m_cancel_flag.store(true);
 }
 
 void ObjectBackfillRequest::acquire_lock() {
@@ -130,14 +124,6 @@ void ObjectBackfillRequest::handle_acquire_lock(int r) {
   }
 
   dout(10) << "lock acquired for object " << m_object_no << dendl;
-
-  // Check for cancellation
-  if (m_cancel_flag.load()) {
-    dout(10) << "cancelled after acquiring lock" << dendl;
-    m_state = STATE_RELEASE_LOCK;
-    release_lock();
-    return;
-  }
 
   // S3 fetch already done in ImageBackfiller thread
   // Data is already in m_data_bl
@@ -210,6 +196,14 @@ void ObjectBackfillRequest::update_object_map() {
 void ObjectBackfillRequest::handle_update_object_map(int r) {
   dout(15) << "r=" << r << dendl;
 
+  if (r == -ENOENT) {
+    // The object map RADOS object does not exist — image was created without
+    // the object_map feature, or the map has not been initialised yet.
+    // The data write succeeded; skip the map update silently.
+    dout(10) << "object map not present for image " << m_image_id
+             << ", skipping update" << dendl;
+    r = 0;
+  }
   if (r < 0) {
     derr << "object map update failed: " << cpp_strerror(r) << dendl;
     m_ret_val = r;
@@ -245,9 +239,18 @@ void ObjectBackfillRequest::release_lock() {
 void ObjectBackfillRequest::handle_release_lock(int r) {
   dout(15) << "r=" << r << dendl;
 
-  if (r < 0) {
+  if (r == -ENOENT) {
+    // The lock was already gone.  The most common cause: a CopyupRequest
+    // (client COW) called rados::cls::lock::break_lock() on the sentinel
+    // while this ObjectBackfillRequest was mid-write.  The write still
+    // completed successfully (write_full is idempotent — both parties wrote
+    // the same S3 data).  This is the normal preemption path; log at debug
+    // only.
+    dout(10) << "lock already released (client I/O preempted daemon write); "
+             << "write completed successfully regardless" << dendl;
+  } else if (r < 0) {
     dout(5) << "failed to release lock: " << cpp_strerror(r) << dendl;
-    // Continue anyway - lock will eventually timeout
+    // Continue anyway — lock auto-expires via the configured timeout.
   } else {
     dout(10) << "lock released" << dendl;
   }
@@ -257,12 +260,7 @@ void ObjectBackfillRequest::handle_release_lock(int r) {
     m_lock_acquired = false;
   }
 
-  // If we were cancelled, report cancellation error
-  if (m_cancel_flag.load()) {
-    finish(-ECANCELED);
-  } else {
-    finish(m_ret_val);
-  }
+  finish(m_ret_val);
 }
 
 void ObjectBackfillRequest::finish(int r) {

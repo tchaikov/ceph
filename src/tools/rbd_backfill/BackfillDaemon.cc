@@ -210,44 +210,63 @@ int BackfillDaemon::discover_scheduled_images() {
       continue;
     }
 
-    // List images in this pool
+    // Collect namespaces: always include the default namespace ("") plus any
+    // named namespaces so that scheduled images in non-default namespaces
+    // are not silently missed.
     librbd::RBD rbd;
-    std::vector<librbd::image_spec_t> images;
-    r = rbd.list2(ioctx, &images);
+    std::vector<std::string> namespaces;
+    r = rbd.namespace_list(ioctx, &namespaces);
     if (r < 0) {
-      dout(10) << "failed to list images in pool " << pool_name << ": "
-               << cpp_strerror(r) << dendl;
-      continue;
+      dout(10) << "failed to list namespaces in pool " << pool_name
+               << ": " << cpp_strerror(r) << "; scanning default namespace only" << dendl;
     }
+    // Always prepend the default (empty) namespace
+    namespaces.insert(namespaces.begin(), "");
 
-    // Check each image for backfill scheduling metadata
-    for (const auto& image_spec : images) {
-      librbd::Image image;
-      r = rbd.open(ioctx, image, image_spec.name.c_str());
+    for (const auto& ns : namespaces) {
+      ioctx.set_namespace(ns);
+
+      std::vector<librbd::image_spec_t> images;
+      r = rbd.list2(ioctx, &images);
       if (r < 0) {
-        dout(10) << "failed to open image " << pool_name << "/" << image_spec.name
+        dout(10) << "failed to list images in pool " << pool_name
+                 << (ns.empty() ? "" : "/" + ns)
                  << ": " << cpp_strerror(r) << dendl;
         continue;
       }
 
-      std::string scheduled_value;
-      r = image.metadata_get("backfill_scheduled", &scheduled_value);
-      if (r >= 0 && scheduled_value == "true") {
-        // This image is scheduled for backfill
-        ImageSpec spec;
-        spec.pool_name = pool_name;
-        spec.pool_id = pool_id;
-        spec.image_name = image_spec.name;
-        spec.image_id = image_spec.id;
+      // Check each image for backfill scheduling metadata
+      for (const auto& image_spec : images) {
+        librbd::Image image;
+        r = rbd.open(ioctx, image, image_spec.name.c_str());
+        if (r < 0) {
+          dout(10) << "failed to open image " << pool_name
+                   << (ns.empty() ? "" : "/" + ns)
+                   << "/" << image_spec.name << ": " << cpp_strerror(r) << dendl;
+          continue;
+        }
 
-        m_image_specs.push_back(spec);
+        std::string scheduled_value;
+        r = image.metadata_get("backfill_scheduled", &scheduled_value);
+        if (r >= 0 && scheduled_value == "true") {
+          ImageSpec spec;
+          spec.pool_name = pool_name;
+          spec.pool_id = pool_id;
+          spec.namespace_name = ns;
+          spec.image_name = image_spec.name;
+          spec.image_id = image_spec.id;
 
-        dout(10) << "discovered scheduled image: " << pool_name << "/"
-                 << image_spec.name << " (pool_id=" << pool_id
-                 << " image_id=" << spec.image_id << ")" << dendl;
+          m_image_specs.push_back(spec);
+
+          dout(10) << "discovered scheduled image: " << pool_name
+                   << (ns.empty() ? "" : "/" + ns)
+                   << "/" << image_spec.name
+                   << " (pool_id=" << pool_id << " image_id=" << spec.image_id
+                   << ")" << dendl;
+        }
+
+        image.close();
       }
-
-      image.close();
     }
   }
 

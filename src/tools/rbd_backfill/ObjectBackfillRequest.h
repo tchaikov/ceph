@@ -4,12 +4,10 @@
 #ifndef CEPH_TOOLS_RBD_BACKFILL_OBJECT_BACKFILL_REQUEST_H
 #define CEPH_TOOLS_RBD_BACKFILL_OBJECT_BACKFILL_REQUEST_H
 
-#include "include/int_types.h"
 #include "include/Context.h"
 #include "include/rados/librados.hpp"
-#include "librbd/io/S3ObjectFetcher.h"
+#include "include/int_types.h"
 #include "common/Mutex.h"
-#include <atomic>
 #include <string>
 
 class CephContext;
@@ -49,9 +47,6 @@ public:
 
   // Start the backfill operation
   void send();
-
-  // Cancel the operation (called when user IO needs the lock)
-  void cancel();
 
 private:
   enum State {
@@ -105,7 +100,6 @@ private:
   mutable Mutex m_lock;
   State m_state;
   int m_ret_val;
-  std::atomic<bool> m_cancel_flag;
   bool m_lock_acquired;  // Track if we hold the distributed lock
   bool m_finished;       // Prevent double-finish
 
