@@ -788,8 +788,15 @@ void CopyupRequest<I>::fetch_from_s3_with_lock() {
 
   m_parent_ioctx = m_image_ctx->parent->data_ctx;
   m_parent_oid = m_image_ctx->parent->get_object_name(m_object_no);
+  // Use a separate sentinel object for the cls lock so that acquiring the lock
+  // does not create the data object as an empty side effect.  If the lock were
+  // placed on m_parent_oid itself, a concurrent child would see the object as
+  // "existing" (stat returns 0) but read zero bytes, producing corrupt copyup
+  // data for any partial write that relied on the non-zero parent content.
+  m_parent_lock_oid = m_parent_oid + ".s3lk";
 
-  ldout(cct, 15) << "parent oid: " << m_parent_oid << dendl;
+  ldout(cct, 15) << "parent oid: " << m_parent_oid
+                 << ", lock oid: " << m_parent_lock_oid << dendl;
 
   // Construct lock cookie (unique per child instance and object)
   std::string lock_cookie = m_image_ctx->id + "_" + stringify(m_object_no);
@@ -815,7 +822,7 @@ void CopyupRequest<I>::fetch_from_s3_with_lock() {
   librados::AioCompletion *rados_completion =
     util::create_rados_callback<klass, &klass::handle_lock_parent_object>(this);
 
-  int r = m_parent_ioctx.aio_operate(m_parent_oid, rados_completion, &lock_op);
+  int r = m_parent_ioctx.aio_operate(m_parent_lock_oid, rados_completion, &lock_op);
   ceph_assert(r == 0);
   rados_completion->release();
 }
@@ -936,6 +943,16 @@ template <typename I>
 void CopyupRequest<I>::handle_s3_fetch(int r) {
   auto cct = m_image_ctx->cct;
   ldout(cct, 10) << "S3 fetch result: r=" << r << ", bytes=" << m_s3_data.length() << dendl;
+
+  if (r == -EINVAL) {
+    // 416 Range Not Satisfiable: the S3 object is shorter than the parent image
+    // (e.g., the raw export was truncated, or the block is beyond EOF).
+    // Treat as an all-zero block — the same semantics as a sparse RADOS object.
+    ldout(cct, 10) << "S3 range beyond EOF (416), treating block "
+                   << m_object_no << " as zero" << dendl;
+    m_s3_data.clear();
+    r = 0;
+  }
 
   if (r < 0) {
     lderr(cct) << "failed to fetch object from S3: " << cpp_strerror(r) << dendl;
@@ -1060,7 +1077,7 @@ void CopyupRequest<I>::unlock_parent_object() {
   rados::cls::lock::unlock(&unlock_op, "s3_fetch_lock", lock_cookie);
 
   // Fire and forget - we don't wait for completion
-  int r = m_parent_ioctx.operate(m_parent_oid, &unlock_op);
+  int r = m_parent_ioctx.operate(m_parent_lock_oid, &unlock_op);
   if (r < 0) {
     ldout(cct, 5) << "warning: failed to unlock parent object: "
                   << cpp_strerror(r) << dendl;

@@ -111,6 +111,7 @@ private:
   uint32_t m_s3_max_retries = 5;  // From config: rbd_s3_lock_retry_max
   ceph::bufferlist m_s3_data;
   std::string m_parent_oid;
+  std::string m_parent_lock_oid;  // separate sentinel object for cls lock
   librados::IoCtx m_parent_ioctx;
   // Heap-allocated so its lifetime is tied to CopyupRequest, not the stack
   // frame of fetch_from_s3_async(). The detached pthread writes into m_s3_data
