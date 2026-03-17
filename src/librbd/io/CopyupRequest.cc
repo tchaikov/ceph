@@ -851,15 +851,136 @@ void CopyupRequest<I>::handle_lock_parent_object(int r) {
     fetch_from_s3_async();
 
   } else if (r == -EBUSY || r == -EEXIST) {
-    // Lock is held by another child - they're fetching from S3
-    ldout(cct, 10) << "lock busy, another child is fetching from S3, will retry" << dendl;
-    retry_read_from_parent();
+    // Lock is held by another entity.  Principle: user I/O must never wait
+    // for the backfill daemon — the parent will be populated either by the
+    // daemon or by this request itself.  Identify the holder and act:
+    //
+    //  - Backfill daemon (cookie starts with "backfill-"): break its lock
+    //    immediately, then re-check parent existence.  If the daemon already
+    //    wrote the object we can read from the parent without any S3 round-trip.
+    //    If not, we fetch from S3 ourselves.
+    //
+    //  - Another CopyupRequest (foreground I/O): don't break it, but also
+    //    don't apply exponential backoff.  Re-check parent existence right
+    //    away; if still absent, proceed without the lock (harmless duplicate
+    //    S3 fetch — write_full is idempotent).
+    ldout(cct, 10) << "lock busy, checking if backfill daemon holds it" << dendl;
+    try_preempt_backfill_lock();
 
   } else {
     // Lock operation failed for other reason
     lderr(cct) << "failed to acquire S3 fetch lock: " << cpp_strerror(r) << dendl;
     finish(r);
   }
+}
+
+template <typename I>
+void CopyupRequest<I>::try_preempt_backfill_lock() {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 15) << "listing lock holders on " << m_parent_lock_oid << dendl;
+
+  // Async RADOS read to list lock holders.
+  librados::ObjectReadOperation read_op;
+  rados::cls::lock::get_lock_info_start(&read_op, "s3_fetch_lock");
+
+  m_lock_info_bl.clear();
+  using klass = CopyupRequest<I>;
+  librados::AioCompletion *rados_completion =
+    util::create_rados_callback<klass, &klass::handle_list_lock_holders>(this);
+
+  int r = m_parent_ioctx.aio_operate(
+    m_parent_lock_oid, rados_completion, &read_op, &m_lock_info_bl);
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+template <typename I>
+void CopyupRequest<I>::handle_list_lock_holders(int r) {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 15) << "r=" << r << dendl;
+
+  if (r < 0) {
+    ldout(cct, 10) << "failed to list lock holders, falling back to retry: "
+                   << cpp_strerror(r) << dendl;
+    retry_read_from_parent();
+    return;
+  }
+
+  // Parse lock info response
+  std::map<rados::cls::lock::locker_id_t,
+           rados::cls::lock::locker_info_t> lockers;
+  ClsLockType lock_type;
+  std::string tag;
+
+  auto it = m_lock_info_bl.cbegin();
+  r = rados::cls::lock::get_lock_info_finish(&it, &lockers, &lock_type, &tag);
+  if (r < 0) {
+    ldout(cct, 10) << "failed to parse lock info, falling back to retry: "
+                   << cpp_strerror(r) << dendl;
+    retry_read_from_parent();
+    return;
+  }
+
+  // Check if any holder is a backfill daemon (cookie starts with "backfill-")
+  for (auto &kv : lockers) {
+    const auto &cookie = kv.first.cookie;
+    if (cookie.compare(0, 9, "backfill-") == 0) {
+      ldout(cct, 10) << "backfill daemon holds lock (cookie=" << cookie
+                     << ", entity=" << kv.first.locker
+                     << "), breaking to preempt" << dendl;
+
+      librados::ObjectWriteOperation break_op;
+      rados::cls::lock::break_lock(&break_op, "s3_fetch_lock",
+                                   cookie, kv.first.locker);
+
+      // Wait for the break to complete before re-checking parent existence.
+      // If we queued read_from_parent() before the break finished, a
+      // concurrent backfill re-acquire could still be in-flight, causing
+      // a spurious second -EBUSY.  By using a proper callback the ordering
+      // is guaranteed: break → handle_break_backfill_lock → read_from_parent.
+      using klass = CopyupRequest<I>;
+      librados::AioCompletion *break_completion =
+        util::create_rados_callback<klass, &klass::handle_break_backfill_lock>(this);
+      int br = m_parent_ioctx.aio_operate(
+        m_parent_lock_oid, break_completion, &break_op);
+      ceph_assert(br == 0);
+      break_completion->release();
+      return;
+    }
+  }
+
+  // No backfill daemon found — lock is held by another CopyupRequest
+  // (foreground user I/O).  Do NOT apply exponential backoff (user I/O
+  // must not wait for other user I/O via a background-style retry loop).
+  // Re-check parent existence immediately: the other request may have
+  // already written it.  If still absent, proceed without the lock —
+  // a duplicate S3 fetch is harmless (write_full is idempotent).
+  ldout(cct, 10) << "lock held by another user request, re-checking parent" << dendl;
+  m_image_ctx->op_work_queue->queue(
+    new FunctionContext([this](int) { read_from_parent(); }), 0);
+}
+
+template <typename I>
+void CopyupRequest<I>::handle_break_backfill_lock(int r) {
+  auto cct = m_image_ctx->cct;
+  ldout(cct, 15) << "break_lock result: r=" << r << dendl;
+
+  // Ignore -ENOENT (lock already released by the daemon) and other errors —
+  // the lock sentinel may have auto-expired or the daemon released it between
+  // our get_lock_info and our break_lock.  In all cases, proceed to re-check
+  // whether the daemon wrote the parent object before or during the break.
+  if (r < 0 && r != -ENOENT) {
+    ldout(cct, 5) << "break_lock returned " << cpp_strerror(r)
+                  << ", proceeding to re-check parent anyway" << dendl;
+  }
+
+  // Re-enter from read_from_parent() which re-stats the parent object.
+  // If the daemon wrote it before we broke the lock, we read from parent
+  // without any S3 round-trip.  If not, fetch_from_s3_with_lock() re-tries
+  // the lock acquisition (which should now succeed since we broke it) or
+  // proceeds without the lock if another request re-acquired it.
+  ldout(cct, 10) << "re-checking parent after breaking backfill lock" << dendl;
+  read_from_parent();
 }
 
 template <typename I>
@@ -995,16 +1116,19 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
   }
 
   ldout(cct, 10) << "successfully fetched " << m_s3_data.length()
-                 << " bytes from S3, writing back to parent" << dendl;
+                 << " bytes from S3" << dendl;
 
-  // Write data to parent in fire-and-forget manner to populate cache
-  // This doesn't block the copyup operation but ensures parent has the data
-  write_back_to_parent_async();
-
+  // Release the sentinel lock.  The data will be written back to the parent
+  // RADOS object (and the parent's in-memory + on-disk object map updated)
+  // by update_parent_object_map_after_copyup once the child copyup completes.
+  // Doing it after — not before — the child copyup ensures we go through the
+  // correct handle_write_parent_after_copyup callback chain that updates both
+  // the in-memory ObjectMap and the on-disk RADOS cls record under parent_lock.
   unlock_parent_object();
 
   // Use the S3 data for the copyup operation
   m_copyup_data = m_s3_data;
+  m_data_is_from_s3 = true;
 
   // Clear S3 data buffer to free memory
   m_s3_data.clear();
@@ -1035,64 +1159,6 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
 
   // Continue to update object maps and then copyup
   update_object_maps();
-}
-
-template <typename I>
-void CopyupRequest<I>::write_back_to_parent_async() {
-  auto cct = m_image_ctx->cct;
-  ldout(cct, 10) << "writing " << m_s3_data.length()
-                 << " bytes to parent object: " << m_parent_oid
-                 << " (fire-and-forget)" << dendl;
-
-  // Create write operation to write full object to parent
-  librados::ObjectWriteOperation write_op;
-  write_op.write_full(m_s3_data);
-
-  // Submit async write operation as fire-and-forget
-  // We don't wait for completion - the write happens in the background
-  auto rados_completion = librados::Rados::aio_create_completion();
-
-  int r = m_parent_ioctx.aio_operate(m_parent_oid, rados_completion, &write_op);
-  if (r < 0) {
-    ldout(cct, 5) << "warning: failed to submit parent cache write-back: "
-                  << cpp_strerror(r) << dendl;
-  } else {
-    // Mark that the write was submitted so update_parent_object_map_after_copyup
-    // can skip the redundant second write to the same parent object.
-    m_s3_parent_written = true;
-    ldout(cct, 10) << "submitted parent cache write-back for " << m_parent_oid << dendl;
-
-    // Queue parent object map update to work queue (fire-and-forget).
-    // We must NOT access image_ctx->parent from inside the lambda: a concurrent
-    // refresh can change or null out parent between enqueueing and execution.
-    // Snapshot everything we need under parent_lock NOW, before queuing.
-    std::string parent_object_map_name;
-    librados::IoCtx parent_data_ctx;
-    {
-      RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
-      if (m_image_ctx->parent != nullptr &&
-          m_image_ctx->parent->test_features(RBD_FEATURE_OBJECT_MAP)) {
-        parent_object_map_name = ObjectMap<>::object_map_name(
-          m_image_ctx->parent->id, CEPH_NOSNAP);
-        parent_data_ctx = m_image_ctx->parent->data_ctx;
-      }
-    }
-
-    if (!parent_object_map_name.empty()) {
-      uint64_t object_no = m_object_no;
-      m_image_ctx->op_work_queue->queue(new FunctionContext(
-        [parent_data_ctx, parent_object_map_name, object_no](int r) mutable {
-          librados::ObjectWriteOperation map_op;
-          cls_client::object_map_update(&map_op, object_no, object_no + 1,
-                                        OBJECT_EXISTS, boost::optional<uint8_t>());
-          auto rados_completion = librados::Rados::aio_create_completion();
-          parent_data_ctx.aio_operate(
-            parent_object_map_name, rados_completion, &map_op);
-          rados_completion->release();
-        }), 0);
-    }
-  }
-  rados_completion->release();
 }
 
 template <typename I>
@@ -1130,14 +1196,6 @@ void CopyupRequest<I>::update_parent_object_map_after_copyup() {
 
   ldout(cct, 20) << "checking if parent write needed" << dendl;
 
-  // If write_back_to_parent_async already submitted the parent write and
-  // queued the object map update, skip the redundant second write here.
-  if (m_s3_parent_written) {
-    ldout(cct, 20) << "parent already written by write_back_to_parent_async, skipping" << dendl;
-    finish(0);
-    return;
-  }
-
   // Check if we need to write to parent and update its object map
   RWLock::RLocker snap_locker(m_image_ctx->snap_lock);
   RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
@@ -1154,6 +1212,18 @@ void CopyupRequest<I>::update_parent_object_map_after_copyup() {
   if (m_image_ctx->parent_md.parent_type != PARENT_TYPE_STANDALONE) {
     ldout(cct, 20) << "not a standalone clone (type="
                    << m_image_ctx->parent_md.parent_type << "), skipping" << dendl;
+    snap_locker.unlock();
+    parent_locker.unlock();
+    finish(0);
+    return;
+  }
+
+  // Only write back to the parent when m_copyup_data holds a full S3-fetched
+  // block.  do_read_from_parent() reads only m_image_extents (the write
+  // extents, e.g. 4KB) — using that as write_full would truncate an already-
+  // correct 4MB parent RADOS object to the size of the write extents.
+  if (!m_data_is_from_s3) {
+    ldout(cct, 20) << "data not from S3 fetch, skipping parent write-back" << dendl;
     snap_locker.unlock();
     parent_locker.unlock();
     finish(0);
@@ -1235,49 +1305,84 @@ void CopyupRequest<I>::handle_write_parent_after_copyup(int r) {
   RWLock::RLocker snap_locker(m_image_ctx->snap_lock);
   RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
 
-  if (m_image_ctx->parent == nullptr || m_image_ctx->parent->object_map == nullptr) {
-    ldout(cct, 15) << "parent or object map no longer available" << dendl;
+  if (m_image_ctx->parent == nullptr) {
+    ldout(cct, 15) << "parent detached, skipping object map update" << dendl;
     finish(0);
     return;
   }
 
-  // parent_image_ctx is valid and stable while we hold parent_locker.
   auto parent_image_ctx = m_image_ctx->parent;
 
-  // Update the parent's object map under its own locks.
-  RWLock::RLocker parent_owner_locker(parent_image_ctx->owner_lock);
-  RWLock::RLocker parent_snap_locker(parent_image_ctx->snap_lock);
-
-  if (parent_image_ctx->object_map == nullptr) {
-    ldout(cct, 15) << "parent object map became null" << dendl;
+  // Check if parent has object map feature
+  if (!parent_image_ctx->test_features(RBD_FEATURE_OBJECT_MAP)) {
+    ldout(cct, 15) << "parent doesn't have object_map feature" << dendl;
     finish(0);
     return;
   }
 
-  {
-    RWLock::WLocker parent_object_map_locker(parent_image_ctx->object_map_lock);
-    (*parent_image_ctx->object_map)[m_object_no] = OBJECT_EXISTS;
+  if (parent_image_ctx->object_map != nullptr) {
+    // Path 1: In-memory object map available — this client holds the parent's
+    // exclusive lock.  Update the in-memory bitmap and persist via aio_update.
+    RWLock::RLocker parent_owner_locker(parent_image_ctx->owner_lock);
+    RWLock::RLocker parent_snap_locker(parent_image_ctx->snap_lock);
+
+    if (parent_image_ctx->object_map == nullptr) {
+      ldout(cct, 15) << "parent object map became null" << dendl;
+      finish(0);
+      return;
+    }
+
+    {
+      RWLock::WLocker parent_object_map_locker(parent_image_ctx->object_map_lock);
+      (*parent_image_ctx->object_map)[m_object_no] = OBJECT_EXISTS;
+    }
+
+    parent_snap_locker.unlock();
+    parent_owner_locker.unlock();
+
+    ldout(cct, 15) << "updated parent in-memory object map, persisting..." << dendl;
+
+    Context *ctx = util::create_context_callback<
+      CopyupRequest<I>,
+      &CopyupRequest<I>::handle_update_parent_object_map_after_copyup>(this);
+
+    bool update_sent = parent_image_ctx->object_map->template aio_update<Context>(
+      CEPH_NOSNAP, m_object_no, OBJECT_EXISTS, {}, m_trace, false, ctx);
+
+    if (!update_sent) {
+      ldout(cct, 15) << "parent object map update not sent, completing" << dendl;
+      parent_image_ctx->op_work_queue->queue(ctx, 0);
+    }
+  } else {
+    // Path 2: No in-memory object map — this client does NOT hold the parent's
+    // exclusive lock (the common case for standalone clones opened read-only).
+    // Update the on-disk object map directly via RADOS cls call so that
+    // `rbd du` / fast-diff report the correct provisioned size.
+    ldout(cct, 15) << "no in-memory object map, updating on-disk via RADOS cls"
+                   << dendl;
+
+    std::string object_map_name = ObjectMap<>::object_map_name(
+      parent_image_ctx->id, CEPH_NOSNAP);
+    librados::IoCtx parent_data_ioctx = parent_image_ctx->data_ctx;
+
+    // Release child locks before the async RADOS operation.
+    parent_locker.unlock();
+    snap_locker.unlock();
+
+    librados::ObjectWriteOperation map_op;
+    cls_client::object_map_update(&map_op, m_object_no, m_object_no + 1,
+                                  OBJECT_EXISTS, boost::optional<uint8_t>());
+
+    using klass = CopyupRequest<I>;
+    librados::AioCompletion *rados_completion =
+      util::create_rados_callback<
+        klass, &klass::handle_update_parent_object_map_after_copyup>(this);
+
+    int map_r = parent_data_ioctx.aio_operate(
+      object_map_name, rados_completion, &map_op);
+    ceph_assert(map_r == 0);
+    rados_completion->release();
   }
-
-  parent_snap_locker.unlock();
-  parent_owner_locker.unlock();
-
-  ldout(cct, 15) << "updated parent in-memory object map, persisting..." << dendl;
-
-  // Queue async update to persist the object map.  parent_locker (and
-  // snap_locker) are still held here, keeping parent_image_ctx valid until
-  // we finish queuing the work.  They release via RAII at function exit.
-  Context *ctx = util::create_context_callback<
-    CopyupRequest<I>, &CopyupRequest<I>::handle_update_parent_object_map_after_copyup>(this);
-
-  bool update_sent = parent_image_ctx->object_map->template aio_update<Context>(
-    CEPH_NOSNAP, m_object_no, OBJECT_EXISTS, {}, m_trace, false, ctx);
-
-  if (!update_sent) {
-    ldout(cct, 15) << "parent object map update not sent, completing immediately" << dendl;
-    parent_image_ctx->op_work_queue->queue(ctx, 0);
-  }
-  // snap_locker and parent_locker release here via RAII.
 }
 
 } // namespace io

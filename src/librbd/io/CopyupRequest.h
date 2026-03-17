@@ -117,9 +117,16 @@ private:
 
   // S3 back-fill members
   bool m_s3_lock_acquired = false;
-  bool m_s3_parent_written = false;  // true after write_back_to_parent_async succeeds
+  // Set to true only when m_copyup_data was populated from a live S3 fetch
+  // (handle_s3_fetch).  When false (data came from do_read_from_parent which
+  // reads only m_image_extents), update_parent_object_map_after_copyup must
+  // NOT write back to the parent — writing m_copyup_data (partial extents)
+  // via write_full would truncate the already-correct 4MB parent RADOS object
+  // to just the size of the write extents (e.g. 4KB).
+  bool m_data_is_from_s3 = false;
   uint32_t m_s3_retry_count = 0;
   ceph::bufferlist m_s3_data;
+  ceph::bufferlist m_lock_info_bl;  // buffer for async get_lock_info response
   std::string m_parent_oid;
   std::string m_parent_lock_oid;  // separate sentinel object for cls lock
   librados::IoCtx m_parent_ioctx;
@@ -160,10 +167,12 @@ private:
   void do_read_from_parent();
   void fetch_from_s3_with_lock();
   void handle_lock_parent_object(int r);
+  void try_preempt_backfill_lock();
+  void handle_list_lock_holders(int r);
+  void handle_break_backfill_lock(int r);
   void retry_read_from_parent();
   void fetch_from_s3_async();
   void handle_s3_fetch(int r);
-  void write_back_to_parent_async();
   void unlock_parent_object();
   void update_parent_object_map_after_copyup();
   void handle_write_parent_after_copyup(int r);

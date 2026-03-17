@@ -21,12 +21,14 @@ CEPH_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SKIP_BUILD=0
 RUN_PLAIN=1
 RUN_S3=1
+RUN_CONCURRENT=1
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --skip-build) SKIP_BUILD=1; shift ;;
-        --plain-only) RUN_S3=0; shift ;;
-        --s3-only)    RUN_PLAIN=0; shift ;;
+        --skip-build)      SKIP_BUILD=1; shift ;;
+        --plain-only)      RUN_S3=0; RUN_CONCURRENT=0; shift ;;
+        --s3-only)         RUN_PLAIN=0; shift ;;
+        --no-concurrent)   RUN_CONCURRENT=0; shift ;;
         *) shift ;;
     esac
 done
@@ -291,6 +293,216 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
     log_success "=== S3-Backed Cross-Cluster Test PASSED ==="
 }
 
+# ── Test: S3 cross-cluster concurrent COW ────────────────────────────────────
+run_s3_cross_cluster_concurrent() {
+    log_step "=== Test: S3-Backed Cross-Cluster Concurrent COW ($NUM_CONCURRENT clients) ==="
+    # N clients on cluster2 simultaneously write to children of the same
+    # S3-backed parent on cluster1. All N CopyupRequests race on parent object 0.
+    # One wins the sentinel lock (.s3lk), fetches from S3, writes back; the
+    # others see the lock, call try_preempt_backfill_lock(), and then re-check
+    # the parent (no backfill cookie → no break, just immediate re-stat).
+    # After the parent object is written, all remaining clients reuse it.
+
+    local NUM_CONCURRENT=4
+    local TIMEOUT_SECS=120
+    local minio_port=19300
+    local minio_data="/tmp/minio-xconcur-$$"
+    local s3_bucket="xconcur-test"
+    local s3_endpoint="http://127.0.0.1:${minio_port}"
+    local parent_raw="/tmp/xconcur-parent-$$.raw"
+    local parent_size_mb=20
+    local parent_block_size=$(( 4 * 1024 * 1024 ))
+
+    # Start a dedicated MinIO instance
+    mkdir -p "$minio_data"
+    MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
+        "$HOME/dev/minio/bin/minio" server "$minio_data" \
+        --address "0.0.0.0:${minio_port}" \
+        --console-address "0.0.0.0:$((minio_port + 1))" \
+        > /tmp/minio-xconcur.log 2>&1 &
+    local minio_pid=$!
+    sleep 3
+
+    if ! kill -0 $minio_pid 2>/dev/null; then
+        log_error "MinIO failed to start for concurrent cross-cluster test"
+        cat /tmp/minio-xconcur.log
+        return 1
+    fi
+
+    "$HOME/dev/minio/bin/mc" alias set xconcur "$s3_endpoint" minioadmin minioadmin > /dev/null 2>&1
+    "$HOME/dev/minio/bin/mc" mb "xconcur/$s3_bucket" > /dev/null 2>&1 || true
+
+    # Upload random parent data
+    dd if=/dev/urandom bs=1M count=$parent_size_mb of="$parent_raw" status=none
+    "$HOME/dev/minio/bin/mc" cp "$parent_raw" "xconcur/$s3_bucket/xconcur-parent-raw" > /dev/null
+    log_success "Uploaded ${parent_size_mb}MB parent image to S3"
+
+    # Determine host IP as seen from containers
+    local HOST_IP
+    HOST_IP=$(docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || echo "172.17.0.1")
+    local container_s3="http://${HOST_IP}:${minio_port}"
+
+    # Setup parent on cluster1
+    ceph_on cluster1 "osd pool create xconcur_pool 32" 2>&1 || true
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf pool init xconcur_pool"
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf create \
+        --size ${parent_size_mb}M xconcur_pool/xconcur-parent"
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf s3-config set \
+        xconcur_pool/xconcur-parent \
+        --s3-endpoint   '${container_s3}' \
+        --s3-bucket     '${s3_bucket}' \
+        --s3-image-name 'xconcur-parent-raw' \
+        --s3-access-key minioadmin \
+        --s3-secret-key minioadmin"
+    log_success "S3-backed parent created on cluster1"
+
+    # Setup child pool on cluster2 and configure cluster1 access
+    ceph_on cluster2 "osd pool create xconcur_child_pool 32" 2>&1 || true
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init xconcur_child_pool"
+
+    local mon_addr key
+    mon_addr=$(docker exec ceph-cluster1 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; \
+         /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf mon dump --format json 2>/dev/null \
+         | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[\"mons\"][0][\"addr\"].split(\"/\")[0])'")
+    key=$(docker exec ceph-cluster1 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; \
+         /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf auth get-key client.admin")
+
+    docker exec -u cephdev ceph-cluster2 bash -c "mkdir -p /home/cephdev/.ceph
+cat > /home/cephdev/.ceph/xconcur1.conf << 'EOF'
+[global]
+mon_host = ${mon_addr}
+EOF
+cat > /home/cephdev/.ceph/xconcur1.keyring << 'EOF'
+[client.admin]
+key = ${key}
+EOF
+chmod 600 /home/cephdev/.ceph/xconcur1.keyring"
+
+    # Create N child clones on cluster2, each pointing at cluster1's parent
+    for i in $(seq 1 $NUM_CONCURRENT); do
+        docker exec -u cephdev ceph-cluster2 bash -c \
+            "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+             ./bin/rbd --conf /tmp/cluster2/ceph.conf clone-standalone \
+                 --remote-cluster-conf   /home/cephdev/.ceph/xconcur1.conf \
+                 --remote-keyring        /home/cephdev/.ceph/xconcur1.keyring \
+                 xconcur_pool/xconcur-parent \
+                 xconcur_child_pool/xconcur-child-$i"
+        log_info "  Created xconcur-child-$i on cluster2"
+    done
+    log_success "$NUM_CONCURRENT child clones created on cluster2"
+
+    # Launch N concurrent bench writes — each triggers COW on parent object 0
+    # (4 KB write to offset 0, which is just enough to trigger CopyupRequest)
+    local -a BENCH_PIDS
+    local START_TIME DEADLINE ELAPSED FAILED=0
+    START_TIME=$(date +%s)
+
+    for i in $(seq 1 $NUM_CONCURRENT); do
+        docker exec -u cephdev ceph-cluster2 bash -c \
+            "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+             ./bin/rbd --conf /tmp/cluster2/ceph.conf bench \
+                 xconcur_child_pool/xconcur-child-$i \
+                 --io-type write --io-size 4096 --io-threads 1 --io-total 4096" \
+            > "/tmp/xconcur-bench-$i-$$.log" 2>&1 &
+        BENCH_PIDS[$i]=$!
+        log_info "  Started client $i (PID: ${BENCH_PIDS[$i]})"
+    done
+
+    log_info "All $NUM_CONCURRENT cross-cluster clients running. Waiting up to ${TIMEOUT_SECS}s..."
+
+    DEADLINE=$(( START_TIME + TIMEOUT_SECS ))
+    declare -a CLIENT_DONE
+    while true; do
+        local ALL_DONE=1
+        for i in $(seq 1 $NUM_CONCURRENT); do
+            if [ -z "${CLIENT_DONE[$i]:-}" ]; then
+                if ! kill -0 "${BENCH_PIDS[$i]}" 2>/dev/null; then
+                    wait "${BENCH_PIDS[$i]}" 2>/dev/null || true
+                    CLIENT_DONE[$i]=1
+                    ELAPSED=$(( $(date +%s) - START_TIME ))
+                    log_success "  Client $i completed in ${ELAPSED}s"
+                else
+                    ALL_DONE=0
+                fi
+            fi
+        done
+        [ $ALL_DONE -eq 1 ] && break
+        if [ $(date +%s) -ge $DEADLINE ]; then
+            for i in $(seq 1 $NUM_CONCURRENT); do
+                if [ -z "${CLIENT_DONE[$i]:-}" ]; then
+                    kill "${BENCH_PIDS[$i]}" 2>/dev/null || true
+                    log_error "FAIL: Client $i did not complete within ${TIMEOUT_SECS}s"
+                    cat "/tmp/xconcur-bench-$i-$$.log" 2>/dev/null || true
+                    FAILED=$(( FAILED + 1 ))
+                fi
+            done
+            break
+        fi
+        sleep 1
+    done
+
+    local TOTAL_TIME=$(( $(date +%s) - START_TIME ))
+
+    if [ $FAILED -gt 0 ]; then
+        log_error "$FAILED/$NUM_CONCURRENT cross-cluster clients timed out"
+        kill $minio_pid 2>/dev/null || true
+        rm -rf "$minio_data" "$parent_raw" /tmp/xconcur-bench-*-$$.log /tmp/minio-xconcur.log
+        return 1
+    fi
+
+    log_success "All $NUM_CONCURRENT clients completed in ${TOTAL_TIME}s"
+
+    # Verify data integrity: parent object 0 in cluster1's RADOS matches S3 source.
+    # The first CopyupRequest to win the sentinel lock wrote it; verify it wrote correctly.
+    local parent_prefix
+    parent_prefix=$(exec_on cluster1 \
+        "./bin/rbd --conf /tmp/cluster1/ceph.conf info xconcur_pool/xconcur-parent 2>/dev/null \
+         | awk '/block_name_prefix:/ {print \$2}'")
+
+    if [ -n "$parent_prefix" ]; then
+        local parent_obj="${parent_prefix}.0000000000000000"
+        local parent_obj_file="/tmp/xconcur-parent-obj0-$$.bin"
+        local ref_file="/tmp/xconcur-ref-obj0-$$.bin"
+
+        dd if="$parent_raw" bs=$parent_block_size count=1 of="$ref_file" status=none 2>/dev/null
+
+        if exec_on cluster1 "./bin/rados --conf /tmp/cluster1/ceph.conf \
+                -p xconcur_pool get $parent_obj -" > "$parent_obj_file" 2>/dev/null; then
+            if cmp -s "$ref_file" "$parent_obj_file"; then
+                log_success "Parent object 0 on cluster1 matches S3 source (concurrent COW integrity OK)"
+            else
+                log_error "FAIL: Parent object 0 does NOT match S3 source!"
+                log_error "  Expected md5: $(md5sum "$ref_file" | awk '{print $1}')"
+                log_error "  Got md5:      $(md5sum "$parent_obj_file" | awk '{print $1}')"
+                FAILED=$(( FAILED + 1 ))
+            fi
+        else
+            log_warn "Parent object 0 not yet in cluster1 RADOS (fetch may still be in-flight)"
+        fi
+        rm -f "$parent_obj_file" "$ref_file"
+    fi
+
+    # Cleanup
+    for i in $(seq 1 $NUM_CONCURRENT); do
+        rbd_on cluster2 "rm xconcur_child_pool/xconcur-child-$i" 2>/dev/null || true
+    done
+    rbd_on  cluster1 "rm xconcur_pool/xconcur-parent" 2>/dev/null || true
+    ceph_on cluster1 "osd pool delete xconcur_pool xconcur_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete xconcur_child_pool xconcur_child_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+
+    kill $minio_pid 2>/dev/null || true
+    rm -rf "$minio_data" "$parent_raw" /tmp/xconcur-bench-*-$$.log /tmp/minio-xconcur.log
+
+    if [ $FAILED -gt 0 ]; then
+        log_error "=== S3-Backed Cross-Cluster Concurrent COW Test FAILED ==="
+        return 1
+    fi
+
+    log_success "=== S3-Backed Cross-Cluster Concurrent COW Test PASSED ($NUM_CONCURRENT clients, ${TOTAL_TIME}s) ==="
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 check_prereqs
 
@@ -302,8 +514,9 @@ setup_containers
 start_ceph_cluster cluster1
 start_ceph_cluster cluster2
 
-[ $RUN_PLAIN -eq 1 ] && run_plain_cross_cluster
-[ $RUN_S3    -eq 1 ] && run_s3_cross_cluster
+[ $RUN_PLAIN      -eq 1 ] && run_plain_cross_cluster
+[ $RUN_S3         -eq 1 ] && run_s3_cross_cluster
+[ $RUN_S3         -eq 1 ] && [ $RUN_CONCURRENT -eq 1 ] && run_s3_cross_cluster_concurrent
 
 echo
 log_success "All cross-cluster tests PASSED"
