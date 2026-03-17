@@ -141,48 +141,6 @@ void ObjectBackfillRequest::handle_acquire_lock(int r) {
   write_rados();
 }
 
-/*
-void ObjectBackfillRequest::watch_lock() {
-  dout(15) << dendl;
-
-  Context* ctx = new C_Request(
-    this, &ObjectBackfillRequest::handle_watch_lock);
-
-  // Set up watch to detect when user IO tries to acquire lock
-  librados::AioCompletion* rados_completion =
-    librbd::util::create_rados_callback(ctx);
-
-  int r = m_parent_ioctx.aio_watch(
-    m_parent_oid,
-    rados_completion,
-    &m_watch_handle,
-    lock_watcher_callback,
-    this);
-
-  if (r < 0) {
-    derr << "failed to set up watch: " << cpp_strerror(r) << dendl;
-    delete ctx;
-    finish(r);
-    return;
-  }
-
-  rados_completion->release();
-}
-
-void ObjectBackfillRequest::handle_watch_lock(int r) {
-  dout(15) << "r=" << r << dendl;
-
-  if (r < 0) {
-    derr << "watch failed: " << cpp_strerror(r) << dendl;
-    finish(r);
-    return;
-  }
-
-  dout(10) << "watch established, starting S3 fetch" << dendl;
-  m_state = STATE_FETCH_S3;
-  fetch_s3();
-}
-*/
 
 void ObjectBackfillRequest::write_rados() {
   dout(15) << dendl;
@@ -372,37 +330,6 @@ void ObjectBackfillRequest::finish(int r) {
   delete this;
 }
 
-/*
-void ObjectBackfillRequest::lock_watcher_callback(
-  void* arg,
-  uint64_t notify_id,
-  uint64_t cookie,
-  uint64_t notifier_id,
-  bufferlist& data) {
-
-  ObjectBackfillRequest* req = static_cast<ObjectBackfillRequest*>(arg);
-  req->handle_lock_notification(notify_id, cookie, notifier_id, data);
-}
-
-void ObjectBackfillRequest::handle_lock_notification(
-  uint64_t notify_id,
-  uint64_t cookie,
-  uint64_t notifier_id,
-  bufferlist& data) {
-
-  dout(10) << "received lock notification, notify_id=" << notify_id
-           << " cookie=" << cookie << " notifier_id=" << notifier_id << dendl;
-
-  // When we receive a notification, it means someone (likely user IO) is trying
-  // to acquire the lock. We should cancel our operation and release the lock.
-  dout(10) << "user IO detected, preempting backfill" << dendl;
-  cancel();
-
-  // Acknowledge the notification
-  bufferlist reply;
-  m_parent_ioctx.notify_ack(m_parent_oid, notify_id, cookie, reply);
-}
-*/
 
 } // namespace backfill
 } // namespace rbd

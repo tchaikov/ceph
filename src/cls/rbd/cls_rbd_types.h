@@ -259,7 +259,12 @@ struct ChildImageSpec {
     if (pool_namespace != rhs.pool_namespace) {
       return pool_namespace < rhs.pool_namespace;
     }
-    return image_id < rhs.image_id;
+    if (image_id != rhs.image_id) {
+      return image_id < rhs.image_id;
+    }
+    // pool_name distinguishes cross-cluster children that share the same
+    // pool_id+image_id (pool IDs are only unique within a single cluster).
+    return pool_name < rhs.pool_name;
   }
 };
 WRITE_CLASS_ENCODER(ChildImageSpec);

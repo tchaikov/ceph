@@ -228,12 +228,22 @@ void ImageBackfiller::backfill_object(uint64_t object_no) {
     expected_size = last_object_size;
   }
 
-  if (data_bl.length() != expected_size) {
-    derr << "S3 returned unexpected size for object " << object_no
+  if (data_bl.length() > expected_size) {
+    // S3 returned more data than expected — this should not happen with a
+    // well-formed Range GET, but treat it as an error to avoid silent corruption.
+    derr << "S3 returned too much data for object " << object_no
          << ": expected=" << expected_size << " got=" << data_bl.length() << dendl;
     m_failed_objects++;
     m_throttler->finish_op(object_no);
     return;
+  }
+  if (data_bl.length() < expected_size) {
+    // Partial last-object: S3 may return fewer bytes than requested when the
+    // stored file does not fill the final RBD object slot.  Zero-pad to the
+    // full object size so the written RADOS object has the expected length.
+    dout(15) << "padding short object " << object_no
+             << " from " << data_bl.length() << " to " << expected_size << dendl;
+    data_bl.append_zero(expected_size - data_bl.length());
   }
 
   // Construct object name using ImageCtx's format_string (hex-formatted with zero-padding)

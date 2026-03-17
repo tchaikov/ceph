@@ -48,12 +48,14 @@ S3ObjectFetcher::~S3ObjectFetcher() {
 
 size_t S3ObjectFetcher::write_callback(void* ptr, size_t size, size_t nmemb,
                                         void* userdata) {
+  // Guard against integer overflow: libcurl guarantees size==1 in practice,
+  // but the API allows arbitrary values, so check before multiplying.
+  if (size != 0 && nmemb > SIZE_MAX / size) {
+    return 0;  // Signal error to libcurl (causes CURLE_WRITE_ERROR)
+  }
   bufferlist* data = static_cast<bufferlist*>(userdata);
   size_t bytes = size * nmemb;
-
-  // Append received data to bufferlist
   data->append(static_cast<char*>(ptr), bytes);
-
   return bytes;
 }
 
@@ -332,9 +334,12 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
       // This prevents thundering herd when many requests fail simultaneously
       uint64_t base_delay_ms = 1000 * (1 << retry_count);  // 1s, 2s, 4s
 
-      // Add random jitter: ±25% of base delay
-      int jitter_range = base_delay_ms / 2;  // 50% range
-      int jitter = (rand() % jitter_range) - (jitter_range / 2);  // ±25%
+      // Add deterministic ±25% jitter based on retry_count to prevent
+      // thundering herd without relying on rand() which is not thread-safe.
+      // Pattern: +25%, 0%, -25%, repeating.
+      int jitter_range = static_cast<int>(base_delay_ms / 4);
+      int jitter = (retry_count % 3 == 0) ? jitter_range :
+                   (retry_count % 3 == 1) ? 0 : -jitter_range;
       uint64_t delay_ms = base_delay_ms + jitter;
 
       ldout(m_cct, 10) << "waiting " << delay_ms << "ms before retry "
@@ -437,8 +442,12 @@ void* S3ObjectFetcher::async_fetch_thread(void* arg) {
     mc = curl_multi_perform(multi_handle, &still_running);
 
     if (still_running) {
-      // Wait for activity, with timeout
-      mc = curl_multi_poll(multi_handle, nullptr, 0, 1000, nullptr);
+      // Wait for activity, with timeout.
+      // Use curl_multi_wait() rather than curl_multi_poll(): the latter was
+      // introduced in libcurl 7.66.0 (2019-09), but Nautilus-era platforms
+      // ship older versions (CentOS 7: 7.29, Ubuntu 18.04: 7.58).
+      // curl_multi_wait() has identical semantics for our use case.
+      mc = curl_multi_wait(multi_handle, nullptr, 0, 1000, nullptr);
     }
 
     if (mc != CURLM_OK) {

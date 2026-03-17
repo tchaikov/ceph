@@ -503,6 +503,11 @@ void CopyupRequest<I>::handle_copyup(int r) {
     Mutex::Locker locker(m_lock);
     ceph_assert(m_pending_copyups > 0);
     pending_copyups = --m_pending_copyups;
+    // Capture the first error seen; subsequent completions may carry different
+    // (or zero) return codes, so we must not overwrite a stored error.
+    if (r < 0 && r != -ENOENT && m_result == 0) {
+      m_result = r;
+    }
   }
 
   ldout(cct, 20) << "oid=" << m_oid << ", r=" << r
@@ -510,15 +515,19 @@ void CopyupRequest<I>::handle_copyup(int r) {
 
   if (r < 0 && r != -ENOENT) {
     lderr(cct) << "failed to copyup object: " << cpp_strerror(r) << dendl;
-    complete_requests(false, r);
   }
 
   if (pending_copyups == 0) {
-    // All copyup operations complete - update parent object map if needed
-    if (r >= 0 || r == -ENOENT) {
-      update_parent_object_map_after_copyup();
+    // All copyup operations complete.  Check the aggregate result, not just
+    // the last callback's r: one op might have failed while another succeeded.
+    if (m_result < 0) {
+      // Fail all waiters with the real error.  Do NOT call finish() here —
+      // that would call complete_requests() a second time via finish()'s body
+      // and then attempt 'delete this' twice.
+      complete_requests(false, m_result);
+      delete this;
     } else {
-      finish(r);
+      update_parent_object_map_after_copyup();
     }
   }
 }
@@ -865,8 +874,11 @@ void CopyupRequest<I>::retry_read_from_parent() {
     return;
   }
 
-  // Exponential backoff: 1s, 2s, 4s, 8s, 16s
-  uint32_t delay_ms = 1000 * (1 << (m_s3_retry_count - 1));
+  // Exponential backoff: 1s, 2s, 4s, 8s, 16s …
+  // Cap the shift to 20 (≈17min max) to avoid UB: shifting a 32-bit value by
+  // ≥32 bits is undefined behaviour in C++, and 1 << 31 overflows signed int.
+  uint32_t shift = (m_s3_retry_count - 1 < 20u) ? (m_s3_retry_count - 1) : 20u;
+  uint32_t delay_ms = 1000u * (1u << shift);
 
   ldout(cct, 10) << "retry #" << m_s3_retry_count << " after " << delay_ms
                  << "ms (another child may be writing parent object)" << dendl;
@@ -1126,9 +1138,8 @@ void CopyupRequest<I>::update_parent_object_map() {
     if ((*parent_obj_map)[m_object_no] != new_state) {
       (*parent_obj_map)[m_object_no] = new_state;
 
-      Context *ctx = new FunctionContext([object_no = m_object_no](int r) {
-        // Note: Cannot use ldout in lambda without capturing cct/this
-        // Errors are already logged by the ObjectMap update infrastructure
+      Context *ctx = new FunctionContext([](int r) {
+        // Errors are already logged by the ObjectMap update infrastructure.
       });
 
       ZTracer::Trace trace;
@@ -1344,47 +1355,51 @@ void CopyupRequest<I>::handle_write_parent_after_copyup(int r) {
   ldout(cct, 15) << "successfully wrote to parent object " << m_object_no
                  << ", now updating object map" << dendl;
 
-  // Now update the parent object map
+  // Hold snap_lock and parent_lock for the entire duration so that
+  // parent_image_ctx cannot become a dangling pointer.  A concurrent flatten
+  // or detach needs to acquire parent_lock (write) before it can clear
+  // m_image_ctx->parent, so holding it read-only here is sufficient to keep
+  // the parent ImageCtx alive until we have queued work onto its work queue.
+  //
+  // Lock ordering: child->snap_lock → child->parent_lock → parent->owner_lock
+  //   → parent->snap_lock → parent->object_map_lock.  This is safe because
+  //   the parent image has no knowledge of its children and therefore never
+  //   acquires a child's locks while holding its own.
   RWLock::RLocker snap_locker(m_image_ctx->snap_lock);
   RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
 
   if (m_image_ctx->parent == nullptr || m_image_ctx->parent->object_map == nullptr) {
     ldout(cct, 15) << "parent or object map no longer available" << dendl;
-    snap_locker.unlock();
-    parent_locker.unlock();
     finish(0);
     return;
   }
 
+  // parent_image_ctx is valid and stable while we hold parent_locker.
   auto parent_image_ctx = m_image_ctx->parent;
 
-  snap_locker.unlock();
-  parent_locker.unlock();
-
-  // Update the parent's object map
+  // Update the parent's object map under its own locks.
   RWLock::RLocker parent_owner_locker(parent_image_ctx->owner_lock);
   RWLock::RLocker parent_snap_locker(parent_image_ctx->snap_lock);
 
   if (parent_image_ctx->object_map == nullptr) {
     ldout(cct, 15) << "parent object map became null" << dendl;
-    parent_snap_locker.unlock();
-    parent_owner_locker.unlock();
     finish(0);
     return;
   }
 
-  RWLock::WLocker parent_object_map_locker(parent_image_ctx->object_map_lock);
+  {
+    RWLock::WLocker parent_object_map_locker(parent_image_ctx->object_map_lock);
+    (*parent_image_ctx->object_map)[m_object_no] = OBJECT_EXISTS;
+  }
 
-  // Update the in-memory object map
-  (*parent_image_ctx->object_map)[m_object_no] = OBJECT_EXISTS;
-
-  parent_object_map_locker.unlock();
   parent_snap_locker.unlock();
   parent_owner_locker.unlock();
 
   ldout(cct, 15) << "updated parent in-memory object map, persisting..." << dendl;
 
-  // Queue async update to persist the object map
+  // Queue async update to persist the object map.  parent_locker (and
+  // snap_locker) are still held here, keeping parent_image_ctx valid until
+  // we finish queuing the work.  They release via RAII at function exit.
   Context *ctx = util::create_context_callback<
     CopyupRequest<I>, &CopyupRequest<I>::handle_update_parent_object_map_after_copyup>(this);
 
@@ -1395,6 +1410,7 @@ void CopyupRequest<I>::handle_write_parent_after_copyup(int r) {
     ldout(cct, 15) << "parent object map update not sent, completing immediately" << dendl;
     parent_image_ctx->op_work_queue->queue(ctx, 0);
   }
+  // snap_locker and parent_locker release here via RAII.
 }
 
 } // namespace io

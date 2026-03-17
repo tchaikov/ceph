@@ -387,9 +387,7 @@ void DetachChildRequest<I>::finish(int r) {
     ldout(cct, 10) << "async cleanup scheduled" << dendl;
   }
 
-  ldout(cct, 10) << "invoking completion callback" << dendl;
   m_on_finish->complete(r);
-  ldout(cct, 10) << "completion callback returned" << dendl;
   delete this;
 }
 

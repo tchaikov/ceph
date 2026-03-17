@@ -104,6 +104,10 @@ private:
   WriteRequests m_restart_requests;
   bool m_append_request_permitted = true;
 
+  // Result tracking for multi-op copyup: captures the first error seen across
+  // all pending RADOS ops so handle_copyup() dispatches exactly once.
+  int m_result = 0;
+
   // S3 back-fill members
   bool m_s3_lock_acquired = false;
   bool m_s3_parent_written = false;  // true after write_back_to_parent_async succeeds
