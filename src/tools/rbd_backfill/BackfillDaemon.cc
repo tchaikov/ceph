@@ -130,20 +130,32 @@ void BackfillDaemon::shutdown() {
     m_cond.Signal();
   }
 
-  // Move all backfillers out before stopping to avoid iterator invalidation.
-  // stop() joins the backfiller thread; that thread calls m_on_finish->complete()
-  // -> handle_image_complete() -> m_image_backfillers.erase() BEFORE join()
-  // returns.  Clearing the map first makes handle_image_complete() a safe no-op
-  // (it finds nothing to erase), and the unique_ptrs in to_stop keep the
-  // objects alive until stop() returns.
+  // Move all backfillers out before stopping.  Two requirements pull in
+  // opposite directions:
+  //
+  // 1. m_image_backfillers must be protected by m_lock: a backfiller thread
+  //    that finishes naturally (all objects done) calls handle_image_complete()
+  //    which acquires m_lock and erases from the map.  Without the lock here
+  //    that would be a data race.
+  //
+  // 2. stop() must be called WITHOUT m_lock: stop() joins the thread, and the
+  //    thread calls handle_image_complete() which tries to acquire m_lock.
+  //    Holding m_lock across stop() → join() would deadlock.
+  //
+  // Solution: hold m_lock only for the move+clear, then drop it before stop().
+  // Once the map is cleared, handle_image_complete() finds nothing and returns
+  // early, so the join() in stop() cannot deadlock.
   std::vector<std::unique_ptr<ImageBackfiller>> to_stop;
-  to_stop.reserve(m_image_backfillers.size());
-  for (auto& pair : m_image_backfillers) {
-    dout(10) << "stopping backfiller for " << pair.first.pool_name
-             << "/" << pair.first.image_name << dendl;
-    to_stop.push_back(std::move(pair.second));
+  {
+    Mutex::Locker locker(m_lock);
+    to_stop.reserve(m_image_backfillers.size());
+    for (auto& pair : m_image_backfillers) {
+      dout(10) << "stopping backfiller for " << pair.first.pool_name
+               << "/" << pair.first.image_name << dendl;
+      to_stop.push_back(std::move(pair.second));
+    }
+    m_image_backfillers.clear();
   }
-  m_image_backfillers.clear();
   for (auto& backfiller : to_stop) {
     backfiller->stop();
   }

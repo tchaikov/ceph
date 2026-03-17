@@ -1103,6 +1103,7 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
   auto cct = m_image_ctx->cct;
   ldout(cct, 10) << "S3 fetch result: r=" << r << ", bytes=" << m_s3_data.length() << dendl;
 
+  bool eof_block = false;
   if (r == -EINVAL) {
     // 416 Range Not Satisfiable: the S3 object is shorter than the parent image
     // (e.g., the raw export was truncated, or the block is beyond EOF).
@@ -1111,6 +1112,7 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
                    << m_object_no << " as zero" << dendl;
     m_s3_data.clear();
     r = 0;
+    eof_block = true;
   }
 
   if (r < 0) {
@@ -1120,9 +1122,12 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
     return;
   }
 
-  // Validate we got data
-  if (m_s3_data.length() == 0) {
-    ldout(cct, 5) << "warning: S3 object exists but is empty" << dendl;
+  // Warn only when the server returned 200/206 but sent zero bytes — that
+  // is unexpected and likely indicates a misconfigured S3 image.  Do NOT
+  // warn for eof_block (416): that is the normal sparse-tail case.
+  if (m_s3_data.length() == 0 && !eof_block) {
+    ldout(cct, 5) << "warning: S3 fetch succeeded but returned 0 bytes "
+                  << "(check S3 image size vs RBD image size)" << dendl;
   }
 
   ldout(cct, 10) << "successfully fetched " << m_s3_data.length()
