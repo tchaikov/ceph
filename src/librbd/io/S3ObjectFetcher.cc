@@ -239,6 +239,11 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
                                        bufferlist* data,
                                        uint64_t byte_start,
                                        uint64_t byte_length) {
+  // NOTE: This synchronous path (used by the backfill daemon via fetch_sync)
+  // does NOT hold a slot in s3_active_fetches.  The backfill daemon serialises
+  // S3 fetches within each ImageBackfiller thread (one fetch at a time per
+  // image), so BackfillThrottler implicitly caps the per-image concurrency.
+  // Cross-image concurrency (N images × 1 fetch) is acceptable load on S3.
   int retry_count = 0;
   int last_error = 0;
   uint32_t max_retries = m_s3_config.max_retries;
@@ -488,6 +493,13 @@ void* S3ObjectFetcher::async_fetch_thread(void* arg) {
         result = 0;  // Success
       } else if (response_code == 404) {
         result = -ENOENT;
+      } else if (response_code == 416) {
+        // Range Not Satisfiable: the S3 object is smaller than the requested
+        // byte range (e.g. the raw image export was shorter than the RBD image
+        // size).  Callers (handle_s3_fetch) treat -EINVAL as "block beyond EOF"
+        // and substitute zeroes, matching the semantics of a sparse RADOS object.
+        // fetch_with_retry() also maps 416 -> -EINVAL; keep them in sync.
+        result = -EINVAL;
       } else if (response_code >= 500) {
         result = -EIO;  // Server error
       } else if (response_code >= 400) {
