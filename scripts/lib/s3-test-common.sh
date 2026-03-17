@@ -346,7 +346,129 @@ verify_s3_independence() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Backfill daemon helpers
+# ---------------------------------------------------------------------------
+
+BACKFILL_PID=""
+
+# Start the rbd-backfill daemon in foreground mode; sets BACKFILL_PID.
+# Usage: run_backfill_daemon <conf> [log_file]
+run_backfill_daemon() {
+    local conf=${1:-$CEPH_CONF}
+    local log_file=${2:-/tmp/rbd-backfill-$$.log}
+
+    log_info "Starting rbd-backfill daemon (conf: $conf)..."
+    "$BUILD_DIR/bin/rbd-backfill" --conf "$conf" --foreground > "$log_file" 2>&1 &
+    BACKFILL_PID=$!
+
+    sleep 2
+    if ! kill -0 $BACKFILL_PID 2>/dev/null; then
+        log_error "rbd-backfill daemon failed to start"
+        cat "$log_file"
+        return 1
+    fi
+    log_success "rbd-backfill started (PID: $BACKFILL_PID, log: $log_file)"
+}
+
+# Stop the backfill daemon gracefully.
+stop_backfill_daemon() {
+    if [ -n "$BACKFILL_PID" ] && kill -0 $BACKFILL_PID 2>/dev/null; then
+        log_info "Stopping rbd-backfill (PID: $BACKFILL_PID)..."
+        kill $BACKFILL_PID 2>/dev/null || true
+        wait $BACKFILL_PID 2>/dev/null || true
+    fi
+    BACKFILL_PID=""
+}
+
+# Poll RADOS until at least $expected_count objects with $prefix exist, or timeout.
+# Usage: wait_for_backfill_complete <conf> <pool> <prefix> <expected_count> [timeout_secs]
+wait_for_backfill_complete() {
+    local conf=$1
+    local pool=$2
+    local prefix=$3
+    local expected=$4
+    local timeout=${5:-60}
+
+    log_info "Waiting up to ${timeout}s for $expected objects with prefix $prefix..."
+    for i in $(seq 1 $timeout); do
+        local count
+        count=$(count_rados_objects "$conf" "$pool" "$prefix")
+        if [ "$count" -ge "$expected" ]; then
+            log_success "Backfill complete: $count/$expected objects present (${i}s)"
+            return 0
+        fi
+        sleep 1
+    done
+    log_fail "Backfill timeout: only $(count_rados_objects "$conf" "$pool" "$prefix")/$expected objects after ${timeout}s"
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Object/image introspection helpers
+# ---------------------------------------------------------------------------
+
+# Extract block_name_prefix from `rbd info` output.
+# Usage: get_block_prefix <conf> <pool> <image>
+get_block_prefix() {
+    local conf=$1
+    local pool=$2
+    local image=$3
+    "$BUILD_DIR/bin/rbd" --conf "$conf" info "$pool/$image" 2>/dev/null \
+        | awk '/block_name_prefix:/ {print $2}'
+}
+
+# Count RADOS objects whose name starts with "<prefix>.".
+# Usage: count_rados_objects <conf> <pool> <prefix>
+count_rados_objects() {
+    local conf=$1
+    local pool=$2
+    local prefix=$3
+    "$BUILD_DIR/bin/rados" --conf "$conf" -p "$pool" ls 2>/dev/null \
+        | grep -c "^${prefix}\." 2>/dev/null || echo "0"
+}
+
+# ---------------------------------------------------------------------------
+# Data helpers
+# ---------------------------------------------------------------------------
+
+# Create a raw image file of <size_mb> MB with a recognizable block pattern
+# (each 4 MB chunk starts with "PARENT-BLOCK-NNNN"). Writes to <out_file>.
+# Usage: create_test_image_with_pattern <size_mb> <out_file>
+create_test_image_with_pattern() {
+    local size_mb=$1
+    local out_file=$2
+
+    dd if=/dev/zero of="$out_file" bs=1M count="$size_mb" status=none
+    local num_blocks=$((size_mb / 4))
+    for i in $(seq 0 $((num_blocks - 1))); do
+        printf "PARENT-BLOCK-%04d" $i | dd of="$out_file" bs=4M seek=$i conv=notrunc status=none
+    done
+}
+
+# Verify two files are byte-for-byte identical (md5sum comparison).
+# Usage: verify_checksum <file_a> <file_b>
+verify_checksum() {
+    local file_a=$1
+    local file_b=$2
+
+    local sum_a sum_b
+    sum_a=$(md5sum "$file_a" | awk '{print $1}')
+    sum_b=$(md5sum "$file_b" | awk '{print $1}')
+
+    if [ "$sum_a" = "$sum_b" ]; then
+        log_success "Checksum match: $sum_a"
+        return 0
+    else
+        log_fail "Checksum mismatch: $sum_a vs $sum_b"
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Test result tracking
+# ---------------------------------------------------------------------------
+
 declare -A TEST_RESULTS
 declare -A TEST_TIMES
 
