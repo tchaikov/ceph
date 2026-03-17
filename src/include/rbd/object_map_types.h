@@ -9,7 +9,7 @@ static const uint8_t OBJECT_NONEXISTENT   = 0;
 static const uint8_t OBJECT_EXISTS        = 1;
 static const uint8_t OBJECT_PENDING       = 2;
 static const uint8_t OBJECT_EXISTS_CLEAN  = 3;
-static const uint8_t OBJECT_EXISTS_PARENT = 4;  // Object exists in parent (standalone clone)
-static const uint8_t OBJECT_COPIEDUP      = 5;  // Object copied from parent
+// Note: values 4 and 5 would overflow the 2-bit BitVector<2> on-disk format
+// (stored with mask & 3), so they cannot be used as persistent states.
 
 #endif // CEPH_RBD_OBJECT_MAP_TYPES_H

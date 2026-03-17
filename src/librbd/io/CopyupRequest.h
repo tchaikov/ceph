@@ -106,6 +106,7 @@ private:
 
   // S3 back-fill members
   bool m_s3_lock_acquired = false;
+  bool m_s3_parent_written = false;  // true after write_back_to_parent_async succeeds
   uint32_t m_s3_retry_count = 0;
   uint32_t m_s3_max_retries = 5;  // From config: rbd_s3_lock_retry_max
   ceph::bufferlist m_s3_data;
@@ -151,8 +152,6 @@ private:
   void fetch_from_s3_async();
   void handle_s3_fetch(int r);
   void write_back_to_parent_async();
-  void write_back_to_parent();
-  void handle_write_back_to_parent(int r);
   void update_parent_object_map();
   void handle_update_parent_object_map(int r);
   void handle_direct_object_map_update(int r);

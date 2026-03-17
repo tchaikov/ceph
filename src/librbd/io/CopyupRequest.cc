@@ -341,8 +341,9 @@ void CopyupRequest<I>::update_object_maps() {
     RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
     if (m_image_ctx->parent_md.parent_type == PARENT_TYPE_STANDALONE) {
       is_standalone_parent = true;
-      // Mark objects copied from standalone parents with OBJECT_COPIEDUP
-      head_object_map_state = OBJECT_COPIEDUP;
+      // OBJECT_COPIEDUP (5) would overflow the 2-bit object map format;
+      // use OBJECT_EXISTS (1) which correctly marks a populated object.
+      head_object_map_state = OBJECT_EXISTS;
     }
   }
 
@@ -1011,6 +1012,9 @@ void CopyupRequest<I>::write_back_to_parent_async() {
     ldout(cct, 5) << "warning: failed to submit parent cache write-back: "
                   << cpp_strerror(r) << dendl;
   } else {
+    // Mark that the write was submitted so update_parent_object_map_after_copyup
+    // can skip the redundant second write to the same parent object.
+    m_s3_parent_written = true;
     ldout(cct, 10) << "submitted parent cache write-back for " << m_parent_oid << dendl;
 
     // Queue parent object map update to work queue (fire-and-forget).
@@ -1037,46 +1041,6 @@ void CopyupRequest<I>::write_back_to_parent_async() {
       }), 0);
   }
   rados_completion->release();
-}
-
-template <typename I>
-void CopyupRequest<I>::write_back_to_parent() {
-  auto cct = m_image_ctx->cct;
-  ldout(cct, 10) << "writing " << m_s3_data.length()
-                 << " bytes to parent object: " << m_parent_oid << dendl;
-
-  // Create write operation to write full object to parent
-  librados::ObjectWriteOperation write_op;
-  write_op.write_full(m_s3_data);
-
-  // Submit async write operation
-  using klass = CopyupRequest<I>;
-  librados::AioCompletion *rados_completion =
-    util::create_rados_callback<klass, &klass::handle_write_back_to_parent>(this);
-
-  int r = m_parent_ioctx.aio_operate(m_parent_oid, rados_completion, &write_op);
-  ceph_assert(r == 0);
-  rados_completion->release();
-}
-
-template <typename I>
-void CopyupRequest<I>::handle_write_back_to_parent(int r) {
-  auto cct = m_image_ctx->cct;
-  ldout(cct, 10) << "write-back result: r=" << r << dendl;
-
-  if (r < 0) {
-    lderr(cct) << "failed to write S3 data to parent object: "
-               << cpp_strerror(r) << dendl;
-    unlock_parent_object();
-    finish(r);
-    return;
-  }
-
-  ldout(cct, 10) << "successfully wrote S3 data to parent, "
-                 << "updating parent object map" << dendl;
-
-  // Update parent object map to reflect the newly written object
-  update_parent_object_map();
 }
 
 template <typename I>
@@ -1262,6 +1226,14 @@ void CopyupRequest<I>::update_parent_object_map_after_copyup() {
   auto cct = m_image_ctx->cct;
 
   ldout(cct, 20) << "checking if parent write needed" << dendl;
+
+  // If write_back_to_parent_async already submitted the parent write and
+  // queued the object map update, skip the redundant second write here.
+  if (m_s3_parent_written) {
+    ldout(cct, 20) << "parent already written by write_back_to_parent_async, skipping" << dendl;
+    finish(0);
+    return;
+  }
 
   // Check if we need to write to parent and update its object map
   RWLock::RLocker snap_locker(m_image_ctx->snap_lock);
