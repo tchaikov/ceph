@@ -287,10 +287,16 @@ void CloneRequest<I>::handle_open_parent(int r) {
   }
 
   m_parent_snap_id = m_parent_image_ctx->snap_id;
-  m_pspec = {m_parent_io_ctx.get_id(), m_parent_io_ctx.get_namespace(),
+
+  // For remote standalone clones, populate m_pspec from the remote IoCtx so
+  // that the stored pool_id and pool_name refer to the remote cluster.  This
+  // is required because RefreshParentRequest uses pool_name to reconnect to
+  // the correct pool in the remote cluster (pool IDs are cluster-specific).
+  librados::IoCtx& used_io_ctx = m_remote_parent_io_ctx ?
+                                 *m_remote_parent_io_ctx : m_parent_io_ctx;
+  m_pspec = {used_io_ctx.get_id(), used_io_ctx.get_namespace(),
              m_parent_image_id, m_parent_snap_id};
-  // Set pool name for cross-cluster clones (pool IDs are cluster-specific)
-  m_pspec.pool_name = m_parent_io_ctx.get_pool_name();
+  m_pspec.pool_name = used_io_ctx.get_pool_name();
   validate_parent();
 }
 
@@ -601,12 +607,14 @@ void CloneRequest<I>::handle_metadata_list(int r) {
       }
       m_pairs.insert(kv);
     }
-    if (!m_pairs.empty()) {
-      m_last_metadata_key = m_pairs.rbegin()->first;
-    }
   }
 
   if (metadata.size() == MAX_KEYS) {
+    // Advance the pagination cursor from the raw (unfiltered) page so that
+    // we make forward progress even when an entire page consists only of S3
+    // keys.  Using m_pairs.rbegin() would leave the cursor unchanged if all
+    // keys were filtered, causing an infinite loop.
+    m_last_metadata_key = metadata.rbegin()->first;
     metadata_list();
   } else {
     metadata_set();

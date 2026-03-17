@@ -12,6 +12,7 @@
 #include "librbd/io/AsyncOperation.h"
 #include "librbd/io/Types.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -108,11 +109,16 @@ private:
   // all pending RADOS ops so handle_copyup() dispatches exactly once.
   int m_result = 0;
 
+  // Cancellation guard for retry timer / work-queue lambdas.  Set to false
+  // just before 'delete this' so stale lambdas (that already escaped their
+  // timer or work-queue slot before cancellation) do not access freed memory.
+  std::shared_ptr<std::atomic<bool>> m_alive{
+    std::make_shared<std::atomic<bool>>(true)};
+
   // S3 back-fill members
   bool m_s3_lock_acquired = false;
   bool m_s3_parent_written = false;  // true after write_back_to_parent_async succeeds
   uint32_t m_s3_retry_count = 0;
-  uint32_t m_s3_max_retries = 5;  // From config: rbd_s3_lock_retry_max
   ceph::bufferlist m_s3_data;
   std::string m_parent_oid;
   std::string m_parent_lock_oid;  // separate sentinel object for cls lock
@@ -158,9 +164,6 @@ private:
   void fetch_from_s3_async();
   void handle_s3_fetch(int r);
   void write_back_to_parent_async();
-  void update_parent_object_map();
-  void handle_update_parent_object_map(int r);
-  void handle_direct_object_map_update(int r);
   void unlock_parent_object();
   void update_parent_object_map_after_copyup();
   void handle_write_parent_after_copyup(int r);

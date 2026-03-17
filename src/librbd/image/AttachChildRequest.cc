@@ -34,8 +34,6 @@ AttachChildRequest<I>::AttachChildRequest(
 
 template <typename I>
 void AttachChildRequest<I>::send() {
-  ldout(m_cct, 0) << "***** ATTACH_CHILD_REQUEST SEND: clone_format="
-                  << m_clone_format << ", parent_snap_id=" << m_parent_snap_id << dendl;
   if (m_clone_format == 1) {
     v1_add_child();
   } else {
@@ -45,7 +43,6 @@ void AttachChildRequest<I>::send() {
 
 template <typename I>
 void AttachChildRequest<I>::v1_add_child() {
-  ldout(m_cct, 0) << "***** V1_ADD_CHILD CALLED: snap_id=" << m_parent_snap_id << dendl;
   ldout(m_cct, 15) << dendl;
 
   librados::ObjectWriteOperation op;
@@ -184,7 +181,6 @@ void AttachChildRequest<I>::handle_v2_set_op_feature(int r) {
 
 template <typename I>
 void AttachChildRequest<I>::v2_child_attach() {
-  ldout(m_cct, 0) << "***** V2_CHILD_ATTACH CALLED: snap_id=" << m_parent_snap_id << dendl;
   ldout(m_cct, 15) << dendl;
 
   cls::rbd::ChildImageSpec child_spec{

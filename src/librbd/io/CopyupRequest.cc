@@ -525,6 +525,7 @@ void CopyupRequest<I>::handle_copyup(int r) {
       // that would call complete_requests() a second time via finish()'s body
       // and then attempt 'delete this' twice.
       complete_requests(false, m_result);
+      m_alive->store(false);
       delete this;
     } else {
       update_parent_object_map_after_copyup();
@@ -538,6 +539,7 @@ void CopyupRequest<I>::finish(int r) {
   ldout(cct, 20) << "oid=" << m_oid << ", r=" << r << dendl;
 
   complete_requests(true, r);
+  m_alive->store(false);
   delete this;
 }
 
@@ -886,15 +888,26 @@ void CopyupRequest<I>::retry_read_from_parent() {
   // Schedule the retry via SafeTimer so we actually wait the computed delay.
   // The timer callback must be fast (runs under timer lock), so it simply
   // re-queues read_from_parent() onto the op_work_queue.
+  //
+  // CopyupRequest is self-deleting; we pass m_alive by shared_ptr so that
+  // a stale lambda (fired after delete this in an unexpected edge-case path)
+  // checks the flag before accessing any member.  In normal operation no
+  // finish() path fires while the timer is pending (m_async_op keeps the
+  // image open), but this guard makes the invariant explicit and safe.
   SafeTimer *timer;
   Mutex *timer_lock;
   ImageCtx::get_timer_instance(cct, &timer, &timer_lock);
   {
+    auto alive = m_alive;   // capture by value (shared ownership)
     Mutex::Locker locker(*timer_lock);
     timer->add_event_after(delay_ms / 1000.0,
-      new FunctionContext([this](int r) {
+      new FunctionContext([this, alive](int r) {
+        if (!alive->load()) return;
         m_image_ctx->op_work_queue->queue(
-          new FunctionContext([this](int r) { read_from_parent(); }), 0);
+          new FunctionContext([this, alive](int r) {
+            if (!alive->load()) return;
+            read_from_parent();
+          }), 0);
       }));
   }
 }
@@ -913,7 +926,10 @@ void CopyupRequest<I>::fetch_from_s3_async() {
     return;
   }
 
-  const S3Config& s3_config = m_image_ctx->parent->s3_config;
+  // Copy s3_config by value BEFORE releasing parent_lock.  A concurrent
+  // flatten or close can detach the parent ImageCtx once the lock is released,
+  // making any reference into m_image_ctx->parent a dangling pointer.
+  S3Config s3_config = m_image_ctx->parent->s3_config;
 
   // Validate S3 configuration
   if (!s3_config.is_valid()) {
@@ -941,7 +957,8 @@ void CopyupRequest<I>::fetch_from_s3_async() {
 
   // Heap-allocate the fetcher so it stays alive until this CopyupRequest is
   // destroyed, keeping its lifetime coupled to m_s3_data which the async
-  // pthread writes into.
+  // pthread writes into.  Uses the local copy of s3_config (safe: parent
+  // may have been detached by now).
   m_s3_fetcher.reset(new S3ObjectFetcher(cct, s3_config));
 
   auto ctx = util::create_context_callback<
@@ -1106,156 +1123,6 @@ void CopyupRequest<I>::unlock_parent_object() {
   m_s3_lock_acquired = false;
 }
 
-template <typename I>
-void CopyupRequest<I>::update_parent_object_map() {
-  auto cct = m_image_ctx->cct;
-
-  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
-
-  if (m_image_ctx->parent == nullptr) {
-    ldout(cct, 10) << "parent is nullptr, skipping object map update" << dendl;
-    return;
-  }
-
-  // Check if parent has object map feature enabled
-  bool parent_has_object_map = (m_image_ctx->parent->features & RBD_FEATURE_OBJECT_MAP) != 0;
-
-  if (!parent_has_object_map) {
-    ldout(cct, 10) << "parent does not have object_map feature, skipping" << dendl;
-    return;
-  }
-
-  if (m_image_ctx->parent->object_map != nullptr) {
-    // Path 1: In-memory object map is available (same-cluster parent)
-    RWLock::WLocker object_map_locker(m_image_ctx->parent->object_map_lock);
-
-    uint8_t new_state = OBJECT_EXISTS;
-    auto parent_obj_map = m_image_ctx->parent->object_map;
-
-    ldout(cct, 10) << "updating parent in-memory object map for object "
-                   << m_object_no << " to OBJECT_EXISTS" << dendl;
-
-    if ((*parent_obj_map)[m_object_no] != new_state) {
-      (*parent_obj_map)[m_object_no] = new_state;
-
-      Context *ctx = new FunctionContext([](int r) {
-        // Errors are already logged by the ObjectMap update infrastructure.
-      });
-
-      ZTracer::Trace trace;
-      bool sent = parent_obj_map->template aio_update<Context>(
-        CEPH_NOSNAP, m_object_no, new_state, boost::optional<uint8_t>(),
-        trace, false, ctx);
-
-      if (!sent) {
-        delete ctx;
-        ldout(cct, 10) << "parent object map update not queued (no exclusive lock)" << dendl;
-      }
-    }
-  } else {
-    // Path 2: Parent has object map feature but in-memory map not available
-    // (cross-cluster scenario) - update via direct RADOS operation
-    ldout(cct, 10) << "parent object_map is nullptr, updating via direct RADOS operation"
-                   << dendl;
-
-    // Get parent's object map name
-    std::string parent_object_map_name = ObjectMap<>::object_map_name(
-      m_image_ctx->parent->id, CEPH_NOSNAP);
-
-    ldout(cct, 10) << "parent object_map name: " << parent_object_map_name << dendl;
-
-    // Create object map update operation
-    librados::ObjectWriteOperation map_op;
-    cls_client::object_map_update(&map_op, m_object_no, m_object_no + 1,
-                                  OBJECT_EXISTS, boost::optional<uint8_t>());
-
-    // Submit async operation to update parent's object map
-    // Using fire-and-forget as this is best-effort
-    auto rados_completion = librados::Rados::aio_create_completion();
-    int r = m_parent_ioctx.aio_operate(parent_object_map_name, rados_completion, &map_op);
-
-    if (r == 0) {
-      ldout(cct, 10) << "submitted async RADOS object map update for object "
-                     << m_object_no << dendl;
-    } else {
-      ldout(cct, 5) << "warning: failed to submit parent object map update via RADOS: "
-                    << cpp_strerror(r) << dendl;
-    }
-
-    rados_completion->release();
-  }
-}
-
-template <typename I>
-void CopyupRequest<I>::handle_update_parent_object_map(int r) {
-  auto cct = m_image_ctx->cct;
-  ldout(cct, 10) << "parent object map update result: r=" << r << dendl;
-
-  // Always unlock the parent object when we're done
-  unlock_parent_object();
-
-  if (r < 0) {
-    ldout(cct, 5) << "warning: failed to update parent object map: "
-                  << cpp_strerror(r) << dendl;
-    // Continue anyway - the object was written successfully
-  }
-
-  ldout(cct, 10) << "continuing with normal copyup using S3 data" << dendl;
-
-  // Use the S3 data for the copyup operation
-  // Copy S3 data to copyup buffer
-  m_copyup_data = m_s3_data;
-
-  // Clear S3 data buffer to free memory
-  m_s3_data.clear();
-
-  // Continue with normal copyup flow
-  // We've successfully populated the parent object, so now we can
-  // proceed with the object map update and copyup to child
-  m_image_ctx->snap_lock.get_read();
-  m_lock.Lock();
-  m_copyup_is_zero = m_copyup_data.is_zero();
-  m_copyup_required = is_copyup_required();
-  disable_append_requests();
-
-  if (!m_copyup_required) {
-    m_lock.Unlock();
-    m_image_ctx->snap_lock.put_read();
-    ldout(cct, 20) << "copyup not required after S3 fetch" << dendl;
-    finish(0);
-    return;
-  }
-
-  // Copyup is required - populate snapshot IDs if data is not all zeros
-  if (!m_copyup_is_zero) {
-    m_snap_ids.insert(m_snap_ids.end(), m_image_ctx->snaps.rbegin(),
-                      m_image_ctx->snaps.rend());
-  }
-
-  m_lock.Unlock();
-  m_image_ctx->snap_lock.put_read();
-
-  // Continue to update object maps and then copyup
-  update_object_maps();
-}
-
-template <typename I>
-void CopyupRequest<I>::handle_direct_object_map_update(int r) {
-  auto cct = m_image_ctx->cct;
-  ldout(cct, 10) << "direct object map update result: r=" << r << dendl;
-
-  // Unlock the parent object
-  unlock_parent_object();
-
-  if (r < 0) {
-    ldout(cct, 5) << "warning: failed to update parent object map via RADOS: "
-                  << cpp_strerror(r) << dendl;
-    // Continue anyway - the object was written successfully
-  }
-
-  // Continue with copyup
-  handle_update_parent_object_map(0);
-}
 
 template <typename I>
 void CopyupRequest<I>::update_parent_object_map_after_copyup() {
