@@ -146,7 +146,12 @@ int execute_set(const po::variables_map &vm,
     {"s3.max_retries", std::to_string(s3_max_retries)}
   };
 
-  // Add credentials if provided (base64-encode secret key for storage)
+  // Add credentials if provided.
+  // SECURITY NOTE: base64 is encoding, not encryption.  Both the access key
+  // and the (base64-encoded) secret key are stored as plaintext RADOS image
+  // metadata, readable by anyone with pool read access.  For production
+  // deployments requiring stronger credential protection, rotate the S3
+  // credentials regularly and restrict pool access using Ceph auth caps.
   if (has_access_key) {
     metadata["s3.access_key"] = s3_access_key;
     metadata["s3.secret_key"] = base64_encode(s3_secret_key);

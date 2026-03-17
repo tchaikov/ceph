@@ -956,8 +956,12 @@ void CopyupRequest<I>::handle_list_lock_holders(int r) {
   // already written it.  If still absent, proceed without the lock —
   // a duplicate S3 fetch is harmless (write_full is idempotent).
   ldout(cct, 10) << "lock held by another user request, re-checking parent" << dendl;
+  auto alive = m_alive;
   m_image_ctx->op_work_queue->queue(
-    new FunctionContext([this](int) { read_from_parent(); }), 0);
+    new FunctionContext([this, alive](int) {
+      if (!alive->load()) return;
+      read_from_parent();
+    }), 0);
 }
 
 template <typename I>
@@ -983,6 +987,12 @@ void CopyupRequest<I>::handle_break_backfill_lock(int r) {
   read_from_parent();
 }
 
+// retry_read_from_parent is the fallback path for the rare case where
+// get_lock_info_start / get_lock_info_finish fails (RADOS or decode error in
+// handle_list_lock_holders).  Normal lock-contention between CopyupRequests is
+// handled without backoff via the immediate re-check in handle_list_lock_holders.
+// The exponential backoff here is appropriate because a parse error suggests
+// a transient OSD or network issue rather than routine contention.
 template <typename I>
 void CopyupRequest<I>::retry_read_from_parent() {
   auto cct = m_image_ctx->cct;
@@ -1173,8 +1183,12 @@ void CopyupRequest<I>::unlock_parent_object() {
   // Construct the same lock cookie we used to acquire the lock
   std::string lock_cookie = m_image_ctx->id + "_" + stringify(m_object_no);
 
-  // Release the lock asynchronously (fire-and-forget) to avoid blocking the
-  // I/O path on a RADOS round-trip.  Lock auto-expires on crash via timeout.
+  // Release the lock asynchronously to avoid blocking the I/O path on a
+  // RADOS round-trip.  No completion callback: 'this' may be deleted before
+  // the callback fires, and CephContext-only logging requires a C-style
+  // callback.  Unlock failures are tolerable because the cls_lock auto-expires
+  // via the configured timeout, allowing the next holder to acquire the lock
+  // once the lease expires.  The initial submission error IS logged below.
   librados::ObjectWriteOperation unlock_op;
   rados::cls::lock::unlock(&unlock_op, "s3_fetch_lock", lock_cookie);
 
@@ -1208,10 +1222,16 @@ void CopyupRequest<I>::update_parent_object_map_after_copyup() {
     return;
   }
 
-  // Only write to parent for standalone clones
+  // Only cache S3 data back into the parent for same-cluster standalone clones.
+  // For REMOTE_STANDALONE, the parent lives in a different cluster and we do
+  // not have a writable IoCtx pointing to that cluster's pool here.  The
+  // backfill daemon is responsible for pre-populating the remote parent; until
+  // it does so every COW on a remote-standalone child will repeat the S3
+  // round-trip.  This is a known limitation documented in
+  // doc/dev/rbd-parentless-clone.rst §"Remote standalone clones".
   if (m_image_ctx->parent_md.parent_type != PARENT_TYPE_STANDALONE) {
-    ldout(cct, 20) << "not a standalone clone (type="
-                   << m_image_ctx->parent_md.parent_type << "), skipping" << dendl;
+    ldout(cct, 20) << "not a local standalone clone (type="
+                   << m_image_ctx->parent_md.parent_type << "), skipping parent write-back" << dendl;
     snap_locker.unlock();
     parent_locker.unlock();
     finish(0);
@@ -1322,7 +1342,15 @@ void CopyupRequest<I>::handle_write_parent_after_copyup(int r) {
 
   if (parent_image_ctx->object_map != nullptr) {
     // Path 1: In-memory object map available — this client holds the parent's
-    // exclusive lock.  Update the in-memory bitmap and persist via aio_update.
+    // exclusive lock.  Update the in-memory bitmap under object_map_lock, then
+    // release snap/owner locks and persist the change via aio_update.
+    //
+    // NOTE: there is a brief window between releasing snap/owner locks and
+    // the aio_update RADOS write completing where the in-memory map is ahead
+    // of the on-disk record.  If the OSD crashes in that window, the on-disk
+    // map will not reflect OBJECT_EXISTS for this object.  This is the same
+    // risk as the normal COW object-map path; `rbd check --repair` will
+    // reconcile the maps on restart.
     RWLock::RLocker parent_owner_locker(parent_image_ctx->owner_lock);
     RWLock::RLocker parent_snap_locker(parent_image_ctx->snap_lock);
 

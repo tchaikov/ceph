@@ -119,7 +119,10 @@ struct S3Config {
     return access_key.empty() && secret_key.empty();
   }
 
-  /// Build full S3 URL for the image object
+  /// Build full S3 URL for the image object.
+  /// NOTE: S3ObjectFetcher::build_s3_url() contains parallel logic for the
+  /// backfill daemon's fetch() path.  Keep both in sync when modifying URL
+  /// construction (endpoint slash-normalization, prefix handling, etc.).
   std::string build_url() const {
     std::string url = endpoint;
     if (url.empty() || url.back() != '/') {
