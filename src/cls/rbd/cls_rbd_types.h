@@ -201,10 +201,10 @@ struct ParentImageSpec {
   }
 
   // Like exists() but also recognises standalone clones whose snap_id is
-  // CEPH_NOSNAP.  Use this in code paths that handle both snapshot-based
-  // and standalone parents.
+  // CEPH_NOSNAP.  Also handles remote standalone parents where pool_id is -1
+  // but pool_name is set (pool IDs are cluster-specific).
   bool exists_or_standalone() const {
-    return (pool_id >= 0 && !image_id.empty());
+    return ((pool_id >= 0 || !pool_name.empty()) && !image_id.empty());
   }
 
   bool operator==(const ParentImageSpec& rhs) const {

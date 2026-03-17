@@ -55,6 +55,12 @@ ObjectBackfillRequest::ObjectBackfillRequest(
   // Lock name is the object name
   m_lock_name = "s3_fetch_lock";
   m_lock_tag = "";  // No tag for exclusive locks
+
+  // Sentinel lock object: must match CopyupRequest::m_parent_lock_oid
+  // (m_parent_oid + ".s3lk").  Using a separate sentinel prevents the
+  // cls_lock side-effect of creating the data object as an empty RADOS
+  // object, and ensures mutual exclusion with COW operations from child images.
+  m_lock_oid = m_parent_oid + ".s3lk";
 }
 
 ObjectBackfillRequest::~ObjectBackfillRequest() {
@@ -93,7 +99,7 @@ void ObjectBackfillRequest::acquire_lock() {
   librados::AioCompletion* rados_completion =
     librbd::util::create_rados_callback(ctx);
 
-  int r = m_parent_ioctx.aio_operate(m_parent_oid, rados_completion, &op);
+  int r = m_parent_ioctx.aio_operate(m_lock_oid, rados_completion, &op);
   ceph_assert(r == 0);
   rados_completion->release();
 }
@@ -280,7 +286,7 @@ void ObjectBackfillRequest::release_lock() {
   librados::AioCompletion* rados_completion =
     librbd::util::create_rados_callback(ctx);
 
-  int r = m_parent_ioctx.aio_operate(m_parent_oid, rados_completion, &op);
+  int r = m_parent_ioctx.aio_operate(m_lock_oid, rados_completion, &op);
   ceph_assert(r == 0);
   rados_completion->release();
 }
@@ -348,7 +354,7 @@ void ObjectBackfillRequest::finish(int r) {
     librados::ObjectWriteOperation op;
     rados::cls::lock::unlock(&op, m_lock_name, m_lock_cookie);
 
-    int unlock_r = m_parent_ioctx.operate(m_parent_oid, &op);
+    int unlock_r = m_parent_ioctx.operate(m_lock_oid, &op);
     if (unlock_r < 0) {
       dout(5) << "failed to release lock in finish(): " << cpp_strerror(unlock_r) << dendl;
       // Continue anyway - lock will timeout

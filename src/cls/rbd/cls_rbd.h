@@ -49,8 +49,9 @@ struct cls_rbd_parent {
   }
 
   /// Like exists(), but also matches standalone clones (snap_id == CEPH_NOSNAP)
+  /// and remote standalone clones (pool_id == -1 but pool_name is set).
   inline bool exists_or_standalone() const {
-    return (pool_id >= 0 && !image_id.empty());
+    return ((pool_id >= 0 || !pool_name.empty()) && !image_id.empty());
   }
 
   inline bool operator==(const cls_rbd_parent& rhs) const {

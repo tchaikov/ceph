@@ -173,9 +173,17 @@ void CopyupRequest<I>::read_from_parent() {
   // For standalone clones with S3 back-fill enabled, check if parent object
   // exists in RADOS before reading. If it doesn't exist, fetch from S3 directly.
   // This avoids the sparse-read conversion that would prevent S3 back-fill.
+  //
+  // NOTE: we extract parent_oid and parent_ioctx HERE while holding parent_lock,
+  // then release the lock before the async stat.  check_parent_object_exists()
+  // must NOT re-acquire parent_lock: RWLock is non-recursive and will deadlock if
+  // a writer is waiting (PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP).
   if (should_fetch_from_s3()) {
     ldout(cct, 15) << "S3 back-fill enabled, checking parent object existence" << dendl;
-    check_parent_object_exists();
+    std::string parent_oid = m_image_ctx->parent->get_object_name(m_object_no);
+    librados::IoCtx parent_ioctx = m_image_ctx->parent->data_ctx;
+    // parent_locker and snap_locker go out of scope here (lock released before async I/O)
+    check_parent_object_exists(std::move(parent_oid), std::move(parent_ioctx));
     return;
   }
 
@@ -510,7 +518,7 @@ void CopyupRequest<I>::handle_copyup(int r) {
     if (r >= 0 || r == -ENOENT) {
       update_parent_object_map_after_copyup();
     } else {
-      finish(0);
+      finish(r);
     }
   }
 }
@@ -695,22 +703,11 @@ bool CopyupRequest<I>::should_fetch_from_s3() {
 }
 
 template <typename I>
-void CopyupRequest<I>::check_parent_object_exists() {
+void CopyupRequest<I>::check_parent_object_exists(std::string parent_oid,
+                                                   librados::IoCtx parent_ioctx) {
   auto cct = m_image_ctx->cct;
-
-  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
-  if (m_image_ctx->parent == nullptr) {
-    ldout(cct, 5) << "parent detached during existence check" << dendl;
-    m_image_ctx->op_work_queue->queue(
-      util::create_context_callback<
-        CopyupRequest<I>, &CopyupRequest<I>::handle_read_from_parent>(this),
-      -ENOENT);
-    return;
-  }
-
-  // Get parent object name
-  std::string parent_oid = m_image_ctx->parent->get_object_name(m_object_no);
-  librados::IoCtx parent_ioctx = m_image_ctx->parent->data_ctx;
+  // parent_lock is NOT held here — caller extracted parent_oid and parent_ioctx
+  // while holding the lock, then released it before this async call.
 
   ldout(cct, 15) << "checking existence of parent object: " << parent_oid << dendl;
 

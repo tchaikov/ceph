@@ -353,14 +353,14 @@ int Operations<I>::flatten(ProgressContext &prog_ctx) {
     bool has_traditional_parent = (m_image_ctx.parent_md.spec.pool_id != -1);
     bool has_metadata_parent = false;
 
-    // Check for metadata-based parent (e.g., cross-cluster standalone clone)
+    // Check for remote standalone clone: pool_id is -1 but pool_name is set
+    // because pool IDs are cluster-specific.  The parent_md is populated by
+    // RefreshParentRequest from the CLS parent_get response.
     if (!has_traditional_parent) {
-      std::string parent_type;
-      int r = cls_client::metadata_get(&m_image_ctx.md_ctx, m_image_ctx.header_oid,
-                                       "parent.type", &parent_type);
-      if (r >= 0 && !parent_type.empty()) {
-        has_metadata_parent = true;
-        ldout(cct, 10) << "detected metadata-based parent: " << parent_type << dendl;
+      has_metadata_parent = !m_image_ctx.parent_md.spec.pool_name.empty();
+      if (has_metadata_parent) {
+        ldout(cct, 10) << "detected remote standalone parent: pool_name="
+                       << m_image_ctx.parent_md.spec.pool_name << dendl;
       }
     }
 

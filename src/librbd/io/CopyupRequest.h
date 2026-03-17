@@ -144,7 +144,8 @@ private:
 
   // S3 back-fill methods
   bool should_fetch_from_s3();
-  void check_parent_object_exists();
+  void check_parent_object_exists(std::string parent_oid,
+                                   librados::IoCtx parent_ioctx);
   void handle_check_parent_object_exists(int r);
   void do_read_from_parent();
   void fetch_from_s3_with_lock();

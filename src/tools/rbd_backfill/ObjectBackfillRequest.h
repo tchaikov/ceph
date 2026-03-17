@@ -94,6 +94,8 @@ private:
 
   librados::IoCtx m_parent_ioctx;  // Copy, not reference - must remain valid for async operations
   std::string m_parent_oid;
+  std::string m_lock_oid;  // Sentinel object for cls lock (parent_oid + ".s3lk")
+                           // Must match CopyupRequest::m_parent_lock_oid
   uint64_t m_object_no;
   std::string m_image_id;          // Parent image ID for object map updates
   Threads* m_threads;
