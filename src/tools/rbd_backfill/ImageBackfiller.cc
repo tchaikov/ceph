@@ -156,7 +156,7 @@ void ImageBackfiller::run_backfill() {
   // affecting PG balancing and scrub times.  Remove them after all writes are
   // confirmed so that a restart (which now checks RADOS existence via stat)
   // still works correctly: the actual data objects are unaffected.
-  if (!m_stopping.load() && m_failed_objects.load() == 0) {
+  if (completed + failed == m_num_objects && failed == 0) {
     dout(5) << "cleaning up sentinel lock objects (.s3lk)" << dendl;
     for (uint64_t obj_no = 0; obj_no < m_num_objects; ++obj_no) {
       char sentinel_buf[RBD_MAX_OBJ_NAME_SIZE + 5];  // +5 for ".s3lk"
@@ -176,7 +176,13 @@ void ImageBackfiller::run_backfill() {
   // Clear backfill_scheduled (daemon discovery key) and record final status.
   // Use the synchronous cls_rbd path — we are in the ImageBackfiller thread
   // (not a RADOS completion callback), so blocking is acceptable.
-  if (!m_stopping.load()) {
+  //
+  // Use (completed + failed == m_num_objects) rather than !m_stopping: the
+  // stop signal may arrive after the backfill loop finishes (e.g. the test
+  // harness kills the daemon immediately after wait_for_backfill_complete),
+  // in which case m_stopping is true but all work was done and the metadata
+  // must be updated so the daemon doesn't re-queue the image on restart.
+  if (completed + failed == m_num_objects) {
     std::string final_status = (failed == 0) ? "complete" : "failed";
 
     // Remove the scheduling flag so a restarted daemon does not re-queue

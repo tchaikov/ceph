@@ -215,21 +215,38 @@ int execute_status(const po::variables_map &vm,
   }
 
   std::string scheduled_value;
-  r = image.metadata_get(BACKFILL_SCHEDULED_KEY, &scheduled_value);
-  if (r < 0 || scheduled_value != "true") {
+  int scheduled_r = image.metadata_get(BACKFILL_SCHEDULED_KEY, &scheduled_value);
+
+  std::string status_value;
+  image.metadata_get(BACKFILL_STATUS_KEY, &status_value);
+
+  // Three states:
+  // 1. backfill_scheduled == "true" or "in_progress": backfill pending/running
+  // 2. backfill_scheduled absent, backfill_status == "complete"/"failed": done
+  // 3. Neither key: never scheduled
+  bool scheduled = (scheduled_r == 0 &&
+                    (scheduled_value == "true" || scheduled_value == "in_progress"));
+  bool finished = (scheduled_r < 0 &&
+                   (!status_value.empty() &&
+                    (status_value == "complete" || status_value == "failed")));
+
+  if (!scheduled && !finished) {
     std::cerr << "rbd: backfill not scheduled for this image" << std::endl;
     return -EINVAL;
   }
 
-  std::string status_value = "unknown";
-  image.metadata_get(BACKFILL_STATUS_KEY, &status_value);
+  if (status_value.empty()) {
+    status_value = "unknown";
+  }
 
   if (formatter.get()) {
     formatter->open_object_section("backfill_status");
     formatter->dump_string("image", pool_name + "/" +
                           (namespace_name.empty() ? "" : namespace_name + "/") +
                           image_name);
-    formatter->dump_string("scheduled", scheduled_value);
+    if (scheduled) {
+      formatter->dump_string("scheduled", scheduled_value);
+    }
     formatter->dump_string("status", status_value);
     formatter->close_section();
     formatter->flush(std::cout);
@@ -237,7 +254,9 @@ int execute_status(const po::variables_map &vm,
     std::cout << "Image: " << pool_name << "/"
               << (namespace_name.empty() ? "" : namespace_name + "/")
               << image_name << std::endl;
-    std::cout << "Backfill scheduled: " << scheduled_value << std::endl;
+    if (scheduled) {
+      std::cout << "Backfill scheduled: " << scheduled_value << std::endl;
+    }
     std::cout << "Backfill status: " << status_value << std::endl;
   }
 
