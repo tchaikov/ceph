@@ -525,6 +525,7 @@ void CopyupRequest<I>::handle_copyup(int r) {
       // that would call complete_requests() a second time via finish()'s body
       // and then attempt 'delete this' twice.
       complete_requests(false, m_result);
+      m_s3_cancel.store(true);   // signal any in-flight S3 fetch to abort
       m_alive->store(false);
       delete this;
     } else {
@@ -539,6 +540,7 @@ void CopyupRequest<I>::finish(int r) {
   ldout(cct, 20) << "oid=" << m_oid << ", r=" << r << dendl;
 
   complete_requests(true, r);
+  m_s3_cancel.store(true);   // signal any in-flight S3 fetch to abort
   m_alive->store(false);
   delete this;
 }
@@ -1095,7 +1097,8 @@ void CopyupRequest<I>::fetch_from_s3_async() {
   auto ctx = util::create_context_callback<
     CopyupRequest<I>, &CopyupRequest<I>::handle_s3_fetch>(this);
 
-  m_s3_fetcher->fetch_url(s3_url, &m_s3_data, ctx, byte_start, byte_length);
+  m_s3_fetcher->fetch_url(s3_url, &m_s3_data, ctx, byte_start, byte_length,
+                          &m_s3_cancel);
 }
 
 template <typename I>

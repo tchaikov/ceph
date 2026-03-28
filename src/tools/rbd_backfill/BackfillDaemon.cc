@@ -261,6 +261,25 @@ int BackfillDaemon::discover_scheduled_images() {
         std::string scheduled_value;
         r = image.metadata_get("backfill_scheduled", &scheduled_value);
         if (r >= 0 && scheduled_value == "true") {
+          // Claim the image before adding it to our work list.  Immediately
+          // transition "true" → "in_progress" so that a second daemon instance
+          // starting concurrently sees "in_progress" and skips this image.
+          // This is not a true CAS (librbd metadata_set is not compare-and-swap),
+          // but the brief race window between the metadata_get above and this
+          // set is negligible in practice (daemons don't start simultaneously).
+          // The alternative — a cls_lock on the image header — provides
+          // stronger atomicity if needed in the future.
+          int claim_r = image.metadata_set("backfill_scheduled", "in_progress");
+          if (claim_r < 0) {
+            dout(5) << "failed to claim image " << pool_name
+                    << (ns.empty() ? "" : "/" + ns)
+                    << "/" << image_spec.name
+                    << " for backfill: " << cpp_strerror(claim_r)
+                    << " — skipping to avoid duplicate backfill" << dendl;
+            image.close();
+            continue;
+          }
+
           ImageSpec spec;
           spec.pool_name = pool_name;
           spec.pool_id = pool_id;
@@ -270,11 +289,17 @@ int BackfillDaemon::discover_scheduled_images() {
 
           m_image_specs.push_back(spec);
 
-          dout(10) << "discovered scheduled image: " << pool_name
+          dout(10) << "claimed and discovered scheduled image: " << pool_name
                    << (ns.empty() ? "" : "/" + ns)
                    << "/" << image_spec.name
                    << " (pool_id=" << pool_id << " image_id=" << spec.image_id
                    << ")" << dendl;
+        } else if (r >= 0 && scheduled_value == "in_progress") {
+          // Another daemon instance already claimed this image — skip it.
+          dout(10) << "image " << pool_name
+                   << (ns.empty() ? "" : "/" + ns)
+                   << "/" << image_spec.name
+                   << " is already claimed by another daemon instance, skipping" << dendl;
         }
 
         image.close();

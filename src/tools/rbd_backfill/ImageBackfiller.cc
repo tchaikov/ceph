@@ -150,6 +150,28 @@ void ImageBackfiller::run_backfill() {
           << " failed=" << failed
           << " total=" << m_num_objects << dendl;
 
+  // Clean up sentinel lock objects (<oid>.s3lk) created during backfill.
+  // These objects hold no data — they are purely the cls_lock target — but
+  // they accumulate in RADOS (one per parent object) and inflate object counts,
+  // affecting PG balancing and scrub times.  Remove them after all writes are
+  // confirmed so that a restart (which now checks RADOS existence via stat)
+  // still works correctly: the actual data objects are unaffected.
+  if (!m_stopping.load() && m_failed_objects.load() == 0) {
+    dout(5) << "cleaning up sentinel lock objects (.s3lk)" << dendl;
+    for (uint64_t obj_no = 0; obj_no < m_num_objects; ++obj_no) {
+      char sentinel_buf[RBD_MAX_OBJ_NAME_SIZE + 5];  // +5 for ".s3lk"
+      char obj_buf[RBD_MAX_OBJ_NAME_SIZE];
+      snprintf(obj_buf, sizeof(obj_buf), m_image_ctx->format_string, obj_no);
+      snprintf(sentinel_buf, sizeof(sentinel_buf), "%s.s3lk", obj_buf);
+      int rm_r = m_ioctx.remove(std::string(sentinel_buf));
+      if (rm_r < 0 && rm_r != -ENOENT) {
+        dout(10) << "failed to remove sentinel " << sentinel_buf
+                 << ": " << cpp_strerror(rm_r) << dendl;
+      }
+    }
+    dout(5) << "sentinel cleanup complete" << dendl;
+  }
+
   // Update metadata so the daemon does not re-backfill this image on restart.
   // Clear backfill_scheduled (daemon discovery key) and record final status.
   // Use the synchronous cls_rbd path — we are in the ImageBackfiller thread
@@ -229,6 +251,31 @@ void ImageBackfiller::backfill_object(uint64_t object_no) {
     m_failed_objects++;
     m_throttler->finish_op(object_no);
     return;
+  }
+
+  // Skip objects that are already in RADOS — this makes daemon restarts
+  // efficient and avoids redundant S3 fetches for already-warmed cache entries.
+  // This is a synchronous stat; blocking is fine in the backfill thread.
+  char object_name_check_buf[RBD_MAX_OBJ_NAME_SIZE];
+  snprintf(object_name_check_buf, sizeof(object_name_check_buf),
+           m_image_ctx->format_string, object_no);
+  uint64_t psize = 0;
+  time_t pmtime = 0;
+  int stat_r = m_ioctx.stat(std::string(object_name_check_buf), &psize, &pmtime);
+  if (stat_r == 0) {
+    // Object already exists in RADOS — skip S3 fetch
+    dout(15) << "object " << object_no << " already in RADOS (size=" << psize
+             << "), skipping S3 fetch" << dendl;
+    m_completed_objects++;
+    m_current_object++;
+    m_throttler->finish_op(object_no);
+    return;
+  }
+  // -ENOENT is expected; any other error is unexpected but non-fatal — proceed
+  // to fetch from S3 and write it anyway.
+  if (stat_r != -ENOENT) {
+    dout(5) << "stat for object " << object_no << " returned " << cpp_strerror(stat_r)
+            << ", proceeding with S3 fetch anyway" << dendl;
   }
 
   // Fetch data from S3 synchronously (we're in ImageBackfiller thread, blocking is OK)

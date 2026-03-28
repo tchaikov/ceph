@@ -116,6 +116,10 @@ private:
     std::make_shared<std::atomic<bool>>(true)};
 
   // S3 back-fill members
+  // Cancellation flag for the inflight S3 curl fetch.  Set to true when the
+  // image is closing or the CopyupRequest is being destroyed while a fetch is
+  // in-flight, preventing the detached pthread from writing into freed memory.
+  std::atomic<bool> m_s3_cancel{false};
   bool m_s3_lock_acquired = false;
   // Set to true only when m_copyup_data was populated from a live S3 fetch
   // (handle_s3_fetch).  When false (data came from do_read_from_parent which

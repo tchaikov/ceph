@@ -52,7 +52,7 @@ ObjectBackfillRequest::ObjectBackfillRequest(
 
   // Lock name is the object name
   m_lock_name = "s3_fetch_lock";
-  m_lock_tag = "";  // No tag for exclusive locks
+  m_lock_tag = "s3_fetch";  // Must match CopyupRequest's lock tag
 
   // Sentinel lock object: must match CopyupRequest::m_parent_lock_oid
   // (m_parent_oid + ".s3lk").  Using a separate sentinel prevents the
