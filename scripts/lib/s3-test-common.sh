@@ -257,18 +257,17 @@ setup_scenario_2_partial_blocks() {
 
     log_info "Setting up Scenario 2: Partial blocks cached"
 
-    # Pre-populate some parent blocks by reading them
-    log_info "Pre-populating first 2 objects in parent..."
-    "$BUILD_DIR/bin/rbd" --conf "$conf" export "$pool/$parent" /tmp/partial-$$.raw \
-        --rbd-concurrent-management-ops 1 2>&1 | head -n 5 | grep -v "Exporting" || true
-    rm -f /tmp/partial-$$.raw
+    # Pre-populate the first object in the parent via a child COW write at
+    # offset 0.  S3 fetches only fire through CopyupRequest (the child COW
+    # path) — exporting the parent directly reads sparse RADOS objects as
+    # zeros and never touches S3 or populates the parent cache.
+    log_info "Pre-populating first parent object via child COW..."
+    "$BUILD_DIR/bin/rbd" --conf "$conf" bench --io-type write "$pool/$child" \
+        --io-size 4096 --io-total 4096 --io-pattern seq --io-offset 0 >/dev/null 2>&1 || true
+    # Give the async parent write-back time to complete before we proceed
+    sleep 1
 
-    # Write to child to create some child-specific data
-    log_info "Writing to child to create child-specific blocks..."
-    echo "CHILD-DATA" | "$BUILD_DIR/bin/rbd" --conf "$conf" bench --io-type write "$pool/$child" \
-        --io-size 4096 --io-total 4096 --io-pattern seq --io-offset $((8*1024*1024)) >/dev/null 2>&1 || true
-
-    log_success "Scenario 2 ready: Mixed blocks (parent cache + child writes + S3)"
+    log_success "Scenario 2 ready: First parent object cached, remaining must come from S3"
 }
 
 setup_scenario_3_full_cache() {
@@ -277,14 +276,33 @@ setup_scenario_3_full_cache() {
     local child=$3
     local conf=${4:-$CEPH_CONF}
 
-    log_info "Setting up Scenario 3: Full cache (all blocks in parent)"
+    log_info "Setting up Scenario 3: Full cache (all blocks in parent via backfill daemon)"
 
-    # Pre-populate ALL parent blocks by reading entire image
-    log_info "Pre-populating all blocks in parent..."
-    "$BUILD_DIR/bin/rbd" --conf "$conf" export "$pool/$parent" /tmp/full-$$.raw 2>&1 | grep -v "Exporting"
-    rm -f /tmp/full-$$.raw
+    # The backfill daemon is the correct way to pre-warm all parent RADOS
+    # objects.  rbd export of the parent reads sparse objects as zeros and
+    # never fetches from S3; only CopyupRequest (child COW) and the backfill
+    # daemon actually populate the parent cache.
+    local prefix
+    prefix=$(get_block_prefix "$conf" "$pool" "$parent")
+    local num_objects
+    num_objects=$("$BUILD_DIR/bin/rbd" --conf "$conf" info "$pool/$parent" --format json 2>/dev/null \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); print((d['size']+d['object_size']-1)//d['object_size'])" 2>/dev/null || echo "5")
 
-    log_success "Scenario 3 ready: All blocks cached, no S3 fetch needed"
+    log_info "Scheduling backfill for $pool/$parent ($num_objects objects)..."
+    "$BUILD_DIR/bin/rbd" --conf "$conf" backfill schedule "$pool/$parent" 2>&1 | grep -v "WARNING\|developer" || true
+
+    local blog="/tmp/scenario3-backfill-$$.log"
+    run_backfill_daemon "$conf" "$blog"
+
+    if ! wait_for_backfill_complete "$conf" "$pool" "$prefix" "$num_objects" 60; then
+        stop_backfill_daemon
+        log_fail "Scenario 3 setup: backfill did not complete within 60s"
+        return 1
+    fi
+    stop_backfill_daemon
+    rm -f "$blog"
+
+    log_success "Scenario 3 ready: All $num_objects parent objects cached in RADOS, no S3 fetch needed"
 }
 
 # Verification functions
