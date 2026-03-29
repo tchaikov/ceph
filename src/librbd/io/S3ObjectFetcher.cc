@@ -130,9 +130,7 @@ void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
                                         uint64_t byte_length) {
   // Skip authentication if no credentials provided
   if (m_s3_config.is_anonymous()) {
-    // NOTE: Logging disabled - this function is called from Finisher thread
-    // where thread-local dout_context is not set up
-    // ldout(m_cct, 15) << "using anonymous access (no credentials)" << dendl;
+    ldout(m_cct, 15) << "using anonymous access (no credentials)" << dendl;
     // Just add the Range header manually for anonymous access
     if (byte_length > 0) {
       uint64_t byte_end = byte_start + byte_length - 1;
@@ -148,10 +146,7 @@ void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
     region = "us-east-1";  // Default region for S3-compatible services
   }
 
-  // NOTE: Logging disabled - this function is called from Finisher thread
-  // ldout(m_cct, 10) << "using region for signing: " << region << dendl;
-  // ldout(m_cct, 10) << "using access_key: " << m_s3_config.access_key << dendl;
-  // ldout(m_cct, 10) << "using secret_key length: " << m_s3_config.secret_key.length() << dendl;
+  ldout(m_cct, 10) << "using region for signing: " << region << dendl;
 
   AWSV4Signer::Credentials creds(
     m_s3_config.access_key,
@@ -165,8 +160,7 @@ void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
   std::string host = extract_host_from_url(url);
   std::string uri = extract_uri_from_url(url);
 
-  // NOTE: Logging disabled - this function is called from Finisher thread
-  // ldout(m_cct, 15) << "signing request: host=" << host << ", uri=" << uri << dendl;
+  ldout(m_cct, 15) << "signing request: host=" << host << ", uri=" << uri << dendl;
 
   // Build additional headers (Range if needed)
   std::map<std::string, std::string> additional_headers;
@@ -190,15 +184,13 @@ void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
   for (const auto& header : signed_request.headers) {
     std::string header_line = header.first + ": " + header.second;
     *headers = curl_slist_append(*headers, header_line.c_str());
-    // NOTE: Logging disabled - this function is called from Finisher thread
-    // ldout(m_cct, 20) << "adding header: " << header.first << dendl;
+    ldout(m_cct, 20) << "adding header: " << header.first << dendl;
   }
 
   // Add Authorization header
   std::string auth_header = "Authorization: " + signed_request.authorization;
   *headers = curl_slist_append(*headers, auth_header.c_str());
-  // NOTE: Logging disabled - this function is called from Finisher thread
-  // ldout(m_cct, 15) << "added AWS Signature V4 authorization" << dendl;
+  ldout(m_cct, 15) << "added AWS Signature V4 authorization" << dendl;
 }
 
 void S3ObjectFetcher::apply_curl_options(CURL* handle,
