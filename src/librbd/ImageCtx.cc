@@ -823,6 +823,7 @@ public:
 
     // Load S3 configuration from image metadata
     s3_config = S3Config();  // Reset to defaults first
+    bool s3_secret_key_invalid = false;
     for (const auto& meta_pair : meta) {
       if (!boost::starts_with(meta_pair.first, "s3.")) {
         continue;
@@ -844,6 +845,8 @@ public:
       } else if (key == "secret_key") {
         // The metadata value is stored base64-encoded (set by `rbd s3-config set`).
         // Decode it here so HMAC signing uses the raw key, not the encoded form.
+        // Note: metadata is sorted, so access_key ('a') is processed before
+        // secret_key ('s') — s3_config.access_key is already set if present.
         try {
           bufferlist encoded_bl;
           encoded_bl.append(val);
@@ -851,8 +854,14 @@ public:
           decoded_bl.decode_base64(encoded_bl);
           s3_config.secret_key = decoded_bl.to_str();
         } catch (const buffer::error&) {
-          // Not valid base64 — store as-is (handles unencoded legacy keys)
-          s3_config.secret_key = val;
+          if (!s3_config.access_key.empty()) {
+            // access_key is set but secret_key is not valid base64 — this is
+            // a credential configuration error; S3 will not be enabled.
+            s3_secret_key_invalid = true;
+          } else {
+            // No access_key: anonymous access — store the raw value as-is.
+            s3_config.secret_key = val;
+          }
         }
       } else if (key == "image_name") {
         s3_config.image_name = val;
@@ -871,6 +880,13 @@ public:
       }
     }
 
+    if (s3_secret_key_invalid) {
+      lderr(cct) << __func__ << ": CRITICAL: failed to decode s3.secret_key for "
+                 << "authenticated access. S3 configuration is invalid - all reads "
+                 << "from this parent will fail. Please check the s3.secret_key "
+                 << "metadata on the parent image." << dendl;
+      // Leave s3_config disabled — do not fall through to auto-enable.
+    } else
     // Enable S3 config if we have the minimum required fields
     if (!s3_config.bucket.empty() && !s3_config.endpoint.empty() &&
         !s3_config.image_name.empty() && !s3_config.image_format.empty()) {
