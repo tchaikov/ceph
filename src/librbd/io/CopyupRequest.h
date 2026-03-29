@@ -182,9 +182,7 @@ private:
   void fetch_from_s3_async();
   void handle_s3_fetch(int r);
   void unlock_parent_object();
-  void update_parent_object_map_after_copyup();
-  void handle_write_parent_after_copyup(int r);
-  void handle_update_parent_object_map_after_copyup(int r);
+  void fire_parent_s3_writeback();
 };
 
 } // namespace io

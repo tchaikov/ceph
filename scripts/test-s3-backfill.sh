@@ -12,6 +12,8 @@
 #                                        without re-fetching already-cached objects
 #   6. test_backfill_no_conf_fails_fast — omitting --conf exits <10s, does not hang
 #   7. test_backfill_foreground_stderr  — --foreground produces visible stderr output
+#   8. test_backfill_status_transitions — state machine: scheduled→absent, status→complete
+#   9. test_backfill_status_on_failure  — S3 unreachable ⇒ status=failed, scheduled cleared
 #
 # Requires: running Ceph cluster (check_cluster_running), MinIO.
 # Usage: ./test-s3-backfill.sh [--conf <ceph.conf>]
@@ -36,7 +38,8 @@ cleanup() {
     rm -rf "$MINIO_DATA_DIR" /tmp/backfill-test-*.raw "$BACKFILL_LOG" \
            /tmp/rbd-backfill-*.log
     for img in lifecycle-parent integrity-parent naming-parent \
-               cache-hit-child cache-hit-parent restart-parent; do
+               cache-hit-child cache-hit-parent restart-parent \
+               status-trans-parent status-fail-parent; do
         "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL/$img" 2>/dev/null || true
     done
     "$BUILD_DIR/bin/ceph" --conf "$CEPH_CONF" osd pool delete "$POOL" "$POOL" \
@@ -481,6 +484,162 @@ test_backfill_foreground_stderr() {
 }
 
 # ============================================================================
+test_backfill_status_transitions() {
+    # Verify the backfill state-machine ordering:
+    #   backfill_scheduled: "true" → absent
+    #   backfill_status:    absent → "complete"
+    #
+    # Also exercises the crash-safe write order: status is set BEFORE
+    # backfill_scheduled is removed, so a crash between the two leaves the
+    # image re-queueable on restart.
+
+    local img="$POOL/status-trans-parent"
+    local size_mb=4  # 1 object — fast test
+    local raw_file="/tmp/backfill-test-status-$$.raw"
+    local blog="/tmp/rbd-backfill-status-$$.log"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
+
+    create_test_image_with_pattern $size_mb "$raw_file"
+    "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/status-trans.raw" 2>&1 | grep -v "^mc:" || true
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img" \
+        --s3-endpoint   "$S3_ENDPOINT" \
+        --s3-bucket     "$S3_BUCKET" \
+        --s3-image-name "status-trans.raw" \
+        --s3-access-key minioadmin \
+        --s3-secret-key minioadmin
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$img"
+
+    # Pre-condition: scheduled=true, status absent
+    local sched
+    sched=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+        image-meta get "$img" backfill_scheduled 2>/dev/null || echo "")
+    if [ "$sched" != "true" ]; then
+        log_fail "pre-condition: backfill_scheduled not 'true'; got: '$sched'"
+        rm -f "$raw_file" "$blog"
+        return 1
+    fi
+
+    run_backfill_daemon "$CEPH_CONF" "$blog"
+
+    # Poll until backfill_status=complete (up to 60s)
+    local done=0
+    for i in $(seq 1 60); do
+        local status
+        status=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+            image-meta get "$img" backfill_status 2>/dev/null || echo "")
+        if [ "$status" = "complete" ]; then
+            done=1
+            log_success "backfill_status=complete after ${i}s"
+            break
+        fi
+        sleep 1
+    done
+
+    stop_backfill_daemon
+
+    if [ "$done" -eq 0 ]; then
+        log_fail "backfill_status never reached 'complete' within 60s"
+        cat "$blog"
+        rm -f "$raw_file" "$blog"
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
+        return 1
+    fi
+
+    # Post-condition: backfill_scheduled must be absent after completion
+    local sched_after
+    sched_after=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+        image-meta get "$img" backfill_scheduled 2>/dev/null || echo "")
+    if [ -n "$sched_after" ]; then
+        log_fail "backfill_scheduled not cleared after completion; value='$sched_after'"
+        rm -f "$raw_file" "$blog"
+        return 1
+    fi
+    log_success "backfill_scheduled cleared after completion"
+
+    rm -f "$raw_file" "$blog"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
+}
+
+# ============================================================================
+test_backfill_status_on_failure() {
+    # When S3 is unreachable, the daemon must set backfill_status="failed"
+    # (not leave it absent or stale) and clear backfill_scheduled so the
+    # operator knows the backfill attempt completed (unsuccessfully).
+
+    local img="$POOL/status-fail-parent"
+    local size_mb=4  # 1 object
+    local blog="/tmp/rbd-backfill-fail-$$.log"
+    # Use a port that is guaranteed to refuse connections immediately.
+    local bad_endpoint="http://127.0.0.1:19997"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img" \
+        --s3-endpoint   "$bad_endpoint" \
+        --s3-bucket     "no-such-bucket" \
+        --s3-image-name "no-such-image.raw" \
+        --s3-access-key minioadmin \
+        --s3-secret-key minioadmin
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$img"
+
+    run_backfill_daemon "$CEPH_CONF" "$blog"
+
+    # Poll until backfill_status is non-empty (either "complete" or "failed")
+    local done=0
+    for i in $(seq 1 60); do
+        local status
+        status=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+            image-meta get "$img" backfill_status 2>/dev/null || echo "")
+        if [ -n "$status" ]; then
+            done=1
+            log_info "backfill_status='$status' after ${i}s"
+            break
+        fi
+        sleep 1
+    done
+
+    stop_backfill_daemon
+
+    if [ "$done" -eq 0 ]; then
+        log_fail "backfill_status never set within 60s"
+        cat "$blog"
+        rm -f "$blog"
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
+        return 1
+    fi
+
+    local final_status
+    final_status=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+        image-meta get "$img" backfill_status 2>/dev/null || echo "")
+    if [ "$final_status" != "failed" ]; then
+        log_fail "expected backfill_status='failed', got: '$final_status'"
+        rm -f "$blog"
+        return 1
+    fi
+    log_success "backfill_status=failed as expected"
+
+    # backfill_scheduled must be cleared even on failure
+    local sched
+    sched=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+        image-meta get "$img" backfill_scheduled 2>/dev/null || echo "")
+    if [ -n "$sched" ]; then
+        log_fail "backfill_scheduled not cleared after failure; value='$sched'"
+        rm -f "$blog"
+        return 1
+    fi
+    log_success "backfill_scheduled cleared after failure"
+
+    rm -f "$blog"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
+}
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -491,5 +650,7 @@ run_test "backfill_cache_hit"         test_backfill_cache_hit
 run_test "backfill_restart_recovery"  test_backfill_restart_recovery
 run_test "backfill_no_conf_fails_fast" test_backfill_no_conf_fails_fast
 run_test "backfill_foreground_stderr" test_backfill_foreground_stderr
+run_test "backfill_status_transitions" test_backfill_status_transitions
+run_test "backfill_status_on_failure"  test_backfill_status_on_failure
 
 print_test_summary

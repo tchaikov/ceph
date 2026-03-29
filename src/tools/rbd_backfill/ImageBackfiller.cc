@@ -201,27 +201,32 @@ void ImageBackfiller::run_backfill() {
     std::string final_status = (failed == 0) ? BACKFILL_STATUS_COMPLETE
                                               : BACKFILL_STATUS_FAILED;
 
-    // Remove the scheduling flag so a restarted daemon does not re-queue
-    // this image.  Ignore ENOENT in case it was already cleared externally.
-    int mr = librbd::cls_client::metadata_remove(
-               &m_ioctx, m_image_ctx->header_oid, BACKFILL_SCHEDULED_KEY);
-    if (mr < 0 && mr != -ENOENT) {
-      dout(5) << "warning: failed to remove backfill_scheduled: "
-              << cpp_strerror(mr) << dendl;
-    }
-
-    // Update status for 'rbd backfill status' output
+    // Write status FIRST so a crash between these two operations leaves the
+    // image in a recoverable state: if status is set but scheduled is not yet
+    // cleared, a restarted daemon will re-queue the image, stat each object
+    // (finding them already written), and update status to "complete" again.
+    // The reverse order (clear scheduled first) would leave status permanently
+    // stale with no re-queue trigger.
     std::map<std::string, bufferlist> pairs;
     bufferlist bl;
     bl.append(final_status);
     pairs[BACKFILL_STATUS_KEY] = bl;
-    mr = librbd::cls_client::metadata_set(
-           &m_ioctx, m_image_ctx->header_oid, pairs);
+    int mr = librbd::cls_client::metadata_set(
+               &m_ioctx, m_image_ctx->header_oid, pairs);
     if (mr < 0) {
       dout(5) << "warning: failed to update backfill_status: "
               << cpp_strerror(mr) << dendl;
     } else {
       dout(5) << "backfill_status updated to '" << final_status << "'" << dendl;
+    }
+
+    // Remove the scheduling flag so a restarted daemon does not re-queue
+    // this image.  Ignore ENOENT in case it was already cleared externally.
+    mr = librbd::cls_client::metadata_remove(
+           &m_ioctx, m_image_ctx->header_oid, BACKFILL_SCHEDULED_KEY);
+    if (mr < 0 && mr != -ENOENT) {
+      dout(5) << "warning: failed to remove backfill_scheduled: "
+              << cpp_strerror(mr) << dendl;
     }
   }
 
