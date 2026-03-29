@@ -371,25 +371,7 @@ uint64_t S3ObjectFetcher::calculate_s3_offset(uint64_t object_no, uint64_t objec
   return (object_no * m_s3_config.object_size) + object_off;
 }
 
-std::string S3ObjectFetcher::build_s3_url() const {
-  // Build URL from S3 config: endpoint/bucket/image_name
-  std::string url = m_s3_config.endpoint;
-  if (url.back() != '/') {
-    url += "/";
-  }
-  url += m_s3_config.bucket;
-  if (!m_s3_config.prefix.empty()) {
-    if (url.back() != '/') {
-      url += "/";
-    }
-    url += m_s3_config.prefix;
-  }
-  if (url.back() != '/') {
-    url += "/";
-  }
-  url += m_s3_config.image_name;
-  return url;
-}
+
 
 void* S3ObjectFetcher::async_fetch_thread(void* arg) {
   FetchContext* ctx = static_cast<FetchContext*>(arg);
@@ -603,7 +585,7 @@ void S3ObjectFetcher::fetch(uint64_t object_no, uint64_t object_off,
   uint64_t s3_offset = calculate_s3_offset(object_no, object_off);
 
   // Build S3 URL
-  std::string url = build_s3_url();
+  std::string url = m_s3_config.build_url();
 
   ldout(m_cct, 10) << "fetching object_no=" << object_no
                    << " object_off=" << object_off
@@ -619,7 +601,7 @@ int S3ObjectFetcher::fetch_sync(uint64_t object_no, uint64_t object_off,
   uint64_t s3_offset = calculate_s3_offset(object_no, object_off);
 
   // Build S3 URL
-  std::string url = build_s3_url();
+  std::string url = m_s3_config.build_url();
 
   // Perform HTTP Range GET
   return fetch_with_retry(url, out_bl, s3_offset, length);

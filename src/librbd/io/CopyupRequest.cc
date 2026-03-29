@@ -825,8 +825,8 @@ void CopyupRequest<I>::fetch_from_s3_with_lock() {
   // Note: cls::lock::lock() expects utime_t for duration
   utime_t lock_duration(lock_timeout, 0);
 
-  rados::cls::lock::lock(&lock_op, "s3_fetch_lock", LOCK_EXCLUSIVE,
-                        lock_cookie, "s3_fetch", "S3 fetch in progress",
+  rados::cls::lock::lock(&lock_op, S3_FETCH_LOCK_NAME, LOCK_EXCLUSIVE,
+                        lock_cookie, S3_FETCH_LOCK_TAG, "S3 fetch in progress",
                         lock_duration, 0);
 
   // Send lock operation
@@ -883,7 +883,7 @@ void CopyupRequest<I>::try_preempt_backfill_lock() {
 
   // Async RADOS read to list lock holders.
   librados::ObjectReadOperation read_op;
-  rados::cls::lock::get_lock_info_start(&read_op, "s3_fetch_lock");
+  rados::cls::lock::get_lock_info_start(&read_op, S3_FETCH_LOCK_NAME);
 
   m_lock_info_bl.clear();
   using klass = CopyupRequest<I>;
@@ -926,13 +926,13 @@ void CopyupRequest<I>::handle_list_lock_holders(int r) {
   // Check if any holder is a backfill daemon (cookie starts with "backfill-")
   for (auto &kv : lockers) {
     const auto &cookie = kv.first.cookie;
-    if (cookie.compare(0, 9, "backfill-") == 0) {
+    if (cookie.compare(0, strlen(BACKFILL_LOCK_COOKIE_PREFIX), BACKFILL_LOCK_COOKIE_PREFIX) == 0) {
       ldout(cct, 10) << "backfill daemon holds lock (cookie=" << cookie
                      << ", entity=" << kv.first.locker
                      << "), breaking to preempt" << dendl;
 
       librados::ObjectWriteOperation break_op;
-      rados::cls::lock::break_lock(&break_op, "s3_fetch_lock",
+      rados::cls::lock::break_lock(&break_op, S3_FETCH_LOCK_NAME,
                                    cookie, kv.first.locker);
 
       // Wait for the break to complete before re-checking parent existence.
@@ -1009,11 +1009,12 @@ void CopyupRequest<I>::retry_read_from_parent() {
     return;
   }
 
-  // Exponential backoff: 1s, 2s, 4s, 8s, 16s …
-  // Cap the shift to 20 (≈17min max) to avoid UB: shifting a 32-bit value by
-  // ≥32 bits is undefined behaviour in C++, and 1 << 31 overflows signed int.
+  // Exponential backoff: 1s, 2s, 4s, 8s, 16s … capped at 30s.
+  // Two guards: (a) cap shift to 20 to avoid undefined 32-bit left-shift;
+  // (b) cap delay to 30 000 ms so I/O does not stall for minutes even if
+  // rbd_s3_lock_retry_max is set to its maximum value.
   uint32_t shift = (m_s3_retry_count - 1 < 20u) ? (m_s3_retry_count - 1) : 20u;
-  uint32_t delay_ms = 1000u * (1u << shift);
+  uint32_t delay_ms = std::min(1000u * (1u << shift), 30000u);
 
   ldout(cct, 10) << "retry #" << m_s3_retry_count << " after " << delay_ms
                  << "ms (another child may be writing parent object)" << dendl;
@@ -1198,7 +1199,7 @@ void CopyupRequest<I>::unlock_parent_object() {
   // via the configured timeout, allowing the next holder to acquire the lock
   // once the lease expires.  The initial submission error IS logged below.
   librados::ObjectWriteOperation unlock_op;
-  rados::cls::lock::unlock(&unlock_op, "s3_fetch_lock", lock_cookie);
+  rados::cls::lock::unlock(&unlock_op, S3_FETCH_LOCK_NAME, lock_cookie);
 
   auto rados_completion = librados::Rados::aio_create_completion();
   int r = m_parent_ioctx.aio_operate(m_parent_lock_oid, rados_completion, &unlock_op);

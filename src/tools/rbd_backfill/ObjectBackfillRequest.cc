@@ -3,6 +3,8 @@
 
 #include "ObjectBackfillRequest.h"
 #include "BackfillDaemon.h"
+#include "Types.h"
+#include "librbd/Types.h"
 #include "common/debug.h"
 #include "common/errno.h"
 #include "common/WorkQueue.h"
@@ -47,12 +49,12 @@ ObjectBackfillRequest::ObjectBackfillRequest(
 
   // Generate unique lock cookie using thread ID and timestamp
   std::stringstream ss;
-  ss << "backfill-" << pthread_self() << "-" << ceph_clock_now();
+  ss << librbd::BACKFILL_LOCK_COOKIE_PREFIX << pthread_self() << "-" << ceph_clock_now();
   m_lock_cookie = ss.str();
 
   // Lock name is the object name
-  m_lock_name = "s3_fetch_lock";
-  m_lock_tag = "s3_fetch";  // Must match CopyupRequest's lock tag
+  m_lock_name = librbd::S3_FETCH_LOCK_NAME;
+  m_lock_tag = librbd::S3_FETCH_LOCK_TAG;  // Must match CopyupRequest's lock tag (librbd/Types.h)
 
   // Sentinel lock object: must match CopyupRequest::m_parent_lock_oid
   // (m_parent_oid + ".s3lk").  Using a separate sentinel prevents the

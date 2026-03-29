@@ -109,7 +109,6 @@ private:
   uint64_t calculate_s3_offset(uint64_t object_no, uint64_t object_off) const;
 
   // Build S3 URL from config
-  std::string build_s3_url() const;
 
   // Perform HTTP Range GET request with retry logic
   int fetch_with_retry(const std::string& url, bufferlist* data,

@@ -10,6 +10,7 @@
 #include "include/stringify.h"
 #include <iostream>
 #include <boost/program_options.hpp>
+#include "tools/rbd_backfill/Types.h"
 
 namespace rbd {
 namespace action {
@@ -19,8 +20,6 @@ namespace at = argument_types;
 namespace po = boost::program_options;
 
 // Metadata key for backfill scheduling
-static const std::string BACKFILL_SCHEDULED_KEY = "backfill_scheduled";
-static const std::string BACKFILL_STATUS_KEY = "backfill_status";
 
 namespace {
 
@@ -73,13 +72,13 @@ int execute_schedule(const po::variables_map &vm,
 
   // Set metadata to mark image as scheduled for backfill
   std::string timestamp = stringify(time(nullptr));
-  r = image.metadata_set(BACKFILL_SCHEDULED_KEY, "true");
+  r = image.metadata_set(rbd::backfill::BACKFILL_SCHEDULED_KEY, rbd::backfill::BACKFILL_SCHED_TRUE);
   if (r < 0) {
     std::cerr << "rbd: failed to schedule backfill: " << cpp_strerror(r) << std::endl;
     return r;
   }
 
-  r = image.metadata_set(BACKFILL_STATUS_KEY, "scheduled");
+  r = image.metadata_set(rbd::backfill::BACKFILL_STATUS_KEY, "scheduled");
   if (r < 0) {
     std::cerr << "rbd: failed to set backfill status: " << cpp_strerror(r) << std::endl;
     return r;
@@ -148,10 +147,10 @@ int execute_list(const po::variables_map &vm,
     }
 
     std::string scheduled_value;
-    r = image.metadata_get(BACKFILL_SCHEDULED_KEY, &scheduled_value);
+    r = image.metadata_get(rbd::backfill::BACKFILL_SCHEDULED_KEY, &scheduled_value);
     if (r >= 0 && scheduled_value == "true") {
       std::string status_value = "unknown";
-      image.metadata_get(BACKFILL_STATUS_KEY, &status_value);
+      image.metadata_get(rbd::backfill::BACKFILL_STATUS_KEY, &status_value);
 
       if (formatter.get()) {
         formatter->open_object_section("image");
@@ -215,17 +214,17 @@ int execute_status(const po::variables_map &vm,
   }
 
   std::string scheduled_value;
-  int scheduled_r = image.metadata_get(BACKFILL_SCHEDULED_KEY, &scheduled_value);
+  int scheduled_r = image.metadata_get(rbd::backfill::BACKFILL_SCHEDULED_KEY, &scheduled_value);
 
   std::string status_value;
-  image.metadata_get(BACKFILL_STATUS_KEY, &status_value);
+  image.metadata_get(rbd::backfill::BACKFILL_STATUS_KEY, &status_value);
 
   // Three states:
   // 1. backfill_scheduled == "true" or "in_progress": backfill pending/running
   // 2. backfill_scheduled absent, backfill_status == "complete"/"failed": done
   // 3. Neither key: never scheduled
   bool scheduled = (scheduled_r == 0 &&
-                    (scheduled_value == "true" || scheduled_value == "in_progress"));
+                    (scheduled_value == rbd::backfill::BACKFILL_SCHED_TRUE || scheduled_value == rbd::backfill::BACKFILL_SCHED_IN_PROGRESS));
   bool finished = (scheduled_r < 0 &&
                    (!status_value.empty() &&
                     (status_value == "complete" || status_value == "failed")));
@@ -293,13 +292,13 @@ int execute_cancel(const po::variables_map &vm,
   }
 
   // Remove backfill scheduling metadata
-  r = image.metadata_remove(BACKFILL_SCHEDULED_KEY);
+  r = image.metadata_remove(rbd::backfill::BACKFILL_SCHEDULED_KEY);
   if (r < 0 && r != -ENOENT) {
     std::cerr << "rbd: failed to cancel backfill: " << cpp_strerror(r) << std::endl;
     return r;
   }
 
-  r = image.metadata_remove(BACKFILL_STATUS_KEY);
+  r = image.metadata_remove(rbd::backfill::BACKFILL_STATUS_KEY);
   if (r < 0 && r != -ENOENT) {
     std::cerr << "rbd: failed to remove backfill status: " << cpp_strerror(r) << std::endl;
     return r;

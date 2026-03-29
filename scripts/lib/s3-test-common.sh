@@ -17,7 +17,7 @@ log_success() { echo -e "${GREEN}[✓]${NC} $1"; }
 log_fail() { echo -e "${RED}[✗]${NC} $1"; }
 
 # Default configuration
-WORKSPACE="${WORKSPACE:-/home/kefu/dev/ceph-nautilus}"
+WORKSPACE="${WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 MINIO_BIN="${MINIO_BIN:-${HOME}/dev/minio/bin}"
 BUILD_DIR="${BUILD_DIR:-${WORKSPACE}/build}"
 CEPH_CONF="${CEPH_CONF:-${BUILD_DIR}/ceph.conf}"

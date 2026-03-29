@@ -2,6 +2,7 @@
 // vim: ts=8 sw=2 smarttab
 
 #include "ImageBackfiller.h"
+#include "Types.h"
 #include "BackfillDaemon.h"
 #include "BackfillThrottler.h"
 #include "ObjectBackfillRequest.h"
@@ -188,7 +189,7 @@ void ImageBackfiller::run_backfill() {
     // Remove the scheduling flag so a restarted daemon does not re-queue
     // this image.  Ignore ENOENT in case it was already cleared externally.
     int mr = librbd::cls_client::metadata_remove(
-               &m_ioctx, m_image_ctx->header_oid, "backfill_scheduled");
+               &m_ioctx, m_image_ctx->header_oid, BACKFILL_SCHEDULED_KEY);
     if (mr < 0 && mr != -ENOENT) {
       dout(5) << "warning: failed to remove backfill_scheduled: "
               << cpp_strerror(mr) << dendl;
@@ -198,7 +199,7 @@ void ImageBackfiller::run_backfill() {
     std::map<std::string, bufferlist> pairs;
     bufferlist bl;
     bl.append(final_status);
-    pairs["backfill_status"] = bl;
+    pairs[BACKFILL_STATUS_KEY] = bl;
     mr = librbd::cls_client::metadata_set(
            &m_ioctx, m_image_ctx->header_oid, pairs);
     if (mr < 0) {

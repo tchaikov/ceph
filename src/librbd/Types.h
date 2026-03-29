@@ -87,6 +87,16 @@ struct RemoteParentSpec {
 };
 
 /// S3 configuration for S3-backed parent images
+// Distributed-lock constants for the S3 fetch path.
+// Used by both CopyupRequest (I/O path) and ObjectBackfillRequest (backfill
+// daemon); defined here so both sides use the same values without diverging.
+static constexpr const char* S3_FETCH_LOCK_NAME          = "s3_fetch_lock";
+static constexpr const char* S3_FETCH_LOCK_TAG           = "s3_fetch";
+static constexpr const char* S3_FETCH_LOCK_SENTINEL_SUFFIX = ".s3lk";
+// Prefix written by ObjectBackfillRequest into its lock cookie; CopyupRequest
+// identifies daemon locks by matching this prefix before breaking them.
+static constexpr const char* BACKFILL_LOCK_COOKIE_PREFIX = "backfill-";
+
 struct S3Config {
   bool enabled = false;
   std::string bucket;

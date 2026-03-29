@@ -2,6 +2,7 @@
 // vim: ts=8 sw=2 smarttab
 
 #include "BackfillDaemon.h"
+#include "Types.h"
 #include "BackfillThrottler.h"
 #include "ImageBackfiller.h"
 #include "include/rados/librados.hpp"
@@ -259,7 +260,7 @@ int BackfillDaemon::discover_scheduled_images() {
         }
 
         std::string scheduled_value;
-        r = image.metadata_get("backfill_scheduled", &scheduled_value);
+        r = image.metadata_get(BACKFILL_SCHEDULED_KEY, &scheduled_value);
         if (r >= 0 && scheduled_value == "true") {
           // Claim the image before adding it to our work list.  Immediately
           // transition "true" → "in_progress" so that a second daemon instance
@@ -269,7 +270,7 @@ int BackfillDaemon::discover_scheduled_images() {
           // set is negligible in practice (daemons don't start simultaneously).
           // The alternative — a cls_lock on the image header — provides
           // stronger atomicity if needed in the future.
-          int claim_r = image.metadata_set("backfill_scheduled", "in_progress");
+          int claim_r = image.metadata_set(BACKFILL_SCHEDULED_KEY, BACKFILL_SCHED_IN_PROGRESS);
           if (claim_r < 0) {
             dout(5) << "failed to claim image " << pool_name
                     << (ns.empty() ? "" : "/" + ns)
