@@ -7,7 +7,6 @@
 #include "common/errno.h"
 #include "common/Formatter.h"
 #include "common/TextTable.h"
-#include "include/stringify.h"
 #include <iostream>
 #include <boost/program_options.hpp>
 #include "tools/rbd_backfill/Types.h"
@@ -71,7 +70,6 @@ int execute_schedule(const po::variables_map &vm,
   }
 
   // Set metadata to mark image as scheduled for backfill
-  std::string timestamp = stringify(time(nullptr));
   r = image.metadata_set(rbd::backfill::BACKFILL_SCHEDULED_KEY, rbd::backfill::BACKFILL_SCHED_TRUE);
   if (r < 0) {
     std::cerr << "rbd: failed to schedule backfill: " << cpp_strerror(r) << std::endl;

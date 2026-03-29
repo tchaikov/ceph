@@ -10,7 +10,6 @@
 #include "librbd/ImageCtx.h"
 #include "librbd/ImageState.h"
 #include "librbd/Types.h"
-#include "librbd/internal.h"
 #include "librbd/io/S3ObjectFetcher.h"
 #include "cls/rbd/cls_rbd_client.h"
 #include "common/debug.h"
@@ -420,89 +419,26 @@ void ImageBackfiller::handle_object_complete(int r) {
 void ImageBackfiller::load_s3_config() {
   dout(10) << dendl;
 
-  // Load S3 configuration from image metadata
-  // Metadata keys: s3_endpoint, s3_bucket_name, s3_object_key,
-  //                s3_access_key, s3_secret_key, s3_region, s3_image_format
+  // S3 config is already populated by ImageCtx::apply_metadata() during open().
+  // Just validate and create the fetcher.
+  const librbd::S3Config& s3_config = m_image_ctx->s3_config;
 
-  librbd::S3Config s3_config;
-
-  // Helper lambda to get metadata value
-  auto get_metadata = [this](const std::string& key, std::string& value) -> bool {
-    int r = librbd::metadata_get(m_image_ctx.get(), key, &value);
-    if (r < 0 && r != -ENOENT) {
-      dout(5) << "warning: failed to read " << key << ": "
-              << cpp_strerror(r) << dendl;
-      return false;
-    }
-    return (r == 0);
-  };
-
-  // Check if S3 is enabled
-  std::string endpoint, bucket, image_name;
-  if (!get_metadata("s3.endpoint", endpoint)) {
-    dout(10) << "S3 not configured for image (no s3.endpoint metadata)" << dendl;
-    return;
-  }
-
-  if (!get_metadata("s3.bucket", bucket)) {
-    dout(5) << "S3 enabled but missing s3.bucket metadata" << dendl;
-    return;
-  }
-
-  if (!get_metadata("s3.image_name", image_name)) {
-    dout(5) << "S3 enabled but missing s3.image_name metadata" << dendl;
-    return;
-  }
-
-  // Populate S3Config
-  s3_config.enabled = true;
-  s3_config.endpoint = endpoint;
-  s3_config.bucket = bucket;
-  s3_config.image_name = image_name;
-
-  // Get optional fields
-  get_metadata("s3.region", s3_config.region);
-  get_metadata("s3.access_key", s3_config.access_key);
-  get_metadata("s3.prefix", s3_config.prefix);
-
-  // Secret key is stored base64-encoded
-  std::string encoded_secret_key;
-  if (get_metadata("s3.secret_key", encoded_secret_key)) {
-    bufferlist encoded_bl;
-    encoded_bl.append(encoded_secret_key);
-    bufferlist decoded_bl;
-    try {
-      decoded_bl.decode_base64(encoded_bl);
-      s3_config.secret_key = decoded_bl.to_str();
-    } catch (buffer::error& err) {
-      // Base64 decode failed - try using raw value (for testing/MinIO)
-      dout(10) << "note: s3_secret_key not base64-encoded, using raw value" << dendl;
-      s3_config.secret_key = encoded_secret_key;
-    }
-  }
-
-  s3_config.image_format = "raw";  // default; overridden by s3.image_format metadata if set
-  get_metadata("s3.image_format", s3_config.image_format);
-
-  // Set object_size - THIS IS CRITICAL for offset calculation
-  s3_config.object_size = 1ull << m_image_ctx->order;
-
-  // Validate configuration
   if (!s3_config.is_valid()) {
-    derr << "S3 configuration is invalid!" << dendl;
+    derr << "S3 not configured or invalid for image " << m_spec.image_name
+         << " — check s3.bucket, s3.endpoint, s3.image_name, s3.image_format metadata"
+         << dendl;
     return;
   }
 
-  dout(10) << "loaded S3 configuration: "
+  dout(10) << "S3 configuration: "
            << "endpoint=" << s3_config.endpoint
            << ", bucket=" << s3_config.bucket
            << ", image_name=" << s3_config.image_name
            << ", object_size=" << s3_config.object_size
            << ", format=" << s3_config.image_format << dendl;
 
-  // Create S3ObjectFetcher using unique_ptr
   m_s3_fetcher = std::make_unique<librbd::io::S3ObjectFetcher>(m_cct, s3_config);
-  dout(10) << "created S3ObjectFetcher successfully" << dendl;
+  dout(10) << "created S3ObjectFetcher" << dendl;
 }
 
 } // namespace backfill

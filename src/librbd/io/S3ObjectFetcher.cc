@@ -8,7 +8,6 @@
 #include "include/ceph_assert.h"
 
 #include <curl/curl.h>
-#include <pthread.h>
 #include <chrono>
 #include <mutex>
 #include <thread>
@@ -48,7 +47,10 @@ void S3ObjectFetcher::share_unlock(CURL*, curl_lock_data data, void* userptr) {
 }
 
 S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config)
-  : m_cct(cct), m_s3_config(s3_config) {
+  : m_cct(cct),
+    m_s3_config(s3_config),
+    m_signer(AWSV4Signer::Credentials(s3_config.access_key, s3_config.secret_key,
+                                      s3_config.region, "s3")) {
   // Thread-safe initialization of libcurl (called once per process)
   std::call_once(curl_init_flag, init_curl_once);
 
@@ -141,22 +143,6 @@ void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
     return;
   }
 
-  std::string region = m_s3_config.region;
-  if (region.empty()) {
-    region = "us-east-1";  // Default region for S3-compatible services
-  }
-
-  ldout(m_cct, 10) << "using region for signing: " << region << dendl;
-
-  AWSV4Signer::Credentials creds(
-    m_s3_config.access_key,
-    m_s3_config.secret_key,
-    region,
-    "s3"
-  );
-
-  AWSV4Signer signer(creds);
-
   std::string host = extract_host_from_url(url);
   std::string uri = extract_uri_from_url(url);
 
@@ -166,19 +152,15 @@ void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
   std::map<std::string, std::string> additional_headers;
   if (byte_length > 0) {
     uint64_t byte_end = byte_start + byte_length - 1;
-    std::string range_value = "bytes=" + std::to_string(byte_start) +
-                               "-" + std::to_string(byte_end);
-    additional_headers["range"] = range_value;
+    additional_headers["range"] = "bytes=" + std::to_string(byte_start) +
+                                  "-" + std::to_string(byte_end);
   }
 
-  auto signed_request = signer.sign_request(
-    "GET",
-    host,
-    uri,
+  auto signed_request = m_signer.sign_request(
+    "GET", host, uri,
     "",  // No query string
     additional_headers,
-    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"  // SHA256 of empty payload
-  );
+    AWSV4Signer::UNSIGNED_PAYLOAD);
 
   // Add all signed headers
   for (const auto& header : signed_request.headers) {
@@ -565,25 +547,18 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
     return;
   }
 
-  // Launch async fetch thread
-  pthread_t thread_id;
-  pthread_attr_t attr;
-  pthread_attr_init(&attr);
-  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-
-  int r = pthread_create(&thread_id, &attr, async_fetch_thread, ctx);
-  pthread_attr_destroy(&attr);
-
-  if (r != 0) {
-    ldout(cct, 1) << "failed to create async fetch thread: " << cpp_strerror(r) << dendl;
+  // Launch async fetch thread — detached so it cleans up automatically
+  try {
+    std::thread([ctx]() { async_fetch_thread(ctx); }).detach();
+  } catch (const std::system_error& e) {
+    lderr(cct) << "failed to create async fetch thread: " << e.what() << dendl;
     curl_slist_free_all(ctx->headers);
     curl_easy_cleanup(ctx->curl_handle);
-    on_finish->complete(-r);
+    on_finish->complete(-ENOMEM);
     delete ctx;
     return;
   }
 
-  // Thread will handle completion callback and cleanup
   ldout(cct, 15) << "launched async S3 fetch thread" << dendl;
 }
 

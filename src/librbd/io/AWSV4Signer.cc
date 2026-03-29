@@ -26,30 +26,24 @@ AWSV4Signer::AWSV4Signer(const Credentials& credentials)
   }
 }
 
-std::string AWSV4Signer::get_iso8601_timestamp(time_t t) {
+static std::string format_time(time_t t, const char* fmt, size_t buf_size) {
   if (t == 0) {
     t = time(nullptr);
   }
-
   struct tm tm_buf;
   gmtime_r(&t, &tm_buf);
+  std::string result(buf_size, '\0');
+  size_t len = strftime(&result[0], buf_size, fmt, &tm_buf);
+  result.resize(len);
+  return result;
+}
 
-  char buf[32];
-  size_t len = strftime(buf, sizeof(buf), "%Y%m%dT%H%M%SZ", &tm_buf);
-  return std::string(buf, len);
+std::string AWSV4Signer::get_iso8601_timestamp(time_t t) {
+  return format_time(t, "%Y%m%dT%H%M%SZ", 20);
 }
 
 std::string AWSV4Signer::get_date_string(time_t t) {
-  if (t == 0) {
-    t = time(nullptr);
-  }
-
-  struct tm tm_buf;
-  gmtime_r(&t, &tm_buf);
-
-  char buf[16];
-  size_t len = strftime(buf, sizeof(buf), "%Y%m%d", &tm_buf);
-  return std::string(buf, len);
+  return format_time(t, "%Y%m%d", 10);
 }
 
 std::string AWSV4Signer::sha256_hex(const std::string& data) {
@@ -178,21 +172,27 @@ std::string AWSV4Signer::create_string_to_sign(
 
 std::array<unsigned char, 32> AWSV4Signer::calculate_signing_key(
     const std::string& date_string) {
-  // kSecret = AWS4 + SecretAccessKey
+  // The signing key is stable for a full calendar day (changes only when the
+  // date rolls over).  Cache it per-thread so repeated requests within the
+  // same day skip the four HMAC-SHA256 derivation steps.
+  thread_local std::string tl_cached_date;
+  thread_local std::array<unsigned char, 32> tl_cached_key;
+
+  if (date_string == tl_cached_date) {
+    return tl_cached_key;
+  }
+
+  // kSecret = "AWS4" + SecretAccessKey
   std::string k_secret = "AWS4" + m_credentials.secret_key;
 
-  // kDate = HMAC("AWS4" + kSecret, Date)
-  auto k_date = hmac_sha256(k_secret, date_string);
-
-  // kRegion = HMAC(kDate, Region)
-  auto k_region = hmac_sha256(k_date, m_credentials.region);
-
-  // kService = HMAC(kRegion, Service)
-  auto k_service = hmac_sha256(k_region, m_credentials.service);
-
-  // kSigning = HMAC(kService, "aws4_request")
+  // Derive: kDate → kRegion → kService → kSigning
+  auto k_date    = hmac_sha256(k_secret,  date_string);
+  auto k_region  = hmac_sha256(k_date,    m_credentials.region);
+  auto k_service = hmac_sha256(k_region,  m_credentials.service);
   auto k_signing = hmac_sha256(k_service, "aws4_request");
 
+  tl_cached_date = date_string;
+  tl_cached_key  = k_signing;
   return k_signing;
 }
 

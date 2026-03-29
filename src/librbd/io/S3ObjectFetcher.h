@@ -6,6 +6,7 @@
 
 #include "include/buffer.h"
 #include "include/Context.h"
+#include "librbd/io/AWSV4Signer.h"
 #include "librbd/Types.h"
 #include <curl/curl.h>
 #include <memory>
@@ -97,6 +98,7 @@ public:
 private:
   CephContext* m_cct;
   S3Config m_s3_config;
+  AWSV4Signer m_signer;  // Pre-built once from s3_config credentials
 
   // Shared connection/DNS cache for all easy handles created by this fetcher.
   // HTTP keep-alive: libcurl keeps idle connections open in this pool so
