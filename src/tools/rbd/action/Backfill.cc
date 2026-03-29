@@ -11,8 +11,8 @@
 #include <boost/program_options.hpp>
 #include "tools/rbd_backfill/Types.h"
 #include "librbd/Types.h"
-#include "librbd/Utils.h"
 #include "include/buffer.h"
+#include "include/rbd_types.h"
 #include "cls/rbd/cls_rbd_client.h"
 
 namespace rbd {
@@ -166,7 +166,7 @@ int execute_list(const po::variables_map &vm,
     pending[i].image_name = images[i].name;
     pending[i].c = librados::Rados::aio_create_completion();
     librbd::cls_client::metadata_list_start(&pending[i].op, rbd::backfill::BACKFILL_META_NS, 5);
-    io_ctx.aio_operate(librbd::util::header_name(images[i].id),
+    io_ctx.aio_operate(std::string(RBD_HEADER_PREFIX) + images[i].id,
                        pending[i].c, &pending[i].op, &pending[i].out_bl);
   }
 

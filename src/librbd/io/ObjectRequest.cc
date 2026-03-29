@@ -608,14 +608,24 @@ void ObjectReadRequest<I>::update_object_map_for_s3_write_back() {
       }
     }
   } else {
-    // object_map == nullptr means the exclusive lock is not held by this client.
-    // Directly writing the RADOS object map without exclusive lock ownership would
-    // bypass the cooperative locking protocol that RBD uses to serialise object map
-    // mutations.  Skip the update here; the map will be repaired by the next
-    // exclusive-lock holder (e.g. on flatten or the next open with fast-diff).
-    ldout(cct, 10) << "object_map is nullptr (no exclusive lock), "
-                   << "skipping object map update for object "
-                   << this->m_object_no << dendl;
+    // object_map == nullptr: no exclusive lock held.  Use the same
+    // fire-and-forget RADOS cls approach as CopyupRequest::fire_parent_s3_writeback().
+    // Setting OBJECT_EXISTS is idempotent; we have just written the RADOS
+    // object so the map must reflect it.  Skipping and deferring to "the next
+    // exclusive-lock holder" is wrong for S3-backed parents that may never
+    // acquire an exclusive lock, causing rbd-du to permanently show 0.
+    const std::string object_map_name =
+        ObjectMap<I>::object_map_name(image_ctx->id, CEPH_NOSNAP);
+    librados::ObjectWriteOperation map_op;
+    ObjectMap<I>::build_update_op(&map_op, this->m_object_no,
+                                  this->m_object_no + 1,
+                                  OBJECT_EXISTS,
+                                  boost::optional<uint8_t>());
+    auto c = librados::Rados::aio_create_completion();
+    image_ctx->data_ctx.aio_operate(object_map_name, c, &map_op);
+    c->release();
+    ldout(cct, 10) << "fired RADOS cls object map update for object "
+                   << this->m_object_no << " (no exclusive lock)" << dendl;
   }
 }
 

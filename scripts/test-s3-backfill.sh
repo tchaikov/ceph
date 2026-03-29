@@ -712,9 +712,9 @@ test_parent_du_after_backfill() {
 
 # ============================================================================
 test_parent_du_after_child_writeback() {
-    # When child I/O triggers a COW (S3 fetch + child copyup), the
-    # fire_parent_s3_writeback() path must asynchronously write the fetched data
-    # to the parent RADOS object and update its object map.  Verified via rbd du.
+    # When child I/O reads an uncached object, ObjectReadRequest fetches it
+    # from S3, writes it to the parent RADOS pool (write_back_s3_data), and
+    # updates the parent's object map.  Verified via rbd du.
 
     local parent_img="$POOL/du-writeback-parent"
     local child_img="$POOL/du-writeback-child"
@@ -737,11 +737,10 @@ test_parent_du_after_child_writeback() {
 
     create_standalone_clone "$POOL" "du-writeback-parent" "du-writeback-child"
 
-    # Trigger child COW at offset 0 — causes CopyupRequest to fetch from S3,
-    # complete child copyup, then asynchronously write back to parent + update
-    # the parent's object map (fire_parent_s3_writeback).
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" bench --io-type write "$child_img" \
-        --io-size 4096 --io-total 4096 --io-pattern seq --io-offset 0 >/dev/null 2>&1 || true
+    # Trigger S3 fetch by reading from the child.  A read on a fresh clone
+    # hits ObjectReadRequest → write_back_s3_data() which writes the fetched
+    # object to the parent RADOS pool and updates the object map.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" export "$child_img" - >/dev/null 2>&1 || true
 
     # Poll until parent used_size > 0 (write-back is async but completes quickly)
     local done=0
