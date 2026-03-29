@@ -14,6 +14,8 @@
 #   7. test_backfill_foreground_stderr  — --foreground produces visible stderr output
 #   8. test_backfill_status_transitions — state machine: scheduled→absent, status→complete
 #   9. test_backfill_status_on_failure  — S3 unreachable ⇒ status=failed, scheduled cleared
+#  10. test_parent_du_after_backfill    — rbd du parent: 0 before, provisioned_size after backfill
+#  11. test_parent_du_after_child_writeback — child COW write-back registers in parent rbd du
 #
 # Requires: running Ceph cluster (check_cluster_running), MinIO.
 # Usage: ./test-s3-backfill.sh [--conf <ceph.conf>]
@@ -39,7 +41,8 @@ cleanup() {
            /tmp/rbd-backfill-*.log
     for img in lifecycle-parent integrity-parent naming-parent \
                cache-hit-child cache-hit-parent restart-parent \
-               status-trans-parent status-fail-parent; do
+               status-trans-parent status-fail-parent \
+               du-backfill-parent du-writeback-parent du-writeback-child; do
         "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL/$img" 2>/dev/null || true
     done
     "$BUILD_DIR/bin/ceph" --conf "$CEPH_CONF" osd pool delete "$POOL" "$POOL" \
@@ -640,6 +643,148 @@ test_backfill_status_on_failure() {
 }
 
 # ============================================================================
+test_parent_du_after_backfill() {
+    # rbd du on the parent must report used_size=0 before backfill and
+    # used_size==provisioned_size after backfill completes.  Exercises both
+    # the ObjectBackfillRequest write path and its object_map_update step.
+
+    local img="$POOL/du-backfill-parent"
+    local size_mb=16  # 4 objects × 4 MiB — small but multi-object
+    local raw_file="/tmp/backfill-test-du-$$.raw"
+    local blog="/tmp/rbd-backfill-du-$$.log"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
+
+    create_test_image_with_pattern $size_mb "$raw_file"
+    "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/du-backfill.raw" 2>&1 | grep -v "^mc:" || true
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img" \
+        --s3-endpoint   "$S3_ENDPOINT" \
+        --s3-bucket     "$S3_BUCKET" \
+        --s3-image-name "du-backfill.raw" \
+        --s3-access-key minioadmin \
+        --s3-secret-key minioadmin
+
+    # Before backfill: freshly created image has no RADOS objects → used_size=0
+    local used_before
+    used_before=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" du "$img" --format json 2>/dev/null \
+        | grep -o '"used_size":[0-9]*' | head -1 | cut -d: -f2)
+    used_before=${used_before:-0}
+    if [ "$used_before" -ne 0 ]; then
+        log_fail "parent used_size before backfill should be 0, got: $used_before"
+        rm -f "$raw_file" "$blog"
+        return 1
+    fi
+    log_success "parent used_size before backfill: 0 bytes (correct)"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$img"
+    run_backfill_daemon "$CEPH_CONF" "$blog"
+    local prefix
+    prefix=$(get_block_prefix "$CEPH_CONF" "$POOL" "du-backfill-parent")
+    local expected=$(( size_mb / 4 ))
+
+    if ! wait_for_backfill_complete "$CEPH_CONF" "$POOL" "$prefix" "$expected" 60; then
+        log_fail "Backfill did not complete within 60s"
+        stop_backfill_daemon
+        rm -f "$raw_file" "$blog"
+        return 1
+    fi
+    stop_backfill_daemon
+
+    # After backfill: every object is written → used_size must equal provisioned_size
+    local provisioned=$(( size_mb * 1024 * 1024 ))
+    local used_after
+    used_after=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" du "$img" --format json 2>/dev/null \
+        | grep -o '"used_size":[0-9]*' | head -1 | cut -d: -f2)
+    used_after=${used_after:-0}
+    if [ "$used_after" -ne "$provisioned" ]; then
+        log_fail "parent used_size after backfill: expected ${provisioned}B, got ${used_after}B"
+        rm -f "$raw_file" "$blog"
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
+        return 1
+    fi
+    log_success "parent used_size after backfill: ${used_after}B == provisioned_size (correct)"
+
+    rm -f "$raw_file" "$blog"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
+}
+
+# ============================================================================
+test_parent_du_after_child_writeback() {
+    # When child I/O triggers a COW (S3 fetch + child copyup), the
+    # fire_parent_s3_writeback() path must asynchronously write the fetched data
+    # to the parent RADOS object and update its object map.  Verified via rbd du.
+
+    local parent_img="$POOL/du-writeback-parent"
+    local child_img="$POOL/du-writeback-child"
+    local size_mb=4  # 1 object — fast test
+    local raw_file="/tmp/backfill-test-du-wb-$$.raw"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child_img"  2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent_img" 2>/dev/null || true
+
+    create_test_image_with_pattern $size_mb "$raw_file"
+    "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/du-writeback.raw" 2>&1 | grep -v "^mc:" || true
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$parent_img" --size ${size_mb}M
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$parent_img" \
+        --s3-endpoint   "$S3_ENDPOINT" \
+        --s3-bucket     "$S3_BUCKET" \
+        --s3-image-name "du-writeback.raw" \
+        --s3-access-key minioadmin \
+        --s3-secret-key minioadmin
+
+    create_standalone_clone "$POOL" "du-writeback-parent" "du-writeback-child"
+
+    # Trigger child COW at offset 0 — causes CopyupRequest to fetch from S3,
+    # complete child copyup, then asynchronously write back to parent + update
+    # the parent's object map (fire_parent_s3_writeback).
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" bench --io-type write "$child_img" \
+        --io-size 4096 --io-total 4096 --io-pattern seq --io-offset 0 >/dev/null 2>&1 || true
+
+    # Poll until parent used_size > 0 (write-back is async but completes quickly)
+    local done=0
+    for i in $(seq 1 15); do
+        local used
+        used=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" du "$parent_img" --format json 2>/dev/null \
+            | grep -o '"used_size":[0-9]*' | head -1 | cut -d: -f2)
+        used=${used:-0}
+        if [ "$used" -gt 0 ]; then
+            done=1
+            log_success "parent used_size after child write-back: ${used}B (after ${i}s)"
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$done" -eq 0 ]; then
+        log_fail "parent used_size never became > 0 after child write-back (15s timeout)"
+        rm -f "$raw_file"
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child_img"  2>/dev/null || true
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent_img" 2>/dev/null || true
+        return 1
+    fi
+
+    # The write-back writes a full 4 MiB object regardless of write size
+    local expected_used=$(( 4 * 1024 * 1024 ))
+    local final_used
+    final_used=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" du "$parent_img" --format json 2>/dev/null \
+        | grep -o '"used_size":[0-9]*' | head -1 | cut -d: -f2)
+    final_used=${final_used:-0}
+    if [ "$final_used" -ne "$expected_used" ]; then
+        log_fail "parent used_size: expected ${expected_used}B (1×4MiB), got ${final_used}B"
+        rm -f "$raw_file"
+        return 1
+    fi
+    log_success "parent used_size = ${final_used}B (1 × 4 MiB object, correct)"
+
+    rm -f "$raw_file"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child_img"  2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent_img" 2>/dev/null || true
+}
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -652,5 +797,7 @@ run_test "backfill_no_conf_fails_fast" test_backfill_no_conf_fails_fast
 run_test "backfill_foreground_stderr" test_backfill_foreground_stderr
 run_test "backfill_status_transitions" test_backfill_status_transitions
 run_test "backfill_status_on_failure"  test_backfill_status_on_failure
+run_test "parent_du_after_backfill"         test_parent_du_after_backfill
+run_test "parent_du_after_child_writeback"  test_parent_du_after_child_writeback
 
 print_test_summary
