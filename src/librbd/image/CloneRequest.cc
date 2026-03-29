@@ -601,7 +601,7 @@ void CloneRequest<I>::handle_metadata_list(int r) {
     for (const auto& kv : metadata) {
       const std::string& key = kv.first;
       // Skip any metadata keys starting with "s3."
-      if (boost::starts_with(key, "s3.")) {
+      if (boost::starts_with(key, librbd::S3_META_NS)) {
         ldout(m_cct, 10) << "skipping S3 metadata key: " << key << dendl;
         continue;
       }

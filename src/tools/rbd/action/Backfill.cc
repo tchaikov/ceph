@@ -11,6 +11,7 @@
 #include <boost/program_options.hpp>
 #include "tools/rbd_backfill/Types.h"
 #include "librbd/Types.h"
+#include "include/buffer.h"
 
 namespace rbd {
 namespace action {
@@ -24,8 +25,15 @@ namespace po = boost::program_options;
 namespace {
 
 int validate_s3_backed_image(librbd::Image& image) {
-  // All four fields are required for a valid S3-backed image (matches
-  // S3Config::is_valid() in librbd/Types.h).
+  // Fetch all S3 metadata in a single RADOS round-trip, then verify that
+  // the four required keys are present and non-empty.
+  std::map<std::string, ceph::bufferlist> pairs;
+  int r = image.metadata_list(librbd::S3_META_NS, 20, &pairs);
+  if (r < 0) {
+    std::cerr << "rbd: failed to read S3 metadata: " << cpp_strerror(r) << std::endl;
+    return r;
+  }
+
   static const char* const required_keys[] = {
     librbd::S3_META_KEY_BUCKET,
     librbd::S3_META_KEY_ENDPOINT,
@@ -34,12 +42,11 @@ int validate_s3_backed_image(librbd::Image& image) {
   };
 
   for (const char* key : required_keys) {
-    std::string value;
-    int r = image.metadata_get(key, &value);
-    if (r < 0 || value.empty()) {
+    auto it = pairs.find(key);
+    if (it == pairs.end() || it->second.length() == 0) {
       std::cerr << "rbd: image is not S3-backed (missing or empty '"
                 << key << "' metadata)" << std::endl;
-      return r < 0 ? r : -EINVAL;
+      return -EINVAL;
     }
   }
   return 0;

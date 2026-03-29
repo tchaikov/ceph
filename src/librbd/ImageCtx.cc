@@ -849,7 +849,7 @@ public:
 
     for (const auto& meta_pair : meta) {
       const std::string& k = meta_pair.first;
-      if (!boost::starts_with(k, "s3.")) {
+      if (!boost::starts_with(k, librbd::S3_META_NS)) {
         continue;
       }
 

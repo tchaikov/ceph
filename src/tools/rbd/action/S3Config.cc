@@ -9,6 +9,7 @@
 #include "include/stringify.h"
 #include "librbd/Types.h"
 #include <iostream>
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/program_options.hpp>
 
 namespace rbd {
@@ -101,20 +102,12 @@ int execute_set(const po::variables_map &vm,
     return -EINVAL;
   }
 
-  // Connect to cluster and open image
   librados::Rados rados;
   librados::IoCtx io_ctx;
-  r = utils::init(pool_name, namespace_name, &rados, &io_ctx);
-  if (r < 0) {
-    return r;
-  }
-
-  librbd::RBD rbd;
   librbd::Image image;
-  r = rbd.open(io_ctx, image, image_name.c_str());
+  r = utils::init_and_open_image(pool_name, namespace_name, image_name, "", "",
+                                 false, &rados, &io_ctx, &image);
   if (r < 0) {
-    std::cerr << "rbd: error opening image " << image_name << ": "
-              << cpp_strerror(r) << std::endl;
     return r;
   }
 
@@ -182,26 +175,18 @@ int execute_get(const po::variables_map &vm,
     return r;
   }
 
-  // Connect to cluster and open image
   librados::Rados rados;
   librados::IoCtx io_ctx;
-  r = utils::init(pool_name, namespace_name, &rados, &io_ctx);
-  if (r < 0) {
-    return r;
-  }
-
-  librbd::RBD rbd;
   librbd::Image image;
-  r = rbd.open(io_ctx, image, image_name.c_str());
+  r = utils::init_and_open_image(pool_name, namespace_name, image_name, "", "",
+                                 false, &rados, &io_ctx, &image);
   if (r < 0) {
-    std::cerr << "rbd: error opening image " << image_name << ": "
-              << cpp_strerror(r) << std::endl;
     return r;
   }
 
   // Fetch all S3 metadata in a single RADOS round-trip
   std::map<std::string, ceph::bufferlist> pairs;
-  r = image.metadata_list("s3.", 20, &pairs);
+  r = image.metadata_list(librbd::S3_META_NS, 20, &pairs);
   if (r < 0) {
     std::cerr << "rbd: error listing metadata: " << cpp_strerror(r) << std::endl;
     return r;
@@ -221,7 +206,7 @@ int execute_get(const po::variables_map &vm,
   std::cout << "S3 configuration for image " << image_name << ":" << std::endl;
 
   for (const auto& kv : pairs) {
-    if (kv.first.compare(0, 3, "s3.") != 0) {
+    if (!boost::starts_with(kv.first, librbd::S3_META_NS)) {
       break;  // metadata_list is sorted; stop at first non-s3 key
     }
     std::string value = kv.second.to_str();
@@ -256,20 +241,12 @@ int execute_clear(const po::variables_map &vm,
     return r;
   }
 
-  // Connect to cluster and open image
   librados::Rados rados;
   librados::IoCtx io_ctx;
-  r = utils::init(pool_name, namespace_name, &rados, &io_ctx);
-  if (r < 0) {
-    return r;
-  }
-
-  librbd::RBD rbd;
   librbd::Image image;
-  r = rbd.open(io_ctx, image, image_name.c_str());
+  r = utils::init_and_open_image(pool_name, namespace_name, image_name, "", "",
+                                 false, &rados, &io_ctx, &image);
   if (r < 0) {
-    std::cerr << "rbd: error opening image " << image_name << ": "
-              << cpp_strerror(r) << std::endl;
     return r;
   }
 

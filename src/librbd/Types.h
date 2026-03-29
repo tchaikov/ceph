@@ -88,6 +88,9 @@ struct RemoteParentSpec {
 
 /// Metadata key constants for S3-backed parent image configuration.
 /// These are the full rbd_metadata keys as stored via `rbd image-meta set`.
+/// S3_META_NS is the common "s3." namespace prefix shared by all S3 keys;
+/// use it for metadata_list() filters and starts_with() checks.
+static constexpr const char* S3_META_NS             = "s3.";
 static constexpr const char* S3_META_KEY_ENABLED    = "s3.enabled";
 static constexpr const char* S3_META_KEY_BUCKET     = "s3.bucket";
 static constexpr const char* S3_META_KEY_ENDPOINT   = "s3.endpoint";
