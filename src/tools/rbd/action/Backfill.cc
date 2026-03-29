@@ -12,6 +12,7 @@
 #include "tools/rbd_backfill/Types.h"
 #include "librbd/Types.h"
 #include "include/buffer.h"
+#include "cls/rbd/cls_rbd_client.h"
 
 namespace rbd {
 namespace action {
@@ -148,6 +149,26 @@ int execute_list(const po::variables_map &vm,
     return r;
   }
 
+  // Batch-read backfill metadata from all images in parallel.
+  // Each image's metadata lives on its header object (rbd_header.<id>).
+  // Fire all async ops before waiting for any — RADOS pipelines them so
+  // total latency is ~1 RTT regardless of pool size, not N × RTT.
+  struct PendingRead {
+    std::string image_name;
+    librados::AioCompletion* c;
+    librados::ObjectReadOperation op;
+    bufferlist out_bl;
+  };
+
+  std::vector<PendingRead> pending(images.size());
+  for (size_t i = 0; i < images.size(); ++i) {
+    pending[i].image_name = images[i].name;
+    pending[i].c = librados::Rados::aio_create_completion();
+    librbd::cls_client::metadata_list_start(&pending[i].op, "backfill_", 5);
+    io_ctx.aio_operate("rbd_header." + images[i].id,
+                       pending[i].c, &pending[i].op, &pending[i].out_bl);
+  }
+
   TextTable tbl;
   bool has_entries = false;
   if (formatter.get()) {
@@ -157,30 +178,41 @@ int execute_list(const po::variables_map &vm,
     tbl.define_column("STATUS", TextTable::LEFT, TextTable::LEFT);
   }
 
-  for (const auto& image_spec : images) {
-    librbd::Image image;
-    r = rbd.open(io_ctx, image, image_spec.name.c_str());
-    if (r < 0) {
+  for (auto& p : pending) {
+    p.c->wait_for_complete();
+    int op_r = p.c->get_return_value();
+    p.c->release();
+    if (op_r < 0) {
       continue;
     }
 
-    std::string scheduled_value;
-    r = image.metadata_get(rbd::backfill::BACKFILL_SCHEDULED_KEY, &scheduled_value);
-    if (r >= 0 && scheduled_value == rbd::backfill::BACKFILL_SCHED_TRUE) {
-      std::string status_value = "unknown";
-      image.metadata_get(rbd::backfill::BACKFILL_STATUS_KEY, &status_value);
-
-      if (formatter.get()) {
-        formatter->open_object_section("image");
-        formatter->dump_string("name", image_spec.name);
-        formatter->dump_string("status", status_value);
-        formatter->close_section();
-      } else {
-        tbl << image_spec.name << status_value << TextTable::endrow;
-        has_entries = true;
-      }
+    std::map<std::string, bufferlist> pairs;
+    auto it = p.out_bl.cbegin();
+    if (librbd::cls_client::metadata_list_finish(&it, &pairs) < 0) {
+      continue;
     }
-    image.close();
+
+    auto sched_it = pairs.find(rbd::backfill::BACKFILL_SCHEDULED_KEY);
+    if (sched_it == pairs.end() ||
+        sched_it->second.to_str() != rbd::backfill::BACKFILL_SCHED_TRUE) {
+      continue;
+    }
+
+    std::string status_value = "unknown";
+    auto status_it = pairs.find(rbd::backfill::BACKFILL_STATUS_KEY);
+    if (status_it != pairs.end()) {
+      status_value = status_it->second.to_str();
+    }
+
+    if (formatter.get()) {
+      formatter->open_object_section("image");
+      formatter->dump_string("name", p.image_name);
+      formatter->dump_string("status", status_value);
+      formatter->close_section();
+    } else {
+      tbl << p.image_name << status_value << TextTable::endrow;
+      has_entries = true;
+    }
   }
 
   if (formatter.get()) {
