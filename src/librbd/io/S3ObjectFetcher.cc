@@ -302,10 +302,6 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
     long http_code = 0;
     curl_easy_getinfo(m_sync_handle, CURLINFO_RESPONSE_CODE, &http_code);
 
-    // Get effective URL (after redirects)
-    char* effective_url = nullptr;
-    curl_easy_getinfo(m_sync_handle, CURLINFO_EFFECTIVE_URL, &effective_url);
-
     if (res == CURLE_OK) {
       int r = http_code_to_errno(http_code);
       if (r == 0) {

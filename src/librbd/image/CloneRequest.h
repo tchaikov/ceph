@@ -162,7 +162,6 @@ private:
   void validate_options();
 
   void connect_remote_parent();
-  void handle_connect_remote_parent(int r);
 
   void open_parent();
   void handle_open_parent(int r);

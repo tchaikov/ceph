@@ -349,8 +349,9 @@ void CopyupRequest<I>::update_object_maps() {
     RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
     if (m_image_ctx->parent_md.parent_type == PARENT_TYPE_STANDALONE) {
       is_standalone_parent = true;
-      // OBJECT_COPIEDUP (5) would overflow the 2-bit object map format;
-      // use OBJECT_EXISTS (1) which correctly marks a populated object.
+      // Keep head_object_map_state = OBJECT_EXISTS (not OBJECT_EXISTS_CLEAN):
+      // the FAST_DIFF path below would otherwise mark this as OBJECT_EXISTS_CLEAN,
+      // implying it matches the snapshot chain — not valid for S3-fetched data.
       head_object_map_state = OBJECT_EXISTS;
     }
   }

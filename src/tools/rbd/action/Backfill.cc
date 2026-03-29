@@ -11,6 +11,7 @@
 #include <boost/program_options.hpp>
 #include "tools/rbd_backfill/Types.h"
 #include "librbd/Types.h"
+#include "librbd/Utils.h"
 #include "include/buffer.h"
 #include "cls/rbd/cls_rbd_client.h"
 
@@ -164,8 +165,8 @@ int execute_list(const po::variables_map &vm,
   for (size_t i = 0; i < images.size(); ++i) {
     pending[i].image_name = images[i].name;
     pending[i].c = librados::Rados::aio_create_completion();
-    librbd::cls_client::metadata_list_start(&pending[i].op, "backfill_", 5);
-    io_ctx.aio_operate("rbd_header." + images[i].id,
+    librbd::cls_client::metadata_list_start(&pending[i].op, rbd::backfill::BACKFILL_META_NS, 5);
+    io_ctx.aio_operate(librbd::util::header_name(images[i].id),
                        pending[i].c, &pending[i].op, &pending[i].out_bl);
   }
 
@@ -263,11 +264,19 @@ int execute_status(const po::variables_map &vm,
     return r;
   }
 
-  std::string scheduled_value;
-  int scheduled_r = image.metadata_get(rbd::backfill::BACKFILL_SCHEDULED_KEY, &scheduled_value);
+  std::map<std::string, ceph::bufferlist> meta;
+  r = image.metadata_list(rbd::backfill::BACKFILL_META_NS, 5, &meta);
+  if (r < 0) {
+    std::cerr << "rbd: failed to read backfill metadata: " << cpp_strerror(r) << std::endl;
+    return r;
+  }
 
-  std::string status_value;
-  image.metadata_get(rbd::backfill::BACKFILL_STATUS_KEY, &status_value);
+  auto sched_it = meta.find(rbd::backfill::BACKFILL_SCHEDULED_KEY);
+  int scheduled_r = (sched_it != meta.end()) ? 0 : -ENOENT;
+  std::string scheduled_value = (sched_it != meta.end()) ? sched_it->second.to_str() : "";
+
+  auto status_it = meta.find(rbd::backfill::BACKFILL_STATUS_KEY);
+  std::string status_value = (status_it != meta.end()) ? status_it->second.to_str() : "";
 
   // Three states:
   // 1. backfill_scheduled == "true" or "in_progress": backfill pending/running

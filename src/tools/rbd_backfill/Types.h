@@ -12,6 +12,7 @@ namespace backfill {
 // Shared metadata key names used by the backfill daemon, CLI, and librbd.
 // Defined here so all components reference the same string without risk of
 // diverging silently.
+static constexpr const char* BACKFILL_META_NS       = "backfill_";
 static constexpr const char* BACKFILL_SCHEDULED_KEY = "backfill_scheduled";
 static constexpr const char* BACKFILL_STATUS_KEY    = "backfill_status";
 

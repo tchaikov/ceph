@@ -14,6 +14,7 @@
 #include "cls/rbd/cls_rbd_client.h"
 #include "common/debug.h"
 #include "common/errno.h"
+#include "librbd/Utils.h"
 
 #define dout_context m_cct
 #define dout_subsys ceph_subsys_rbd
@@ -37,7 +38,7 @@ ImageBackfiller::ImageBackfiller(CephContext *cct,
     m_throttler(throttler),
     m_threads(threads),
     m_on_finish(on_finish),
-    m_lock("ImageBackfiller::m_lock") {
+    m_lock(librbd::util::unique_lock_name("ImageBackfiller::m_lock", this)) {
   dout(10) << dendl;
 }
 

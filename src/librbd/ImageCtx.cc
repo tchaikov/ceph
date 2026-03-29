@@ -304,12 +304,8 @@ public:
                         "S3 fetch operations", "s3fc", perf_prio);
     plb.add_u64_counter(l_librbd_s3_fetch_bytes, "s3_fetch_bytes",
                         "Bytes fetched from S3", "s3fb", perf_prio, unit_t(UNIT_BYTES));
-    plb.add_time_avg(l_librbd_s3_fetch_latency, "s3_fetch_latency",
-                     "S3 fetch latency", "s3fl", perf_prio);
     plb.add_u64_counter(l_librbd_s3_fetch_errors, "s3_fetch_errors",
                         "S3 fetch errors", "s3fe", perf_prio);
-    plb.add_u64_counter(l_librbd_s3_fetch_retries, "s3_fetch_retries",
-                        "S3 fetch retries", "s3fr", perf_prio);
 
     plb.add_time(l_librbd_opened_time, "opened_time", "Opened time",
                  "ots", perf_prio);
@@ -832,6 +828,7 @@ public:
     // Load S3 configuration from image metadata
     s3_config = S3Config();  // Reset to defaults first
     bool s3_secret_key_invalid = false;
+    bool s3_enabled_explicitly_set = false;
 
     // Helper: parse a non-negative integer metadata value into a uint32.
     auto parse_uint32_meta = [this](const std::string& val,
@@ -856,6 +853,7 @@ public:
       std::string val = meta_pair.second.to_str();
 
       if (k == S3_META_KEY_ENABLED) {
+        s3_enabled_explicitly_set = true;
         s3_config.enabled = (val == "true" || val == "1");
       } else if (k == S3_META_KEY_ENDPOINT) {
         s3_config.endpoint = val;
@@ -904,8 +902,11 @@ public:
                  << "metadata on the parent image." << dendl;
       // Leave s3_config disabled — do not fall through to auto-enable.
     } else
-    // Enable S3 config if we have the minimum required fields
-    if (!s3_config.bucket.empty() && !s3_config.endpoint.empty() &&
+    // Auto-enable S3 if required fields are present and the user did not
+    // explicitly set s3.enabled=false.  An explicit "false" is an escape hatch
+    // for operators who want to disable S3 reads without removing the metadata.
+    if (!s3_enabled_explicitly_set &&
+        !s3_config.bucket.empty() && !s3_config.endpoint.empty() &&
         !s3_config.image_name.empty() && !s3_config.image_format.empty()) {
       s3_config.enabled = true;
       

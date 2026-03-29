@@ -231,8 +231,8 @@ int BackfillDaemon::discover_scheduled_images() {
       dout(10) << "failed to list namespaces in pool " << pool_name
                << ": " << cpp_strerror(r) << "; scanning default namespace only" << dendl;
     }
-    // Always prepend the default (empty) namespace
-    namespaces.insert(namespaces.begin(), "");
+    // Always include the default (empty) namespace
+    namespaces.push_back("");
 
     for (const auto& ns : namespaces) {
       ioctx.set_namespace(ns);
