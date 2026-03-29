@@ -526,8 +526,7 @@ void CopyupRequest<I>::handle_copyup(int r) {
       // that would call complete_requests() a second time via finish()'s body
       // and then attempt 'delete this' twice.
       complete_requests(false, m_result);
-      m_s3_cancel->store(true);  // signal any in-flight S3 fetch to abort
-      m_alive->store(false);
+      m_cancelled->store(true);
       delete this;
     } else {
       fire_parent_s3_writeback();
@@ -542,8 +541,7 @@ void CopyupRequest<I>::finish(int r) {
   ldout(cct, 20) << "oid=" << m_oid << ", r=" << r << dendl;
 
   complete_requests(true, r);
-  m_s3_cancel->store(true);  // signal any in-flight S3 fetch to abort
-  m_alive->store(false);
+  m_cancelled->store(true);
   delete this;
 }
 
@@ -963,10 +961,10 @@ void CopyupRequest<I>::handle_list_lock_holders(int r) {
   // already written it.  If still absent, proceed without the lock —
   // a duplicate S3 fetch is harmless (write_full is idempotent).
   ldout(cct, 10) << "lock held by another user request, re-checking parent" << dendl;
-  auto alive = m_alive;
+  auto cancelled = m_cancelled;
   m_image_ctx->op_work_queue->queue(
-    new FunctionContext([this, alive](int) {
-      if (!alive->load()) return;
+    new FunctionContext([this, cancelled](int) {
+      if (cancelled->load()) return;
       read_from_parent();
     }), 0);
 }
@@ -995,10 +993,10 @@ void CopyupRequest<I>::handle_break_backfill_lock(int r) {
   // a concurrent finish()/delete-this on another path cannot use-after-free
   // `this` before the lambda executes.
   ldout(cct, 10) << "re-checking parent after breaking backfill lock" << dendl;
-  auto alive = m_alive;
+  auto cancelled = m_cancelled;
   m_image_ctx->op_work_queue->queue(
-    new FunctionContext([this, alive](int) {
-      if (!alive->load()) return;
+    new FunctionContext([this, cancelled](int) {
+      if (cancelled->load()) return;
       read_from_parent();
     }), 0);
 }
@@ -1037,7 +1035,7 @@ void CopyupRequest<I>::retry_read_from_parent() {
   // The timer callback must be fast (runs under timer lock), so it simply
   // re-queues read_from_parent() onto the op_work_queue.
   //
-  // CopyupRequest is self-deleting; we pass m_alive by shared_ptr so that
+  // CopyupRequest is self-deleting; we pass m_cancelled by shared_ptr so that
   // a stale lambda (fired after delete this in an unexpected edge-case path)
   // checks the flag before accessing any member.  In normal operation no
   // finish() path fires while the timer is pending (m_async_op keeps the
@@ -1046,17 +1044,17 @@ void CopyupRequest<I>::retry_read_from_parent() {
   Mutex *timer_lock;
   ImageCtx::get_timer_instance(cct, &timer, &timer_lock);
   {
-    // Capture op_work_queue *before* the alive check so we never dereference
-    // 'this' inside the lambda after the flag may have been cleared.
+    // Capture op_work_queue *before* the cancellation check so we never
+    // dereference 'this' inside the lambda after the flag may have been set.
     auto wq = m_image_ctx->op_work_queue;
-    auto alive = m_alive;   // capture by value (shared ownership)
+    auto cancelled = m_cancelled;   // capture by value (shared ownership)
     Mutex::Locker locker(*timer_lock);
     timer->add_event_after(delay_ms / 1000.0,
-      new FunctionContext([this, alive, wq](int r) {
-        if (!alive->load()) return;
+      new FunctionContext([this, cancelled, wq](int r) {
+        if (cancelled->load()) return;
         wq->queue(
-          new FunctionContext([this, alive](int r) {
-            if (!alive->load()) return;
+          new FunctionContext([this, cancelled](int r) {
+            if (cancelled->load()) return;
             read_from_parent();
           }), 0);
       }));
@@ -1120,16 +1118,16 @@ void CopyupRequest<I>::fetch_from_s3_async() {
 
   parent_locker.unlock();
 
-  // Wrap with alive guard: the detached pthread calls on_finish after
-  // delete-this, so we must not invoke handle_s3_fetch on freed memory.
-  auto alive = m_alive;
-  auto ctx = new FunctionContext([this, alive](int r) {
-    if (!alive->load()) return;
+  // Guard the callback: the detached pthread calls on_finish after delete-this,
+  // so check m_cancelled before invoking handle_s3_fetch on freed memory.
+  auto cancelled = m_cancelled;
+  auto ctx = new FunctionContext([this, cancelled](int r) {
+    if (cancelled->load()) return;
     handle_s3_fetch(r);
   });
 
   m_s3_fetcher->fetch_url(s3_url, &m_s3_data, ctx, byte_start, byte_length,
-                          m_s3_cancel);  // shared ownership keeps flag alive
+                          m_cancelled);  // shared ownership keeps flag alive
 }
 
 template <typename I>

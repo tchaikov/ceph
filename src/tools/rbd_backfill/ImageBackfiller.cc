@@ -274,7 +274,6 @@ void ImageBackfiller::backfill_object(uint64_t object_no) {
     dout(15) << "object " << object_no << " already in RADOS (size=" << psize
              << "), skipping S3 fetch" << dendl;
     m_completed_objects++;
-    m_current_object++;
     return;
   }
   if (stat_r != -ENOENT) {
@@ -415,9 +414,9 @@ void ImageBackfiller::handle_object_complete(int r) {
     m_completed_objects++;
   }
 
-  m_current_object++;
-
-  dout(15) << "progress: " << m_current_object << "/" << m_num_objects
+  dout(15) << "progress: "
+           << (m_completed_objects.load() + m_failed_objects.load())
+           << "/" << m_num_objects
            << " (completed=" << m_completed_objects.load()
            << " failed=" << m_failed_objects.load() << ")" << dendl;
 }

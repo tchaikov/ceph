@@ -500,6 +500,7 @@ run_test() {
     record_test_result "$name" "$result" $((end - start))
     log_success "$name: $result"
     echo
+    [[ "$result" == "PASSED" ]]
 }
 
 record_test_result() {

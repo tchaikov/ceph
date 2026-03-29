@@ -53,12 +53,6 @@ trap cleanup EXIT
 # TEST 1: S3 Authentication - Invalid Credentials
 #############################################
 test_s3_invalid_credentials() {
-    local test_name="S3 Invalid Credentials"
-    log_step "=========================================="
-    log_step "TEST: $test_name"
-    log_step "=========================================="
-
-    local start_time=$(date +%s)
     local result="FAILED"
 
     # Create parent with valid credentials
@@ -97,23 +91,13 @@ test_s3_invalid_credentials() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/child-test" 2>/dev/null || true
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/parent-test" 2>/dev/null || true
 
-    local end_time=$(date +%s)
-    local duration=$((end_time - start_time))
-    record_test_result "$test_name" "$result" "$duration"
-
-    return $([ "$result" == "PASSED" ] && echo 0 || echo 1)
+    [[ "$result" == "PASSED" ]]
 }
 
 #############################################
 # TEST 2: S3 Service Unavailable
 #############################################
 test_s3_service_unavailable() {
-    local test_name="S3 Service Unavailable"
-    log_step "=========================================="
-    log_step "TEST: $test_name"
-    log_step "=========================================="
-
-    local start_time=$(date +%s)
     local result="FAILED"
 
     # Create parent with valid S3 backend
@@ -145,23 +129,13 @@ test_s3_service_unavailable() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/child-test" 2>/dev/null || true
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/parent-test" 2>/dev/null || true
 
-    local end_time=$(date +%s)
-    local duration=$((end_time - start_time))
-    record_test_result "$test_name" "$result" "$duration"
-
-    return $([ "$result" == "PASSED" ] && echo 0 || echo 1)
+    [[ "$result" == "PASSED" ]]
 }
 
 #############################################
 # TEST 3: S3 Object Not Found (404)
 #############################################
 test_s3_object_not_found() {
-    local test_name="S3 Object Not Found"
-    log_step "=========================================="
-    log_step "TEST: $test_name"
-    log_step "=========================================="
-
-    local start_time=$(date +%s)
     local result="FAILED"
 
     # Create parent pointing to a non-existent S3 object (do NOT upload anything).
@@ -201,23 +175,13 @@ test_s3_object_not_found() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/child-test" 2>/dev/null || true
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/parent-test" 2>/dev/null || true
 
-    local end_time=$(date +%s)
-    local duration=$((end_time - start_time))
-    record_test_result "$test_name" "$result" "$duration"
-
-    return $([ "$result" == "PASSED" ] && echo 0 || echo 1)
+    [[ "$result" == "PASSED" ]]
 }
 
 #############################################
 # TEST 4: Sparse Image Handling
 #############################################
 test_sparse_image() {
-    local test_name="Sparse Image Handling"
-    log_step "=========================================="
-    log_step "TEST: $test_name"
-    log_step "=========================================="
-
-    local start_time=$(date +%s)
     local result="FAILED"
 
     # Create sparse image (first 1MB random, middle 18MB zeros, last 1MB random)
@@ -269,23 +233,13 @@ test_sparse_image() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/parent-test" 2>/dev/null || true
     rm -f /tmp/failure-test-sparse*.raw /tmp/failure-test-sparse-export.log
 
-    local end_time=$(date +%s)
-    local duration=$((end_time - start_time))
-    record_test_result "$test_name" "$result" "$duration"
-
-    return $([ "$result" == "PASSED" ] && echo 0 || echo 1)
+    [[ "$result" == "PASSED" ]]
 }
 
 #############################################
 # TEST 5: Invalid S3 Configuration
 #############################################
 test_invalid_s3_config() {
-    local test_name="Invalid S3 Configuration"
-    log_step "=========================================="
-    log_step "TEST: $test_name"
-    log_step "=========================================="
-
-    local start_time=$(date +%s)
     local result="FAILED"
 
     # Create parent image
@@ -316,23 +270,13 @@ test_invalid_s3_config() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/child-test" 2>/dev/null || true
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/parent-test" 2>/dev/null || true
 
-    local end_time=$(date +%s)
-    local duration=$((end_time - start_time))
-    record_test_result "$test_name" "$result" "$duration"
-
-    return $([ "$result" == "PASSED" ] && echo 0 || echo 1)
+    [[ "$result" == "PASSED" ]]
 }
 
 #############################################
 # TEST 6: Malformed Secret Key
 #############################################
 test_malformed_secret_key() {
-    local test_name="Malformed Secret Key"
-    log_step "=========================================="
-    log_step "TEST: $test_name"
-    log_step "=========================================="
-
-    local start_time=$(date +%s)
     local result="FAILED"
 
     # Create parent with valid S3 backend
@@ -373,11 +317,7 @@ test_malformed_secret_key() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/parent-test" 2>/dev/null || true
     rm -f /tmp/failure-test-key*
 
-    local end_time=$(date +%s)
-    local duration=$((end_time - start_time))
-    record_test_result "$test_name" "$result" "$duration"
-
-    return $([ "$result" == "PASSED" ] && echo 0 || echo 1)
+    [[ "$result" == "PASSED" ]]
 }
 
 #############################################
@@ -410,12 +350,12 @@ main() {
     # Run all failure scenario tests
     local failed=0
 
-    test_s3_invalid_credentials || failed=$((failed + 1))
-    test_s3_service_unavailable || failed=$((failed + 1))
-    test_s3_object_not_found || failed=$((failed + 1))
-    test_sparse_image || failed=$((failed + 1))
-    test_invalid_s3_config || failed=$((failed + 1))
-    test_malformed_secret_key || failed=$((failed + 1))
+    run_test "S3 Invalid Credentials"    test_s3_invalid_credentials   || failed=$((failed + 1))
+    run_test "S3 Service Unavailable"    test_s3_service_unavailable   || failed=$((failed + 1))
+    run_test "S3 Object Not Found"       test_s3_object_not_found      || failed=$((failed + 1))
+    run_test "Sparse Image Handling"     test_sparse_image             || failed=$((failed + 1))
+    run_test "Invalid S3 Configuration"  test_invalid_s3_config        || failed=$((failed + 1))
+    run_test "Malformed Secret Key"      test_malformed_secret_key     || failed=$((failed + 1))
 
     # Print summary
     print_test_summary

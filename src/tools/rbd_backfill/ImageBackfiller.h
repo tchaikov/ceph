@@ -68,7 +68,6 @@ private:
   Cond m_cond;
 
   uint64_t m_num_objects = 0;
-  std::atomic<uint64_t> m_current_object{0};
   std::atomic<uint64_t> m_completed_objects{0};
   std::atomic<uint64_t> m_failed_objects{0};
 
