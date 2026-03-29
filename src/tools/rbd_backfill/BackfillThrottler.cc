@@ -6,6 +6,7 @@
 #include "common/debug.h"
 #include "common/errno.h"
 #include "common/WorkQueue.h"
+#include "librbd/Utils.h"
 
 #define dout_context m_cct
 #define dout_subsys ceph_subsys_rbd
@@ -18,7 +19,7 @@ namespace backfill {
 BackfillThrottler::BackfillThrottler(CephContext *cct, ContextWQ *work_queue)
   : m_cct(cct),
     m_work_queue(work_queue),
-    m_lock("rbd::backfill::BackfillThrottler::m_lock") {
+    m_lock(librbd::util::unique_lock_name("rbd::backfill::BackfillThrottler::m_lock", this)) {
   m_max_concurrent = m_cct->_conf.get_val<uint64_t>("rbd_backfill_max_concurrent");
   dout(10) << "max_concurrent=" << m_max_concurrent << dendl;
 }

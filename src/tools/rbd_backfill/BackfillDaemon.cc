@@ -11,6 +11,7 @@
 #include "common/errno.h"
 #include "common/WorkQueue.h"
 #include "common/Timer.h"
+#include "librbd/Utils.h"
 
 #define dout_context m_cct
 #define dout_subsys ceph_subsys_rbd
@@ -52,7 +53,7 @@ Threads::~Threads() {
 // BackfillDaemon implementation
 BackfillDaemon::BackfillDaemon(CephContext *cct)
   : m_cct(cct),
-    m_lock("rbd::backfill::BackfillDaemon::m_lock") {
+    m_lock(librbd::util::unique_lock_name("rbd::backfill::BackfillDaemon::m_lock", this)) {
   dout(10) << dendl;
 }
 

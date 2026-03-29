@@ -456,9 +456,9 @@ Context *RefreshRequest<I>::handle_v2_get_parent(int *result) {
     if (*result == 0) {
       *result = cls_client::parent_get_finish(&it, &m_parent_md.spec,
                                               &parent_type_raw,
-                                              &m_parent_md.remote_cluster_name,
-                                              &m_parent_md.remote_mon_hosts,
-                                              &m_parent_md.remote_keyring);
+                                              &m_parent_md.remote.cluster_name,
+                                              &m_parent_md.remote.mon_hosts,
+                                              &m_parent_md.remote.keyring);
     }
 
     std::optional<uint64_t> parent_overlap;

@@ -78,16 +78,16 @@ void DetachChildRequest<I>::clone_v2_child_detach() {
   // Check if parent is in remote cluster
   if (m_parent_info.parent_type == PARENT_TYPE_REMOTE_STANDALONE) {
     ldout(cct, 10) << "detaching from remote parent in cluster: "
-                   << m_parent_info.remote_cluster_name << dendl;
+                   << m_parent_info.remote.cluster_name << dendl;
 
     // Establish remote cluster connection
     m_remote_parent_cluster.reset(new librados::Rados());
 
     r = util::connect_to_remote_cluster(
       cct,
-      m_parent_info.remote_cluster_name,
-      m_parent_info.remote_mon_hosts,
-      m_parent_info.remote_keyring,
+      m_parent_info.remote.cluster_name,
+      m_parent_info.remote.mon_hosts,
+      m_parent_info.remote.keyring,
       util::DEFAULT_REMOTE_CLIENT_NAME,
       *m_remote_parent_cluster);
 

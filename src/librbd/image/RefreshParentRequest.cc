@@ -127,7 +127,7 @@ void RefreshParentRequest<I>::send_open_parent() {
   // Check if parent is in remote cluster
   if (m_parent_md.parent_type == PARENT_TYPE_REMOTE_STANDALONE) {
     ldout(cct, 10) << "opening remote parent in cluster: "
-                   << m_parent_md.remote_cluster_name << dendl;
+                   << m_parent_md.remote.cluster_name << dendl;
 
     // Establish remote cluster connection proactively (not lazily)
     // This avoids slow-start on first I/O that needs the parent
@@ -135,9 +135,9 @@ void RefreshParentRequest<I>::send_open_parent() {
 
     r = util::connect_to_remote_cluster(
       cct,
-      m_parent_md.remote_cluster_name,
-      m_parent_md.remote_mon_hosts,
-      m_parent_md.remote_keyring,
+      m_parent_md.remote.cluster_name,
+      m_parent_md.remote.mon_hosts,
+      m_parent_md.remote.keyring,
       util::DEFAULT_REMOTE_CLIENT_NAME,
       *m_child_image_ctx.remote_parent_cluster);
 

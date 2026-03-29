@@ -181,9 +181,7 @@ struct ParentImageInfo {
   ParentImageType parent_type = PARENT_TYPE_SNAPSHOT;
 
   /// Remote cluster information (for REMOTE_STANDALONE parent type)
-  std::string remote_cluster_name;
-  std::vector<std::string> remote_mon_hosts;
-  std::string remote_keyring;  // Base64-encoded keyring
+  RemoteParentSpec remote;
 };
 
 struct SnapInfo {
