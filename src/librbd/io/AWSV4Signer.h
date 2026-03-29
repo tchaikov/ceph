@@ -129,7 +129,8 @@ private:
    * Calculate signing key.
    * SigningKey = HMAC-SHA256(HMAC-SHA256(HMAC-SHA256(HMAC-SHA256("AWS4" + SecretKey, Date), Region), Service), "aws4_request")
    */
-  std::array<unsigned char, 32> calculate_signing_key(const std::string& date_string);
+  std::array<unsigned char, 32> calculate_signing_key(const std::string& date_string,
+                                                       std::string& out_scope);
 
   /**
    * Calculate signature.

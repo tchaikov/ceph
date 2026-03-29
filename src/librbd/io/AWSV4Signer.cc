@@ -162,14 +162,16 @@ std::string AWSV4Signer::create_string_to_sign(
 }
 
 std::array<unsigned char, 32> AWSV4Signer::calculate_signing_key(
-    const std::string& date_string) {
-  // The signing key is stable for a full calendar day (changes only when the
-  // date rolls over).  Cache it per-thread so repeated requests within the
-  // same day skip the four HMAC-SHA256 derivation steps.
+    const std::string& date_string, std::string& out_scope) {
+  // The signing key and scope are stable for a full calendar day.  Cache both
+  // per-thread so repeated requests within the same day skip the four
+  // HMAC-SHA256 derivation steps and the scope string allocation.
   thread_local std::string tl_cached_date;
   thread_local std::array<unsigned char, 32> tl_cached_key;
+  thread_local std::string tl_cached_scope;
 
   if (date_string == tl_cached_date) {
+    out_scope = tl_cached_scope;
     return tl_cached_key;
   }
 
@@ -182,8 +184,11 @@ std::array<unsigned char, 32> AWSV4Signer::calculate_signing_key(
   auto k_service = hmac_sha256(k_region,  m_credentials.service);
   auto k_signing = hmac_sha256(k_service, "aws4_request");
 
-  tl_cached_date = date_string;
-  tl_cached_key  = k_signing;
+  tl_cached_date  = date_string;
+  tl_cached_key   = k_signing;
+  tl_cached_scope = date_string + "/" + m_credentials.region + "/" +
+                    m_credentials.service + "/aws4_request";
+  out_scope = tl_cached_scope;
   return k_signing;
 }
 
@@ -225,7 +230,9 @@ AWSV4Signer::SignedRequest AWSV4Signer::sign_request(
 
   // Step 1: Create canonical request
   std::string iso8601_timestamp = get_iso8601_timestamp(timestamp);
-  std::string date_string = get_date_string(timestamp);
+  // Date is the first 8 chars of the ISO-8601 string (YYYYMMDD) — no need for
+  // a second strftime call.
+  std::string date_string = iso8601_timestamp.substr(0, 8);
 
   // Build headers map (lowercase keys, sorted)
   std::map<std::string, std::string> headers;
@@ -254,14 +261,11 @@ AWSV4Signer::SignedRequest AWSV4Signer::sign_request(
     method, uri, query_string, headers, signed_headers, payload_hash);
 
   // Step 2: Create string to sign
-  std::string scope = date_string + "/" + m_credentials.region + "/" +
-                     m_credentials.service + "/aws4_request";
+  std::string scope;
+  auto signing_key = calculate_signing_key(date_string, scope);
   std::string canonical_request_hash = sha256_hex(canonical_request);
   std::string string_to_sign = create_string_to_sign(
     iso8601_timestamp, scope, canonical_request_hash);
-
-  // Step 3: Calculate signature
-  auto signing_key = calculate_signing_key(date_string);
   std::string signature = calculate_signature(signing_key, string_to_sign);
 
   // Step 4: Build Authorization header

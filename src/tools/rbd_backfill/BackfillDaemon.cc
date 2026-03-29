@@ -12,6 +12,7 @@
 #include "common/WorkQueue.h"
 #include "common/Timer.h"
 #include "librbd/Utils.h"
+#include "cls/rbd/cls_rbd_client.h"
 
 #define dout_context m_cct
 #define dout_subsys ceph_subsys_rbd
@@ -246,62 +247,97 @@ int BackfillDaemon::discover_scheduled_images() {
         continue;
       }
 
-      // Check each image for backfill scheduling metadata
-      for (const auto& image_spec : images) {
-        librbd::Image image;
-        r = rbd.open(ioctx, image, image_spec.name.c_str());
-        if (r < 0) {
-          dout(10) << "failed to open image " << pool_name
-                   << (ns.empty() ? "" : "/" + ns)
-                   << "/" << image_spec.name << ": " << cpp_strerror(r) << dendl;
+      // Phase 1: fire all metadata reads in parallel — one RADOS RTT regardless
+      // of pool size.  Reading the full image context (rbd.open) for every image
+      // just to check one metadata key is O(N) sequential RTTs; the async batch
+      // collapses this to ~1 RTT before we open only the images that need claiming.
+      struct PendingMeta {
+        const librbd::image_spec_t* image_spec;
+        librados::AioCompletion* c;
+        librados::ObjectReadOperation op;
+        bufferlist out_bl;
+      };
+
+      std::vector<PendingMeta> pending(images.size());
+      for (size_t i = 0; i < images.size(); ++i) {
+        pending[i].image_spec = &images[i];
+        pending[i].c = librados::Rados::aio_create_completion();
+        librbd::cls_client::metadata_list_start(&pending[i].op, BACKFILL_META_NS, 5);
+        ioctx.aio_operate(librbd::util::header_name(images[i].id),
+                          pending[i].c, &pending[i].op, &pending[i].out_bl);
+      }
+
+      // Phase 2: collect results; only open+claim images scheduled for backfill.
+      for (auto& p : pending) {
+        p.c->wait_for_complete();
+        int op_r = p.c->get_return_value();
+        p.c->release();
+        if (op_r < 0) {
           continue;
         }
 
-        std::string scheduled_value;
-        r = image.metadata_get(BACKFILL_SCHEDULED_KEY, &scheduled_value);
-        if (r >= 0 && scheduled_value == BACKFILL_SCHED_TRUE) {
-          // Claim the image before adding it to our work list.  Immediately
-          // transition "true" → "in_progress" so that a second daemon instance
-          // starting concurrently sees "in_progress" and skips this image.
-          // This is not a true CAS (librbd metadata_set is not compare-and-swap),
-          // but the brief race window between the metadata_get above and this
-          // set is negligible in practice (daemons don't start simultaneously).
-          // The alternative — a cls_lock on the image header — provides
-          // stronger atomicity if needed in the future.
-          int claim_r = image.metadata_set(BACKFILL_SCHEDULED_KEY, BACKFILL_SCHED_IN_PROGRESS);
-          if (claim_r < 0) {
-            dout(5) << "failed to claim image " << pool_name
-                    << (ns.empty() ? "" : "/" + ns)
-                    << "/" << image_spec.name
-                    << " for backfill: " << cpp_strerror(claim_r)
-                    << " — skipping to avoid duplicate backfill" << dendl;
-            image.close();
-            continue;
-          }
+        std::map<std::string, bufferlist> pairs;
+        auto it = p.out_bl.cbegin();
+        if (librbd::cls_client::metadata_list_finish(&it, &pairs) < 0) {
+          continue;
+        }
 
-          ImageSpec spec;
-          spec.pool_name = pool_name;
-          spec.pool_id = pool_id;
-          spec.namespace_name = ns;
-          spec.image_name = image_spec.name;
-          spec.image_id = image_spec.id;
+        auto sched_it = pairs.find(BACKFILL_SCHEDULED_KEY);
+        if (sched_it == pairs.end()) {
+          continue;
+        }
+        std::string scheduled_value = sched_it->second.to_str();
 
-          m_image_specs.push_back(spec);
-
-          dout(10) << "claimed and discovered scheduled image: " << pool_name
-                   << (ns.empty() ? "" : "/" + ns)
-                   << "/" << image_spec.name
-                   << " (pool_id=" << pool_id << " image_id=" << spec.image_id
-                   << ")" << dendl;
-        } else if (r >= 0 && scheduled_value == BACKFILL_SCHED_IN_PROGRESS) {
+        if (scheduled_value == BACKFILL_SCHED_IN_PROGRESS) {
           // Another daemon instance already claimed this image — skip it.
           dout(10) << "image " << pool_name
                    << (ns.empty() ? "" : "/" + ns)
-                   << "/" << image_spec.name
+                   << "/" << p.image_spec->name
                    << " is already claimed by another daemon instance, skipping" << dendl;
+          continue;
         }
 
+        if (scheduled_value != BACKFILL_SCHED_TRUE) {
+          continue;
+        }
+
+        // Claim the image: open it and transition "true" → "in_progress" so
+        // a second daemon instance starting concurrently sees "in_progress".
+        // This is not a true CAS but the race window is negligible in practice.
+        librbd::Image image;
+        r = rbd.open(ioctx, image, p.image_spec->name.c_str());
+        if (r < 0) {
+          dout(10) << "failed to open image " << pool_name
+                   << (ns.empty() ? "" : "/" + ns)
+                   << "/" << p.image_spec->name << ": " << cpp_strerror(r) << dendl;
+          continue;
+        }
+
+        int claim_r = image.metadata_set(BACKFILL_SCHEDULED_KEY, BACKFILL_SCHED_IN_PROGRESS);
         image.close();
+        if (claim_r < 0) {
+          dout(5) << "failed to claim image " << pool_name
+                  << (ns.empty() ? "" : "/" + ns)
+                  << "/" << p.image_spec->name
+                  << " for backfill: " << cpp_strerror(claim_r)
+                  << " — skipping to avoid duplicate backfill" << dendl;
+          continue;
+        }
+
+        ImageSpec spec;
+        spec.pool_name = pool_name;
+        spec.pool_id = pool_id;
+        spec.namespace_name = ns;
+        spec.image_name = p.image_spec->name;
+        spec.image_id = p.image_spec->id;
+
+        m_image_specs.push_back(spec);
+
+        dout(10) << "claimed and discovered scheduled image: " << pool_name
+                 << (ns.empty() ? "" : "/" + ns)
+                 << "/" << p.image_spec->name
+                 << " (pool_id=" << pool_id << " image_id=" << spec.image_id
+                 << ")" << dendl;
       }
     }
   }
