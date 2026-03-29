@@ -31,7 +31,6 @@ void AttachParentRequest<I>::attach_parent() {
 
   librados::ObjectWriteOperation op;
   if (!m_legacy_parent) {
-    // Check if this is a remote standalone parent
     if (!m_remote_parent_spec.empty()) {
       ldout(cct, 10) << "attaching remote standalone parent: "
                      << m_remote_parent_spec.cluster_name << dendl;

@@ -327,28 +327,19 @@ void DetachChildRequest<I>::finish(int r) {
   auto cct = m_image_ctx.cct;
   ldout(cct, 5) << "r=" << r << dendl;
 
-  // Clean up remote cluster connection if it was created
   // IMPORTANT: Do NOT call shutdown() or reset() synchronously here,
   // as both will block waiting for internal operations to complete.
   // Instead, we schedule the cleanup to happen asynchronously after
   // we return control to the caller.
   if (m_remote_parent_cluster) {
     ldout(cct, 10) << "scheduling async cleanup of remote cluster connection" << dendl;
-
-    // Capture the cluster pointer and schedule cleanup on the work queue
     auto cluster_ptr = m_remote_parent_cluster;
-    m_remote_parent_cluster.reset();  // Release our reference immediately
-
-    // Schedule async cleanup on the work queue so the potentially-blocking
-    // Rados destructor runs off the I/O path.  cluster_ptr goes out of scope
-    // at the end of the lambda, triggering the Rados shutdown there.
+    m_remote_parent_cluster.reset();
     m_image_ctx.op_work_queue->queue(
       new FunctionContext([cluster_ptr](int) {
         cluster_ptr->shutdown();
       }),
       0);
-
-    ldout(cct, 10) << "async cleanup scheduled" << dendl;
   }
 
   m_on_finish->complete(r);

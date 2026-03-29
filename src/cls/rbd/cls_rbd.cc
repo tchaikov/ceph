@@ -1751,8 +1751,8 @@ int parent_get(cls_method_context_t hctx, bufferlist *in, bufferlist *out) {
   parent_image_spec.pool_name = parent.pool_name;
   encode(parent_image_spec, *out);
 
-  // Encode parent type and remote cluster metadata only if parent exists
-  // This prevents decoding issues when batched with parent_overlap_get
+  // Conditional on exists_or_standalone() prevents decoding issues when
+  // this op is batched with parent_overlap_get.
   if (parent.exists_or_standalone()) {
     encode(static_cast<uint8_t>(parent.parent_type), *out);
     encode(parent.remote_cluster_name, *out);
@@ -3973,8 +3973,6 @@ int child_attach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
               "child_image_id=%s", snap_id, child_image.pool_id,
                child_image.image_id.c_str());
 
-  // For standalone clones (snap_id == CEPH_NOSNAP), we don't need to validate
-  // or update snapshot metadata since there's no snapshot
   bool is_standalone_clone = (snap_id == CEPH_NOSNAP);
 
   cls_rbd_snap snap;
@@ -3982,7 +3980,6 @@ int child_attach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   int r;
 
   if (!is_standalone_clone) {
-    // Only read and validate snapshot for traditional snapshot-based clones
     key_from_snap_id(snap_id, &snapshot_key);
     r = read_key(hctx, snapshot_key, &snap);
     if (r < 0) {
@@ -4016,7 +4013,6 @@ int child_attach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     return r;
   }
 
-  // Only update snapshot child count for traditional snapshot-based clones
   if (!is_standalone_clone) {
     ++snap.child_count;
     r = image::snapshot::write(hctx, snapshot_key, std::move(snap));
@@ -4058,8 +4054,6 @@ int child_detach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
               "child_image_id=%s", snap_id, child_image.pool_id,
                child_image.image_id.c_str());
 
-  // For standalone clones (snap_id == CEPH_NOSNAP), we don't need to validate
-  // or update snapshot metadata since there's no snapshot
   bool is_standalone_clone = (snap_id == CEPH_NOSNAP);
 
   cls_rbd_snap snap;
@@ -4067,7 +4061,6 @@ int child_detach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   int r;
 
   if (!is_standalone_clone) {
-    // Only read and validate snapshot for traditional snapshot-based clones
     key_from_snap_id(snap_id, &snapshot_key);
     r = read_key(hctx, snapshot_key, &snap);
     if (r < 0) {
@@ -4104,7 +4097,6 @@ int child_detach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     }
   }
 
-  // Only update snapshot child count for traditional snapshot-based clones
   if (!is_standalone_clone) {
     --snap.child_count;
     r = image::snapshot::write(hctx, snapshot_key, std::move(snap));
@@ -4168,11 +4160,9 @@ int children_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   CLS_LOG(20, "children_list snap_id=%" PRIu64, snap_id);
 
-  // For standalone clones (snap_id == CEPH_NOSNAP), skip snapshot validation
   bool is_standalone_clone = (snap_id == CEPH_NOSNAP);
 
   if (!is_standalone_clone) {
-    // Only validate snapshot for traditional snapshot-based clones
     cls_rbd_snap snap;
     std::string snapshot_key;
     key_from_snap_id(snap_id, &snapshot_key);

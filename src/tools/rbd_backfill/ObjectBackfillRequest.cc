@@ -126,9 +126,6 @@ void ObjectBackfillRequest::handle_acquire_lock(int r) {
 
   dout(10) << "lock acquired for object " << m_object_no << dendl;
 
-  // S3 fetch already done in ImageBackfiller thread
-  // Data is already in m_data_bl
-  // Go directly to RADOS write
   m_state = STATE_WRITE_RADOS;
   write_rados();
 }

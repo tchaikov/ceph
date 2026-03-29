@@ -131,8 +131,8 @@ int connect_to_remote_cluster(CephContext* cct,
     return r;
   }
 
-  // Set the key directly via conf_set (no file needed - more secure!)
-  // Key is already base64-encoded from keyring file
+  // conf_set avoids creating a temporary keyring file, eliminating the window
+  // where key material would exist on disk.
   r = cluster.conf_set("key", keyring.c_str());
   if (r < 0) {
     cluster.shutdown();

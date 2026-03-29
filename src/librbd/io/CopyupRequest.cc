@@ -206,10 +206,6 @@ void CopyupRequest<I>::handle_read_from_parent(int r) {
   auto cct = m_image_ctx->cct;
   ldout(cct, 20) << "oid=" << m_oid << ", r=" << r << dendl;
 
-  // Note: S3 back-fill is now handled in read_from_parent() by checking
-  // object existence before reading. This avoids the sparse-read conversion
-  // that would prevent S3 back-fill from being triggered.
-
   m_image_ctx->snap_lock.get_read();
   m_lock.Lock();
   m_copyup_is_zero = m_copyup_data.is_zero();

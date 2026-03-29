@@ -98,7 +98,7 @@ int execute_schedule(const po::variables_map &vm,
     return r;
   }
 
-  r = image.metadata_set(rbd::backfill::BACKFILL_STATUS_KEY, "scheduled");
+  r = image.metadata_set(rbd::backfill::BACKFILL_STATUS_KEY, rbd::backfill::BACKFILL_STATUS_SCHEDULED);
   if (r < 0) {
     std::cerr << "rbd: failed to set backfill status: " << cpp_strerror(r) << std::endl;
     return r;

@@ -164,12 +164,7 @@ create_s3_parent() {
 
     # Create parent image file with recognizable pattern
     local temp_file="/tmp/${s3_image_name}"
-    dd if=/dev/zero of="$temp_file" bs=1M count=$size_mb status=none
-
-    # Write block markers for verification
-    for i in $(seq 0 $((size_mb/4 - 1))); do
-        printf "PARENT-BLOCK-%04d" $i | dd of="$temp_file" bs=4M seek=$i conv=notrunc status=none
-    done
+    create_test_image_with_pattern "$size_mb" "$temp_file"
 
     # Upload to S3
     upload_to_s3 "$temp_file" "$s3_bucket" "$s3_image_name"

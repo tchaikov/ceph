@@ -22,7 +22,6 @@
 namespace rbd {
 namespace backfill {
 
-// Threads implementation
 Threads::Threads(CephContext *cct)
   : timer_lock("rbd::backfill::Threads::timer_lock") {
   thread_pool.reset(new ThreadPool(cct, "rbd_backfill", "tp_rbd_backfill",
@@ -51,7 +50,6 @@ Threads::~Threads() {
   thread_pool->stop();
 }
 
-// BackfillDaemon implementation
 BackfillDaemon::BackfillDaemon(CephContext *cct)
   : m_cct(cct),
     m_lock(librbd::util::unique_lock_name("rbd::backfill::BackfillDaemon::m_lock", this)) {
@@ -82,10 +80,7 @@ int BackfillDaemon::init() {
     return r;
   }
 
-  // Initialize thread infrastructure
   m_threads = std::make_unique<Threads>(m_cct);
-
-  // Initialize throttler
   m_throttler = std::make_unique<BackfillThrottler>(m_cct, m_threads->work_queue.get());
 
   dout(5) << "daemon initialized successfully" << dendl;
@@ -160,18 +155,13 @@ void BackfillDaemon::shutdown() {
     backfiller->stop();
   }
 
-  // Cleanup throttler
   if (m_throttler) {
-    // Wait for all inflight operations to complete before destroying
     dout(10) << "waiting for throttler operations to complete" << dendl;
     m_throttler->wait_for_ops();
     m_throttler.reset();
   }
 
-  // Cleanup threads
   m_threads.reset();
-
-  // Disconnect from cluster
   m_rados.shutdown();
 
   dout(5) << "daemon shutdown complete" << dendl;
@@ -358,12 +348,10 @@ int BackfillDaemon::start_image_backfillers() {
     dout(10) << "starting backfiller for " << spec.pool_name
              << "/" << spec.image_name << dendl;
 
-    // Create completion callback
     Context *on_finish = new FunctionContext([this, spec](int r) {
       handle_image_complete(spec, r);
     });
 
-    // Create ImageBackfiller instance using unique_ptr
     auto backfiller = std::make_unique<ImageBackfiller>(
       m_cct,
       m_rados,
@@ -373,7 +361,6 @@ int BackfillDaemon::start_image_backfillers() {
       on_finish
     );
 
-    // Initialize the backfiller
     int r = backfiller->init();
     if (r < 0) {
       derr << "failed to initialize backfiller for " << spec.pool_name
@@ -382,10 +369,7 @@ int BackfillDaemon::start_image_backfillers() {
       return r;
     }
 
-    // Start the backfill thread
     backfiller->create("img_backfill");
-
-    // Track the backfiller
     m_image_backfillers[spec] = std::move(backfiller);
 
     dout(5) << "started backfiller for " << spec.pool_name

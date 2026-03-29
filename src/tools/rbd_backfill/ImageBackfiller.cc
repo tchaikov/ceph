@@ -45,8 +45,6 @@ ImageBackfiller::ImageBackfiller(CephContext *cct,
 ImageBackfiller::~ImageBackfiller() {
   dout(10) << dendl;
 
-  // unique_ptr will automatically delete m_s3_fetcher
-
   if (m_image_ctx) {
     m_image_ctx->state->close();
   }

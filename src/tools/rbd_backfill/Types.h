@@ -21,8 +21,9 @@ static constexpr const char* BACKFILL_SCHED_TRUE        = "true";
 static constexpr const char* BACKFILL_SCHED_IN_PROGRESS = "in_progress";
 
 // Values for BACKFILL_STATUS_KEY
-static constexpr const char* BACKFILL_STATUS_COMPLETE = "complete";
-static constexpr const char* BACKFILL_STATUS_FAILED   = "failed";
+static constexpr const char* BACKFILL_STATUS_SCHEDULED = "scheduled";
+static constexpr const char* BACKFILL_STATUS_COMPLETE  = "complete";
+static constexpr const char* BACKFILL_STATUS_FAILED    = "failed";
 
 struct ImageSpec {
   std::string pool_name;
