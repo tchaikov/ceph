@@ -129,27 +129,33 @@ struct S3Config {
     return access_key.empty() && secret_key.empty();
   }
 
-  /// Build full S3 URL for the image object.
-  std::string build_url() const {
-    std::string url = endpoint;
-    if (url.empty() || url.back() != '/') {
-      url += '/';
-    }
-    url += bucket;
-    url += '/';
-    if (!prefix.empty()) {
-      url += prefix;
-      if (url.back() != '/') {
+  /// Build full S3 URL for the image object (cached; URL never changes after config load).
+  const std::string& build_url() const {
+    if (m_cached_url.empty()) {
+      std::string url = endpoint;
+      if (url.empty() || url.back() != '/') {
         url += '/';
       }
+      url += bucket;
+      url += '/';
+      if (!prefix.empty()) {
+        url += prefix;
+        if (url.back() != '/') {
+          url += '/';
+        }
+      }
+      url += image_name;
+      m_cached_url = std::move(url);
     }
-    url += image_name;
-    return url;
+    return m_cached_url;
   }
 
   bool empty() const {
     return !enabled || bucket.empty() || endpoint.empty();
   }
+
+private:
+  mutable std::string m_cached_url;
 };
 
 /// Full information about an image's parent.

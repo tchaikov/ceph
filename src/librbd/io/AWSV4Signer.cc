@@ -35,8 +35,8 @@ std::string AWSV4Signer::get_iso8601_timestamp(time_t t) {
   gmtime_r(&t, &tm_buf);
 
   char buf[32];
-  strftime(buf, sizeof(buf), "%Y%m%dT%H%M%SZ", &tm_buf);
-  return std::string(buf);
+  size_t len = strftime(buf, sizeof(buf), "%Y%m%dT%H%M%SZ", &tm_buf);
+  return std::string(buf, len);
 }
 
 std::string AWSV4Signer::get_date_string(time_t t) {
@@ -48,8 +48,8 @@ std::string AWSV4Signer::get_date_string(time_t t) {
   gmtime_r(&t, &tm_buf);
 
   char buf[16];
-  strftime(buf, sizeof(buf), "%Y%m%d", &tm_buf);
-  return std::string(buf);
+  size_t len = strftime(buf, sizeof(buf), "%Y%m%d", &tm_buf);
+  return std::string(buf, len);
 }
 
 std::string AWSV4Signer::sha256_hex(const std::string& data) {
