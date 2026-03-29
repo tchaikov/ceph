@@ -127,14 +127,19 @@ private:
   // Calculate byte offset in S3 object from RBD object number
   uint64_t calculate_s3_offset(uint64_t object_no, uint64_t object_off) const;
 
-  // Build S3 URL from config
-
   // Perform HTTP Range GET request with retry logic
   int fetch_with_retry(const std::string& url, bufferlist* data,
                       uint64_t byte_start, uint64_t byte_length);
 
-  // Setup curl handle for HTTP GET request
+  // Setup curl handle for HTTP GET request (allocates a new easy handle)
   CURL* setup_curl_handle(const std::string& url, bufferlist* data,
+                          uint64_t byte_start, uint64_t byte_length,
+                          struct curl_slist** out_headers);
+
+  // Apply all per-request curl options to an existing handle.
+  // Shared by setup_curl_handle (new handle) and fetch_with_retry (reused handle).
+  // Caller must call curl_slist_free_all(*out_headers) after the request.
+  void apply_curl_options(CURL* handle, const std::string& url, bufferlist* data,
                           uint64_t byte_start, uint64_t byte_length,
                           struct curl_slist** out_headers);
 

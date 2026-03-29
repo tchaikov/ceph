@@ -133,6 +133,7 @@ private:
   ceph::bufferlist m_lock_info_bl;  // buffer for async get_lock_info response
   std::string m_parent_oid;
   std::string m_parent_lock_oid;  // separate sentinel object for cls lock
+  std::string m_lock_cookie;      // "<image_id>_<object_no>", set once on first lock attempt
   librados::IoCtx m_parent_ioctx;
   // Heap-allocated so its lifetime is tied to CopyupRequest, not the stack
   // frame of fetch_from_s3_async(). The detached pthread writes into m_s3_data

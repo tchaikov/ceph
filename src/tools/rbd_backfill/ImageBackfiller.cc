@@ -200,7 +200,8 @@ void ImageBackfiller::run_backfill() {
   // in which case m_stopping is true but all work was done and the metadata
   // must be updated so the daemon doesn't re-queue the image on restart.
   if (completed + failed == m_num_objects) {
-    std::string final_status = (failed == 0) ? "complete" : "failed";
+    std::string final_status = (failed == 0) ? BACKFILL_STATUS_COMPLETE
+                                              : BACKFILL_STATUS_FAILED;
 
     // Remove the scheduling flag so a restarted daemon does not re-queue
     // this image.  Ignore ENOENT in case it was already cleared externally.

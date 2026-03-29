@@ -810,8 +810,11 @@ void CopyupRequest<I>::fetch_from_s3_with_lock() {
   ldout(cct, 15) << "parent oid: " << m_parent_oid
                  << ", lock oid: " << m_parent_lock_oid << dendl;
 
-  // Construct lock cookie (unique per child instance and object)
-  std::string lock_cookie = m_image_ctx->id + "_" + stringify(m_object_no);
+  // Construct lock cookie (unique per child instance and object) — cached
+  // as m_lock_cookie so unlock_parent_object() doesn't need to recompute it.
+  if (m_lock_cookie.empty()) {
+    m_lock_cookie = m_image_ctx->id + "_" + stringify(m_object_no);
+  }
 
   // Attempt to acquire exclusive lock on parent object
   // This prevents multiple children from fetching the same object from S3
@@ -826,7 +829,7 @@ void CopyupRequest<I>::fetch_from_s3_with_lock() {
   utime_t lock_duration(lock_timeout, 0);
 
   rados::cls::lock::lock(&lock_op, S3_FETCH_LOCK_NAME, LOCK_EXCLUSIVE,
-                        lock_cookie, S3_FETCH_LOCK_TAG, "S3 fetch in progress",
+                        m_lock_cookie, S3_FETCH_LOCK_TAG, "S3 fetch in progress",
                         lock_duration, 0);
 
   // Send lock operation
@@ -985,8 +988,17 @@ void CopyupRequest<I>::handle_break_backfill_lock(int r) {
   // without any S3 round-trip.  If not, fetch_from_s3_with_lock() re-tries
   // the lock acquisition (which should now succeed since we broke it) or
   // proceeds without the lock if another request re-acquired it.
+  //
+  // Queue via op_work_queue (same pattern as handle_list_lock_holders) so that
+  // a concurrent finish()/delete-this on another path cannot use-after-free
+  // `this` before the lambda executes.
   ldout(cct, 10) << "re-checking parent after breaking backfill lock" << dendl;
-  read_from_parent();
+  auto alive = m_alive;
+  m_image_ctx->op_work_queue->queue(
+    new FunctionContext([this, alive](int) {
+      if (!alive->load()) return;
+      read_from_parent();
+    }), 0);
 }
 
 // retry_read_from_parent is the fallback path for the rare case where
@@ -1200,9 +1212,6 @@ void CopyupRequest<I>::unlock_parent_object() {
   auto cct = m_image_ctx->cct;
   ldout(cct, 15) << "unlocking parent object" << dendl;
 
-  // Construct the same lock cookie we used to acquire the lock
-  std::string lock_cookie = m_image_ctx->id + "_" + stringify(m_object_no);
-
   // Release the lock asynchronously to avoid blocking the I/O path on a
   // RADOS round-trip.  No completion callback: 'this' may be deleted before
   // the callback fires, and CephContext-only logging requires a C-style
@@ -1210,7 +1219,7 @@ void CopyupRequest<I>::unlock_parent_object() {
   // via the configured timeout, allowing the next holder to acquire the lock
   // once the lease expires.  The initial submission error IS logged below.
   librados::ObjectWriteOperation unlock_op;
-  rados::cls::lock::unlock(&unlock_op, S3_FETCH_LOCK_NAME, lock_cookie);
+  rados::cls::lock::unlock(&unlock_op, S3_FETCH_LOCK_NAME, m_lock_cookie);
 
   auto rados_completion = librados::Rados::aio_create_completion();
   int r = m_parent_ioctx.aio_operate(m_parent_lock_oid, rados_completion, &unlock_op);

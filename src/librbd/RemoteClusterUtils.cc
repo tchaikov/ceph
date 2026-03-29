@@ -7,8 +7,8 @@
 #include "common/dout.h"
 #include "common/errno.h"
 #include "include/encoding.h"
+#include "include/stringify.h"
 #include <fstream>
-#include <sstream>
 #include <boost/algorithm/string.hpp>
 
 #define dout_subsys ceph_subsys_rbd
@@ -200,25 +200,22 @@ int connect_to_remote_cluster(CephContext* cct,
   // This ensures consistency and respects user's tuning for their environment
   auto& conf = cct->_conf;
 
-  std::ostringstream oss;
-  oss << conf->rados_osd_op_timeout;
-  r = cluster.conf_set("rados_osd_op_timeout", oss.str().c_str());
+  r = cluster.conf_set("rados_osd_op_timeout",
+                       stringify(conf->rados_osd_op_timeout).c_str());
   if (r < 0) {
     cluster.shutdown();
     return r;
   }
 
-  oss.str("");
-  oss << conf->client_mount_timeout;
-  r = cluster.conf_set("client_mount_timeout", oss.str().c_str());
+  r = cluster.conf_set("client_mount_timeout",
+                       stringify(conf->client_mount_timeout).c_str());
   if (r < 0) {
     cluster.shutdown();
     return r;
   }
 
-  oss.str("");
-  oss << conf->rados_mon_op_timeout;
-  r = cluster.conf_set("rados_mon_op_timeout", oss.str().c_str());
+  r = cluster.conf_set("rados_mon_op_timeout",
+                       stringify(conf->rados_mon_op_timeout).c_str());
   if (r < 0) {
     cluster.shutdown();
     return r;

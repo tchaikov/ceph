@@ -261,7 +261,7 @@ int BackfillDaemon::discover_scheduled_images() {
 
         std::string scheduled_value;
         r = image.metadata_get(BACKFILL_SCHEDULED_KEY, &scheduled_value);
-        if (r >= 0 && scheduled_value == "true") {
+        if (r >= 0 && scheduled_value == BACKFILL_SCHED_TRUE) {
           // Claim the image before adding it to our work list.  Immediately
           // transition "true" → "in_progress" so that a second daemon instance
           // starting concurrently sees "in_progress" and skips this image.
@@ -295,7 +295,7 @@ int BackfillDaemon::discover_scheduled_images() {
                    << "/" << image_spec.name
                    << " (pool_id=" << pool_id << " image_id=" << spec.image_id
                    << ")" << dendl;
-        } else if (r >= 0 && scheduled_value == "in_progress") {
+        } else if (r >= 0 && scheduled_value == BACKFILL_SCHED_IN_PROGRESS) {
           // Another daemon instance already claimed this image — skip it.
           dout(10) << "image " << pool_name
                    << (ns.empty() ? "" : "/" + ns)

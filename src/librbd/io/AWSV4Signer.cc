@@ -143,9 +143,9 @@ std::string AWSV4Signer::create_canonical_request(
   // CanonicalQueryString (already sorted and encoded)
   canonical_request << query_string << "\n";
 
-  // CanonicalHeaders (lowercase and sorted)
+  // CanonicalHeaders — keys are pre-lowercased by the caller; trim values.
   for (const auto& header : headers) {
-    canonical_request << boost::algorithm::to_lower_copy(header.first) << ":"
+    canonical_request << header.first << ":"
                      << boost::algorithm::trim_copy(header.second) << "\n";
   }
   canonical_request << "\n";
@@ -243,14 +243,14 @@ AWSV4Signer::SignedRequest AWSV4Signer::sign_request(
     headers[boost::algorithm::to_lower_copy(header.first)] = header.second;
   }
 
-  // Create signed headers list
+  // Create signed headers list — keys are already lowercase in the map.
   std::ostringstream signed_headers_stream;
   bool first = true;
   for (const auto& header : headers) {
     if (!first) {
       signed_headers_stream << ";";
     }
-    signed_headers_stream << boost::algorithm::to_lower_copy(header.first);
+    signed_headers_stream << header.first;
     first = false;
   }
   std::string signed_headers = signed_headers_stream.str();

@@ -15,6 +15,7 @@
 #include "librbd/image/CreateRequest.h"
 #include "librbd/image/RemoveRequest.h"
 #include "librbd/mirror/EnableRequest.h"
+#include <boost/algorithm/string/predicate.hpp>
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
@@ -601,7 +602,7 @@ void CloneRequest<I>::handle_metadata_list(int r) {
     for (const auto& kv : metadata) {
       const std::string& key = kv.first;
       // Skip any metadata keys starting with "s3."
-      if (key.size() >= 3 && key.substr(0, 3) == "s3.") {
+      if (boost::starts_with(key, "s3.")) {
         ldout(m_cct, 10) << "skipping S3 metadata key: " << key << dendl;
         continue;
       }

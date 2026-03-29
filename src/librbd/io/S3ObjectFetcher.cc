@@ -199,6 +199,42 @@ void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
   // ldout(m_cct, 15) << "added AWS Signature V4 authorization" << dendl;
 }
 
+void S3ObjectFetcher::apply_curl_options(CURL* handle,
+                                          const std::string& url,
+                                          bufferlist* data,
+                                          uint64_t byte_start,
+                                          uint64_t byte_length,
+                                          struct curl_slist** out_headers) {
+  *out_headers = nullptr;
+  add_auth_headers(handle, out_headers, url, byte_start, byte_length);
+  if (*out_headers) {
+    curl_easy_setopt(handle, CURLOPT_HTTPHEADER, *out_headers);
+  }
+  curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(handle, CURLOPT_HTTPGET, 1L);
+  curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_callback);
+  curl_easy_setopt(handle, CURLOPT_WRITEDATA, data);
+  curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS, (long)m_s3_config.timeout_ms);
+  curl_easy_setopt(handle, CURLOPT_LOW_SPEED_TIME, 30L);   // 30 seconds
+  curl_easy_setopt(handle, CURLOPT_LOW_SPEED_LIMIT, 1024L); // 1 KB/s minimum
+  curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(handle, CURLOPT_MAXREDIRS, 3L);
+  if (!m_cct->_conf.get_val<bool>("rbd_s3_verify_ssl")) {
+    curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(handle, CURLOPT_SSL_VERIFYHOST, 0L);
+  }
+  curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(handle, CURLOPT_NOPROGRESS, 1L);
+  curl_easy_setopt(handle, CURLOPT_USERAGENT, "ceph-rbd-s3-fetcher/1.0");
+  if (m_curl_share) {
+    curl_easy_setopt(handle, CURLOPT_SHARE, m_curl_share);
+  }
+  int64_t max_speed = m_cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps");
+  if (max_speed > 0) {
+    curl_easy_setopt(handle, CURLOPT_MAX_RECV_SPEED_LARGE, (curl_off_t)max_speed);
+  }
+}
+
 CURL* S3ObjectFetcher::setup_curl_handle(const std::string& url,
                                           bufferlist* data,
                                           uint64_t byte_start,
@@ -209,67 +245,7 @@ CURL* S3ObjectFetcher::setup_curl_handle(const std::string& url,
     lderr(m_cct) << "curl_easy_init() failed" << dendl;
     return nullptr;
   }
-
-  *out_headers = nullptr;
-
-  // Set URL
-  curl_easy_setopt(curl_handle, CURLOPT_URL, url.c_str());
-
-  // Set HTTP GET method
-  curl_easy_setopt(curl_handle, CURLOPT_HTTPGET, 1L);
-
-  // Add AWS Signature V4 authentication headers
-  add_auth_headers(curl_handle, out_headers, url, byte_start, byte_length);
-  if (*out_headers) {
-    curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, *out_headers);
-  }
-
-  // Set write callback to receive response data
-  curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, write_callback);
-  curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, data);
-
-  // Timeout settings from configuration
-  long timeout_ms = m_s3_config.timeout_ms;
-  curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT_MS, timeout_ms);
-
-  // Low speed timeout (abort if transfer is too slow)
-  curl_easy_setopt(curl_handle, CURLOPT_LOW_SPEED_TIME, 30L);  // 30 seconds
-  curl_easy_setopt(curl_handle, CURLOPT_LOW_SPEED_LIMIT, 1024L); // 1KB/s minimum
-
-  // Follow redirects (S3 may redirect)
-  curl_easy_setopt(curl_handle, CURLOPT_FOLLOWLOCATION, 1L);
-  curl_easy_setopt(curl_handle, CURLOPT_MAXREDIRS, 3L);
-
-  // SSL verification (enabled by default, can be disabled for testing)
-  if (!m_cct->_conf.get_val<bool>("rbd_s3_verify_ssl")) {
-    ldout(m_cct, 10) << "SSL verification disabled" << dendl;
-    curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYHOST, 0L);
-  }
-
-  // Disable signal handlers (required for multi-threaded applications)
-  curl_easy_setopt(curl_handle, CURLOPT_NOSIGNAL, 1L);
-
-  // Enable progress meter (for debugging)
-  curl_easy_setopt(curl_handle, CURLOPT_NOPROGRESS, 1L);
-
-  // Set user agent
-  curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "ceph-rbd-s3-fetcher/1.0");
-
-  // Attach to the shared connection/DNS pool so libcurl can reuse idle
-  // keep-alive connections across requests (HTTP/1.1 connection persistence).
-  if (m_curl_share) {
-    curl_easy_setopt(curl_handle, CURLOPT_SHARE, m_curl_share);
-  }
-
-  // Optional: Throttle download speed for testing (0 = unlimited)
-  int64_t max_speed = m_cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps");
-  if (max_speed > 0) {
-    curl_easy_setopt(curl_handle, CURLOPT_MAX_RECV_SPEED_LARGE,
-                     (curl_off_t)max_speed);
-    ldout(m_cct, 15) << "throttling download to " << max_speed << " bytes/sec" << dendl;
-  }
-
+  apply_curl_options(curl_handle, url, data, byte_start, byte_length, out_headers);
   return curl_handle;
 }
 
@@ -306,38 +282,7 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
       curl_easy_reset(m_sync_handle);
     }
     struct curl_slist* headers = nullptr;
-    // setup_curl_handle allocates a new handle; use the persistent one instead
-    // by applying options directly.  The URL, write callback, auth headers,
-    // timeouts, SSL settings and share handle are all set here.
-    add_auth_headers(m_sync_handle, &headers, url, byte_start, byte_length);
-    if (headers) {
-      curl_easy_setopt(m_sync_handle, CURLOPT_HTTPHEADER, headers);
-    }
-    curl_easy_setopt(m_sync_handle, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(m_sync_handle, CURLOPT_HTTPGET, 1L);
-    curl_easy_setopt(m_sync_handle, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(m_sync_handle, CURLOPT_WRITEDATA, data);
-    long timeout_ms = m_s3_config.timeout_ms;
-    curl_easy_setopt(m_sync_handle, CURLOPT_TIMEOUT_MS, timeout_ms);
-    curl_easy_setopt(m_sync_handle, CURLOPT_LOW_SPEED_TIME, 30L);
-    curl_easy_setopt(m_sync_handle, CURLOPT_LOW_SPEED_LIMIT, 1024L);
-    curl_easy_setopt(m_sync_handle, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(m_sync_handle, CURLOPT_MAXREDIRS, 3L);
-    if (!m_cct->_conf.get_val<bool>("rbd_s3_verify_ssl")) {
-      curl_easy_setopt(m_sync_handle, CURLOPT_SSL_VERIFYPEER, 0L);
-      curl_easy_setopt(m_sync_handle, CURLOPT_SSL_VERIFYHOST, 0L);
-    }
-    curl_easy_setopt(m_sync_handle, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(m_sync_handle, CURLOPT_NOPROGRESS, 1L);
-    curl_easy_setopt(m_sync_handle, CURLOPT_USERAGENT, "ceph-rbd-s3-fetcher/1.0");
-    int64_t max_speed = m_cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps");
-    if (max_speed > 0) {
-      curl_easy_setopt(m_sync_handle, CURLOPT_MAX_RECV_SPEED_LARGE,
-                       (curl_off_t)max_speed);
-    }
-    if (m_curl_share) {
-      curl_easy_setopt(m_sync_handle, CURLOPT_SHARE, m_curl_share);
-    }
+    apply_curl_options(m_sync_handle, url, data, byte_start, byte_length, &headers);
 
     // Perform HTTP GET request
     CURLcode res = curl_easy_perform(m_sync_handle);
