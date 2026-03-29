@@ -8,6 +8,7 @@
 #include "include/Context.h"
 #include "librbd/Types.h"
 #include <curl/curl.h>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <atomic>
@@ -66,7 +67,7 @@ public:
     Context* on_finish,
     uint64_t byte_start = 0,
     uint64_t byte_length = 0,
-    std::atomic<bool>* cancel_flag = nullptr);
+    std::shared_ptr<std::atomic<bool>> cancel_flag = nullptr);
 
   /**
    * Fetch data from S3 parent image using RBD object number (for backfill daemon)
@@ -79,11 +80,13 @@ public:
    * @param length Number of bytes to read
    * @param out_bl Output buffer to fill with data
    * @param on_finish Completion callback (called with result code)
-   * @param cancel_flag Optional atomic flag to signal cancellation (nullptr = no cancellation)
+   * @param cancel_flag Optional shared cancellation flag (nullptr = no cancellation).
+   *        Shared ownership keeps the flag alive past the caller's lifetime when
+   *        fetch_url() spawns a detached thread.
    */
   void fetch(uint64_t object_no, uint64_t object_off, uint64_t length,
              bufferlist* out_bl, Context* on_finish,
-             std::atomic<bool>* cancel_flag = nullptr);
+             std::shared_ptr<std::atomic<bool>> cancel_flag = nullptr);
 
   /**
    * Synchronous fetch using RBD object number (for testing)
@@ -121,7 +124,8 @@ private:
     Context* on_finish;
     CURL* curl_handle;
     struct curl_slist* headers;
-    std::atomic<bool>* cancel_flag;  // Cancellation flag (nullable)
+    // Shared ownership keeps the flag alive past the caller's delete.
+    std::shared_ptr<std::atomic<bool>> cancel_flag;
   };
 
   // Calculate byte offset in S3 object from RBD object number

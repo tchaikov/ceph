@@ -538,7 +538,7 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
                                  Context* on_finish,
                                  uint64_t byte_start,
                                  uint64_t byte_length,
-                                 std::atomic<bool>* cancel_flag) {
+                                 std::shared_ptr<std::atomic<bool>> cancel_flag) {
   auto cct = m_cct;
 
   if (byte_length > 0) {
@@ -598,7 +598,8 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
 
 void S3ObjectFetcher::fetch(uint64_t object_no, uint64_t object_off,
                             uint64_t length, bufferlist* out_bl,
-                            Context* on_finish, std::atomic<bool>* cancel_flag) {
+                            Context* on_finish,
+                            std::shared_ptr<std::atomic<bool>> cancel_flag) {
   // Calculate byte offset in S3 object
   uint64_t s3_offset = calculate_s3_offset(object_no, object_off);
 
