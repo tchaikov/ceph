@@ -832,25 +832,40 @@ public:
     // Load S3 configuration from image metadata
     s3_config = S3Config();  // Reset to defaults first
     bool s3_secret_key_invalid = false;
+
+    // Helper: parse a non-negative integer metadata value into a uint32.
+    auto parse_uint32_meta = [this](const std::string& val,
+                                    const char* key_name,
+                                    uint32_t* out) {
+      std::string err;
+      long long v = strict_strtoll(val.c_str(), 10, &err);
+      if (!err.empty() || v < 0) {
+        lderr(cct) << "apply_metadata: invalid " << key_name
+                   << " value: " << val << dendl;
+      } else {
+        *out = static_cast<uint32_t>(v);
+      }
+    };
+
     for (const auto& meta_pair : meta) {
-      if (!boost::starts_with(meta_pair.first, "s3.")) {
+      const std::string& k = meta_pair.first;
+      if (!boost::starts_with(k, "s3.")) {
         continue;
       }
 
-      std::string key = meta_pair.first.substr(3);  // Remove "s3." prefix
       std::string val = meta_pair.second.to_str();
 
-      if (key == "enabled") {
+      if (k == S3_META_KEY_ENABLED) {
         s3_config.enabled = (val == "true" || val == "1");
-      } else if (key == "endpoint") {
+      } else if (k == S3_META_KEY_ENDPOINT) {
         s3_config.endpoint = val;
-      } else if (key == "bucket") {
+      } else if (k == S3_META_KEY_BUCKET) {
         s3_config.bucket = val;
-      } else if (key == "region") {
+      } else if (k == S3_META_KEY_REGION) {
         s3_config.region = val;
-      } else if (key == "access_key") {
+      } else if (k == S3_META_KEY_ACCESS_KEY) {
         s3_config.access_key = val;
-      } else if (key == "secret_key") {
+      } else if (k == S3_META_KEY_SECRET_KEY) {
         // The metadata value is stored base64-encoded (set by `rbd s3-config set`).
         // Decode it here so HMAC signing uses the raw key, not the encoded form.
         // Note: metadata is sorted, so access_key ('a') is processed before
@@ -869,28 +884,16 @@ public:
           }
           // If access_key is empty, the config is incomplete anyway; do nothing.
         }
-      } else if (key == "image_name") {
+      } else if (k == S3_META_KEY_IMAGE_NAME) {
         s3_config.image_name = val;
-      } else if (key == "image_format") {
+      } else if (k == S3_META_KEY_IMAGE_FMT) {
         s3_config.image_format = val;
-      } else if (key == "prefix") {
+      } else if (k == S3_META_KEY_PREFIX) {
         s3_config.prefix = val;
-      } else if (key == "timeout_ms") {
-        std::string err;
-        long long v = strict_strtoll(val.c_str(), 10, &err);
-        if (!err.empty() || v < 0) {
-          lderr(cct) << __func__ << ": invalid s3.timeout_ms value: " << val << dendl;
-        } else {
-          s3_config.timeout_ms = static_cast<uint32_t>(v);
-        }
-      } else if (key == "max_retries") {
-        std::string err;
-        long long v = strict_strtoll(val.c_str(), 10, &err);
-        if (!err.empty() || v < 0) {
-          lderr(cct) << __func__ << ": invalid s3.max_retries value: " << val << dendl;
-        } else {
-          s3_config.max_retries = static_cast<uint32_t>(v);
-        }
+      } else if (k == S3_META_KEY_TIMEOUT_MS) {
+        parse_uint32_meta(val, S3_META_KEY_TIMEOUT_MS, &s3_config.timeout_ms);
+      } else if (k == S3_META_KEY_MAX_RETRIES) {
+        parse_uint32_meta(val, S3_META_KEY_MAX_RETRIES, &s3_config.max_retries);
       }
     }
 

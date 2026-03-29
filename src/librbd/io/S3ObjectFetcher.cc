@@ -67,9 +67,15 @@ S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config)
     m_signer(AWSV4Signer::Credentials(s3_config.access_key, s3_config.secret_key,
                                       s3_config.region, "s3")),
     m_verify_ssl(cct->_conf.get_val<bool>("rbd_s3_verify_ssl")),
-    m_max_download_bps(cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps")),
-    m_cached_host(extract_host_from_url(s3_config.build_url())),
-    m_cached_uri(extract_uri_from_url(s3_config.build_url())) {
+    m_max_download_bps(cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps")) {
+  // Pre-compute host and URI from the S3 URL once at construction.
+  // These are used for every AWS Signature V4 signing request.
+  {
+    const std::string url = m_s3_config.build_url();
+    m_cached_host = extract_host_from_url(url);
+    m_cached_uri  = extract_uri_from_url(url);
+  }
+
   // Thread-safe initialization of libcurl (called once per process)
   std::call_once(curl_init_flag, init_curl_once);
 
