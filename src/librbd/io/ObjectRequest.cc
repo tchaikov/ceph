@@ -456,7 +456,7 @@ void ObjectReadRequest<I>::read_from_s3() {
     RWLock::WLocker snap_wlocker(image_ctx->snap_lock);
     if (!image_ctx->s3_fetcher) {
       image_ctx->s3_fetcher =
-        std::make_shared<io::S3ObjectFetcher>(cct, s3_config);
+        std::make_shared<io::S3ObjectFetcher>(cct, s3_config, image_ctx->get_object_size());
     }
     m_s3_fetcher = image_ctx->s3_fetcher;
   }

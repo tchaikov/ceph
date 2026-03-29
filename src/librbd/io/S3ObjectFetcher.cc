@@ -56,11 +56,13 @@ void S3ObjectFetcher::share_unlock(CURL*, curl_lock_data data, void* userptr) {
   fetcher->m_share_mutexes[data].unlock();
 }
 
-S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config)
+S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config,
+                                 uint64_t object_size)
   : m_cct(cct),
     m_s3_config(s3_config),
     m_signer(AWSV4Signer::Credentials(s3_config.access_key, s3_config.secret_key,
                                       s3_config.region, "s3")),
+    m_object_size(object_size),
     m_verify_ssl(cct->_conf.get_val<bool>("rbd_s3_verify_ssl")),
     m_max_download_bps(cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps")) {
   // Pre-compute host and URI from the S3 URL once at construction.
@@ -369,8 +371,8 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
 uint64_t S3ObjectFetcher::calculate_s3_offset(uint64_t object_no, uint64_t object_off) const {
   // For "raw" format: disk image is stored as a single object
   // Offset = object_number * object_size + object_offset
-  ceph_assert(m_s3_config.object_size > 0);
-  return (object_no * m_s3_config.object_size) + object_off;
+  ceph_assert(m_object_size > 0);
+  return (object_no * m_object_size) + object_off;
 }
 
 

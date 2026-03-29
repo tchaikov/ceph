@@ -908,7 +908,7 @@ public:
     if (!s3_config.bucket.empty() && !s3_config.endpoint.empty() &&
         !s3_config.image_name.empty() && !s3_config.image_format.empty()) {
       s3_config.enabled = true;
-      s3_config.object_size = get_object_size();
+      
       // Pre-warm the mutable URL cache here, while still holding md_lock
       // (single-threaded context).  Subsequent concurrent calls from I/O
       // threads read the already-populated cache and skip the write path,

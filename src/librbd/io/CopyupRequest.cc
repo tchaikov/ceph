@@ -1096,7 +1096,7 @@ void CopyupRequest<I>::fetch_from_s3_async() {
   // targeting the same S3 endpoint instead of paying TCP+TLS setup each time.
   if (!m_image_ctx->parent->s3_fetcher) {
     m_image_ctx->parent->s3_fetcher =
-      std::make_shared<S3ObjectFetcher>(cct, s3_config);
+      std::make_shared<S3ObjectFetcher>(cct, s3_config, m_image_ctx->parent->get_object_size());
   }
   // Take a shared ref so the fetcher stays alive even if the parent is
   // detached (flatten) before the async pthread completes.

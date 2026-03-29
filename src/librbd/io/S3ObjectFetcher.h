@@ -49,8 +49,11 @@ public:
    *
    * @param cct Ceph context for logging and configuration
    * @param s3_config S3 configuration including credentials and endpoints
+   * @param object_size RBD object size in bytes; required only when fetch() is
+   *        used (backfill path).  Callers that use only fetch_url() may omit it.
    */
-  S3ObjectFetcher(CephContext* cct, const S3Config& s3_config);
+  S3ObjectFetcher(CephContext* cct, const S3Config& s3_config,
+                  uint64_t object_size = 0);
 
   ~S3ObjectFetcher();
 
@@ -78,7 +81,7 @@ public:
    * Fetch data from S3 parent image using RBD object number (for backfill daemon)
    *
    * Calculates S3 byte offset from RBD object number and performs HTTP range GET.
-   * Requires s3_config.object_size to be set for offset calculation.
+   * Requires object_size > 0 (passed to constructor) for offset calculation.
    *
    * @param object_no RBD object number
    * @param object_off Offset within the RBD object
@@ -117,6 +120,10 @@ private:
   // The backfill daemon calls fetch_sync() sequentially from one thread; reusing
   // this handle lets the connection remain open between consecutive object fetches.
   CURL* m_sync_handle = nullptr;
+
+  // RBD object size used by fetch() to convert object number → S3 byte offset.
+  // Only needed by the backfill path; zero for CopyupRequest/ObjectRequest callers.
+  uint64_t m_object_size = 0;
 
   // Config values cached at construction to avoid per-request config lookups.
   bool m_verify_ssl = true;

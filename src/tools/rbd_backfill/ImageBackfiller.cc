@@ -434,10 +434,10 @@ void ImageBackfiller::load_s3_config() {
            << "endpoint=" << s3_config.endpoint
            << ", bucket=" << s3_config.bucket
            << ", image_name=" << s3_config.image_name
-           << ", object_size=" << s3_config.object_size
+           << ", object_size=" << (1ull << m_image_ctx->order)
            << ", format=" << s3_config.image_format << dendl;
 
-  m_s3_fetcher = std::make_unique<librbd::io::S3ObjectFetcher>(m_cct, s3_config);
+  m_s3_fetcher = std::make_unique<librbd::io::S3ObjectFetcher>(m_cct, s3_config, 1ull << m_image_ctx->order);
   dout(10) << "created S3ObjectFetcher" << dendl;
 }
 
