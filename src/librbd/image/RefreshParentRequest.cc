@@ -138,7 +138,7 @@ void RefreshParentRequest<I>::send_open_parent() {
       m_parent_md.remote_cluster_name,
       m_parent_md.remote_mon_hosts,
       m_parent_md.remote_keyring,
-      "client.admin",
+      util::DEFAULT_REMOTE_CLIENT_NAME,
       *m_child_image_ctx.remote_parent_cluster);
 
     if (r < 0) {
@@ -257,7 +257,6 @@ void RefreshParentRequest<I>::load_parent_s3_config() {
                    << ", endpoint=" << s3_config.endpoint
                    << ", prefix=" << s3_config.prefix
                    << ", region=" << s3_config.region
-                   << ", anonymous=" << s3_config.is_anonymous()
                    << dendl;
   } else if (s3_config.enabled) {
     ldout(cct, 5) << "warning: incomplete S3 configuration for parent image" << dendl;

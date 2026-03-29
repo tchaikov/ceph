@@ -8,6 +8,7 @@
 #include "common/dout.h"
 #include "common/errno.h"
 #include "common/perf_counters.h"
+#include "common/strtol.h"
 #include "common/WorkQueue.h"
 #include "common/Timer.h"
 
@@ -870,12 +871,20 @@ public:
       } else if (key == "prefix") {
         s3_config.prefix = val;
       } else if (key == "timeout_ms") {
-        try { s3_config.timeout_ms = std::stoul(val); } catch (...) {
+        std::string err;
+        long long v = strict_strtoll(val.c_str(), 10, &err);
+        if (!err.empty() || v < 0) {
           lderr(cct) << __func__ << ": invalid s3.timeout_ms value: " << val << dendl;
+        } else {
+          s3_config.timeout_ms = static_cast<uint32_t>(v);
         }
       } else if (key == "max_retries") {
-        try { s3_config.max_retries = std::stoul(val); } catch (...) {
+        std::string err;
+        long long v = strict_strtoll(val.c_str(), 10, &err);
+        if (!err.empty() || v < 0) {
           lderr(cct) << __func__ << ": invalid s3.max_retries value: " << val << dendl;
+        } else {
+          s3_config.max_retries = static_cast<uint32_t>(v);
         }
       }
     }

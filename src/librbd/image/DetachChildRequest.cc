@@ -88,7 +88,7 @@ void DetachChildRequest<I>::clone_v2_child_detach() {
       m_parent_info.remote_cluster_name,
       m_parent_info.remote_mon_hosts,
       m_parent_info.remote_keyring,
-      "client.admin",
+      util::DEFAULT_REMOTE_CLIENT_NAME,
       *m_remote_parent_cluster);
 
     if (r < 0) {

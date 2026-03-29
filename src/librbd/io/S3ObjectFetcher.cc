@@ -147,19 +147,6 @@ void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
                                         const std::string& url,
                                         uint64_t byte_start,
                                         uint64_t byte_length) {
-  // Skip authentication if no credentials provided
-  if (m_s3_config.is_anonymous()) {
-    ldout(m_cct, 15) << "using anonymous access (no credentials)" << dendl;
-    // Just add the Range header manually for anonymous access
-    if (byte_length > 0) {
-      uint64_t byte_end = byte_start + byte_length - 1;
-      std::string range_header = "Range: bytes=" + std::to_string(byte_start) +
-                                  "-" + std::to_string(byte_end);
-      *headers = curl_slist_append(*headers, range_header.c_str());
-    }
-    return;
-  }
-
   std::string host = extract_host_from_url(url);
   std::string uri = extract_uri_from_url(url);
 
@@ -335,21 +322,9 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
 
     // Check if we should retry
     if (retry_count < max_retries) {
-      // Exponential backoff with jitter: base_delay * (1 ± 25%)
-      // This prevents thundering herd when many requests fail simultaneously
-      uint64_t base_delay_ms = 1000 * (1 << retry_count);  // 1s, 2s, 4s
-
-      // Add deterministic ±25% jitter based on retry_count to prevent
-      // thundering herd without relying on rand() which is not thread-safe.
-      // Pattern: +25%, 0%, -25%, repeating.
-      int jitter_range = static_cast<int>(base_delay_ms / 4);
-      int jitter = (retry_count % 3 == 0) ? jitter_range :
-                   (retry_count % 3 == 1) ? 0 : -jitter_range;
-      uint64_t delay_ms = base_delay_ms + jitter;
-
-      ldout(m_cct, 10) << "waiting " << delay_ms << "ms before retry "
-                       << "(base=" << base_delay_ms << "ms, jitter=" << jitter << "ms)" << dendl;
-
+      // Exponential backoff: 1s, 2s, 4s, ...
+      uint64_t delay_ms = 1000ULL * (1U << retry_count);
+      ldout(m_cct, 10) << "waiting " << delay_ms << "ms before retry" << dendl;
       std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
     }
 

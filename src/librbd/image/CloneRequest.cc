@@ -200,13 +200,12 @@ void CloneRequest<I>::connect_remote_parent() {
   // Create remote cluster connection
   m_remote_parent_cluster.reset(new librados::Rados());
 
-  // Use "client.admin" as the default client name (same as RefreshParentRequest)
   int r = util::connect_to_remote_cluster(
     m_cct,
     m_remote_parent_spec.cluster_name,
     m_remote_parent_spec.mon_hosts,
     m_remote_parent_spec.keyring,
-    "client.admin",
+    util::DEFAULT_REMOTE_CLIENT_NAME,
     *m_remote_parent_cluster);
 
   if (r < 0) {

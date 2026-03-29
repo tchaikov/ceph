@@ -152,14 +152,13 @@ std::string AWSV4Signer::create_string_to_sign(
     const std::string& timestamp,
     const std::string& scope,
     const std::string& canonical_request_hash) {
-  std::ostringstream string_to_sign;
-
-  string_to_sign << "AWS4-HMAC-SHA256\n";
-  string_to_sign << timestamp << "\n";
-  string_to_sign << scope << "\n";
-  string_to_sign << canonical_request_hash;
-
-  return string_to_sign.str();
+  std::string result = "AWS4-HMAC-SHA256\n";
+  result += timestamp;
+  result += '\n';
+  result += scope;
+  result += '\n';
+  result += canonical_request_hash;
+  return result;
 }
 
 std::array<unsigned char, 32> AWSV4Signer::calculate_signing_key(
@@ -199,14 +198,15 @@ std::string AWSV4Signer::build_authorization_header(
     const std::string& signed_headers,
     const std::string& scope,
     const std::string& signature) {
-  std::ostringstream auth_header;
-
-  auth_header << "AWS4-HMAC-SHA256 ";
-  auth_header << "Credential=" << m_credentials.access_key << "/" << scope << ", ";
-  auth_header << "SignedHeaders=" << signed_headers << ", ";
-  auth_header << "Signature=" << signature;
-
-  return auth_header.str();
+  std::string result = "AWS4-HMAC-SHA256 Credential=";
+  result += m_credentials.access_key;
+  result += '/';
+  result += scope;
+  result += ", SignedHeaders=";
+  result += signed_headers;
+  result += ", Signature=";
+  result += signature;
+  return result;
 }
 
 AWSV4Signer::SignedRequest AWSV4Signer::sign_request(
@@ -233,9 +233,10 @@ AWSV4Signer::SignedRequest AWSV4Signer::sign_request(
   headers["x-amz-content-sha256"] = payload_hash;
   headers["x-amz-date"] = iso8601_timestamp;
 
-  // Add additional headers
+  // Add additional headers (lowercase for signing; original case for result)
   for (const auto& header : additional_headers) {
     headers[boost::algorithm::to_lower_copy(header.first)] = header.second;
+    result.headers[header.first] = header.second;
   }
 
   // Build signed_headers string in one pass — keys are already lowercase
@@ -267,16 +268,10 @@ AWSV4Signer::SignedRequest AWSV4Signer::sign_request(
   std::string authorization = build_authorization_header(
     signed_headers, scope, signature);
 
-  // Populate result
+  // Populate base result headers (additional_headers already populated above)
   result.headers["Host"] = host;
   result.headers["x-amz-date"] = iso8601_timestamp;
   result.headers["x-amz-content-sha256"] = payload_hash;
-
-  // Add any additional headers
-  for (const auto& header : additional_headers) {
-    result.headers[header.first] = header.second;
-  }
-
   result.authorization = authorization;
 
   return result;

@@ -120,13 +120,7 @@ struct S3Config {
            !endpoint.empty() &&
            !image_name.empty() &&
            !image_format.empty();
-    // Note: access_key and secret_key are optional for anonymous access
     // region and prefix are also optional
-  }
-
-  /// Check if this is anonymous access (no credentials)
-  bool is_anonymous() const {
-    return access_key.empty() && secret_key.empty();
   }
 
   /// Build full S3 URL for the image object (cached; URL never changes after config load).
