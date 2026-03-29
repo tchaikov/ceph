@@ -20,6 +20,7 @@
 #include "include/rados/librados.hpp"
 
 #include "cls/lock/cls_lock_client.h"
+#include "cls/rbd/cls_rbd_client.h"
 #include "cls/rbd/cls_rbd_types.h"
 #include "include/stringify.h"
 #include "osdc/Striper.h"
@@ -66,6 +67,16 @@ template <typename I>
 bool ObjectMap<I>::is_compatible(const file_layout_t& layout, uint64_t size) {
   uint64_t object_count = Striper::get_num_objects(layout, size);
   return (object_count <= cls::rbd::MAX_OBJECT_MAP_OBJECT_COUNT);
+}
+
+template <typename I>
+void ObjectMap<I>::build_update_op(librados::ObjectWriteOperation *op,
+                                    uint64_t start_object_no,
+                                    uint64_t end_object_no,
+                                    uint8_t new_state,
+                                    const boost::optional<uint8_t> &current_state) {
+  cls_client::object_map_update(op, start_object_no, end_object_no,
+                                new_state, current_state);
 }
 
 template <typename I>

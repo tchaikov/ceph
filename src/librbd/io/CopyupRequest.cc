@@ -20,7 +20,6 @@
 #include "librbd/io/ObjectRequest.h"
 #include "librbd/io/ReadResult.h"
 #include "cls/lock/cls_lock_client.h"
-#include "cls/rbd/cls_rbd_client.h"
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/bind.hpp>
@@ -1430,7 +1429,7 @@ void CopyupRequest<I>::handle_write_parent_after_copyup(int r) {
     snap_locker.unlock();
 
     librados::ObjectWriteOperation map_op;
-    cls_client::object_map_update(&map_op, m_object_no, m_object_no + 1,
+    ObjectMap<>::build_update_op(&map_op, m_object_no, m_object_no + 1,
                                   OBJECT_EXISTS, boost::optional<uint8_t>());
 
     using klass = CopyupRequest<I>;

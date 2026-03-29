@@ -38,6 +38,18 @@ public:
 
   static bool is_compatible(const file_layout_t& layout, uint64_t size);
 
+  /**
+   * Build a RADOS op that marks [start_object_no, end_object_no) as new_state
+   * in the on-disk object map.  Use this when the caller holds no in-memory
+   * ObjectMap (e.g. cross-image copyup without the parent's ExclusiveLock).
+   * The caller is responsible for issuing the resulting op via aio_operate().
+   */
+  static void build_update_op(librados::ObjectWriteOperation *op,
+                               uint64_t start_object_no,
+                               uint64_t end_object_no,
+                               uint8_t new_state,
+                               const boost::optional<uint8_t> &current_state);
+
   ceph::BitVector<2u>::Reference operator[](uint64_t object_no);
   uint8_t operator[](uint64_t object_no) const;
   inline uint64_t size() const {
