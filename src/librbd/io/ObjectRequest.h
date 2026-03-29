@@ -149,10 +149,11 @@ private:
   ceph::bufferlist* m_read_data;
   ExtentMap* m_extent_map;
 
-  // Heap-allocated so its lifetime is tied to ObjectReadRequest, not the stack
-  // frame of read_from_s3(). The detached pthread writes into m_read_data
-  // which is a member of this class, so both must outlive the in-flight fetch.
-  std::unique_ptr<S3ObjectFetcher> m_s3_fetcher;
+  // Shared reference to the image's S3 fetcher (lazily initialized in
+  // image_ctx->s3_fetcher under snap_lock).  Holding a shared_ptr here keeps
+  // the fetcher alive for the duration of the async fetch even if the image
+  // is closed concurrently (e.g., during flatten).
+  std::shared_ptr<S3ObjectFetcher> m_s3_fetcher;
 
   void read_object();
   void handle_read_object(int r);

@@ -24,12 +24,23 @@ namespace po = boost::program_options;
 namespace {
 
 int validate_s3_backed_image(librbd::Image& image) {
-  std::string value;
-  int r = image.metadata_get(librbd::S3_META_KEY_BUCKET, &value);
-  if (r < 0) {
-    std::cerr << "rbd: image is not S3-backed (no " << librbd::S3_META_KEY_BUCKET
-              << " metadata)" << std::endl;
-    return r;
+  // All four fields are required for a valid S3-backed image (matches
+  // S3Config::is_valid() in librbd/Types.h).
+  static const char* const required_keys[] = {
+    librbd::S3_META_KEY_BUCKET,
+    librbd::S3_META_KEY_ENDPOINT,
+    librbd::S3_META_KEY_IMAGE_NAME,
+    librbd::S3_META_KEY_IMAGE_FMT,
+  };
+
+  for (const char* key : required_keys) {
+    std::string value;
+    int r = image.metadata_get(key, &value);
+    if (r < 0 || value.empty()) {
+      std::cerr << "rbd: image is not S3-backed (missing or empty '"
+                << key << "' metadata)" << std::endl;
+      return r < 0 ? r : -EINVAL;
+    }
   }
   return 0;
 }

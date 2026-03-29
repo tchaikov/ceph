@@ -22,6 +22,7 @@
 #include "cls/lock/cls_lock_client.h"
 #include "cls/rbd/cls_rbd_client.h"
 
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/bind.hpp>
 #include <boost/lambda/bind.hpp>
 #include <boost/lambda/construct.hpp>
@@ -743,10 +744,11 @@ void CopyupRequest<I>::handle_check_parent_object_exists(int r) {
     ldout(cct, 15) << "parent object not in RADOS, fetching from S3" << dendl;
     fetch_from_s3_with_lock();
   } else if (r < 0) {
-    // Stat failed for other reason, fall back to normal read
-    // (which will handle the error appropriately)
-    ldout(cct, 10) << "parent object stat failed: " << cpp_strerror(r)
-                   << ", falling back to normal read" << dendl;
+    // Stat failed for a reason other than ENOENT.  This is unexpected
+    // (e.g., permissions error, RADOS connectivity issue) — log at error
+    // level so operators can diagnose, then fall back to a normal read.
+    lderr(cct) << "parent object stat failed: " << cpp_strerror(r)
+               << ", falling back to normal read" << dendl;
     do_read_from_parent();
   } else {
     // Object exists in RADOS, do normal read
@@ -822,7 +824,7 @@ void CopyupRequest<I>::fetch_from_s3_with_lock() {
   // Using cls_lock for distributed locking
   // Lock name: "s3_fetch_lock", type: LOCK_EXCLUSIVE
   // Duration: 30 seconds (auto-expires if holder crashes)
-  uint32_t lock_timeout = cct->_conf.template get_val<uint64_t>("rbd_s3_parent_lock_timeout");
+  uint32_t lock_timeout = m_image_ctx->s3_parent_lock_timeout;
 
   // Note: cls::lock::lock() expects utime_t for duration
   utime_t lock_duration(lock_timeout, 0);
@@ -928,7 +930,7 @@ void CopyupRequest<I>::handle_list_lock_holders(int r) {
   // Check if any holder is a backfill daemon (cookie starts with "backfill-")
   for (auto &kv : lockers) {
     const auto &cookie = kv.first.cookie;
-    if (cookie.rfind(BACKFILL_LOCK_COOKIE_PREFIX, 0) == 0) {
+    if (boost::starts_with(cookie, BACKFILL_LOCK_COOKIE_PREFIX)) {
       ldout(cct, 10) << "backfill daemon holds lock (cookie=" << cookie
                      << ", entity=" << kv.first.locker
                      << "), breaking to preempt" << dendl;
@@ -1011,7 +1013,7 @@ void CopyupRequest<I>::retry_read_from_parent() {
   auto cct = m_image_ctx->cct;
 
   m_s3_retry_count++;
-  uint32_t max_retries = cct->_conf.template get_val<uint64_t>("rbd_s3_lock_retry_max");
+  uint32_t max_retries = m_image_ctx->s3_lock_retry_max;
 
   if (m_s3_retry_count > max_retries) {
     lderr(cct) << "exceeded maximum S3 lock retries (" << max_retries

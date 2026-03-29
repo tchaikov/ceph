@@ -822,8 +822,12 @@ public:
       discard_granularity_bytes = 0;
     }
 
-    // Cache whether the S3 fetch feature is enabled globally (avoid per-I/O config reads)
+    // Cache S3-related config options to avoid per-I/O config reads
     s3_fetch_enabled = cct->_conf.template get_val<bool>("rbd_s3_fetch_enabled");
+    s3_parent_lock_timeout = static_cast<uint32_t>(
+      cct->_conf.template get_val<uint64_t>("rbd_s3_parent_lock_timeout"));
+    s3_lock_retry_max = static_cast<uint32_t>(
+      cct->_conf.template get_val<uint64_t>("rbd_s3_lock_retry_max"));
 
     // Load S3 configuration from image metadata
     s3_config = S3Config();  // Reset to defaults first
@@ -862,10 +866,8 @@ public:
             // access_key is set but secret_key is not valid base64 — this is
             // a credential configuration error; S3 will not be enabled.
             s3_secret_key_invalid = true;
-          } else {
-            // No access_key: anonymous access — store the raw value as-is.
-            s3_config.secret_key = val;
           }
+          // If access_key is empty, the config is incomplete anyway; do nothing.
         }
       } else if (key == "image_name") {
         s3_config.image_name = val;
@@ -904,6 +906,11 @@ public:
         !s3_config.image_name.empty() && !s3_config.image_format.empty()) {
       s3_config.enabled = true;
       s3_config.object_size = get_object_size();
+      // Pre-warm the mutable URL cache here, while still holding md_lock
+      // (single-threaded context).  Subsequent concurrent calls from I/O
+      // threads read the already-populated cache and skip the write path,
+      // eliminating the data race on m_cached_url.
+      s3_config.build_url();
       ldout(cct, 10) << __func__ << ": S3 config loaded: endpoint=" << s3_config.endpoint
                      << ", bucket=" << s3_config.bucket
                      << ", image_name=" << s3_config.image_name

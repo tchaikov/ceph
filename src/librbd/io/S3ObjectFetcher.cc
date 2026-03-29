@@ -67,7 +67,9 @@ S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config)
     m_signer(AWSV4Signer::Credentials(s3_config.access_key, s3_config.secret_key,
                                       s3_config.region, "s3")),
     m_verify_ssl(cct->_conf.get_val<bool>("rbd_s3_verify_ssl")),
-    m_max_download_bps(cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps")) {
+    m_max_download_bps(cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps")),
+    m_cached_host(extract_host_from_url(s3_config.build_url())),
+    m_cached_uri(extract_uri_from_url(s3_config.build_url())) {
   // Thread-safe initialization of libcurl (called once per process)
   std::call_once(curl_init_flag, init_curl_once);
 
@@ -144,13 +146,10 @@ std::string S3ObjectFetcher::extract_uri_from_url(const std::string& url) {
 
 void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
                                         struct curl_slist** headers,
-                                        const std::string& url,
                                         uint64_t byte_start,
                                         uint64_t byte_length) {
-  std::string host = extract_host_from_url(url);
-  std::string uri = extract_uri_from_url(url);
-
-  ldout(m_cct, 15) << "signing request: host=" << host << ", uri=" << uri << dendl;
+  ldout(m_cct, 15) << "signing request: host=" << m_cached_host
+                   << ", uri=" << m_cached_uri << dendl;
 
   // Build additional headers (Range if needed)
   std::map<std::string, std::string> additional_headers;
@@ -161,7 +160,7 @@ void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
   }
 
   auto signed_request = m_signer.sign_request(
-    "GET", host, uri,
+    "GET", m_cached_host, m_cached_uri,
     "",  // No query string
     additional_headers,
     AWSV4Signer::UNSIGNED_PAYLOAD);
@@ -186,7 +185,7 @@ void S3ObjectFetcher::apply_curl_options(CURL* handle,
                                           uint64_t byte_length,
                                           struct curl_slist** out_headers) {
   *out_headers = nullptr;
-  add_auth_headers(handle, out_headers, url, byte_start, byte_length);
+  add_auth_headers(handle, out_headers, byte_start, byte_length);
   if (*out_headers) {
     curl_easy_setopt(handle, CURLOPT_HTTPHEADER, *out_headers);
   }
@@ -435,9 +434,6 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
 
   // Create fetch context for async operation
   FetchContext* ctx = new FetchContext();
-  ctx->url = url;
-  ctx->byte_start = byte_start;
-  ctx->byte_length = byte_length;
   ctx->out_bl = data;
   ctx->on_finish = on_finish;
   ctx->cancel_flag = cancel_flag;
@@ -474,8 +470,8 @@ void S3ObjectFetcher::fetch(uint64_t object_no, uint64_t object_off,
   // Calculate byte offset in S3 object
   uint64_t s3_offset = calculate_s3_offset(object_no, object_off);
 
-  // Build S3 URL
-  std::string url = m_s3_config.build_url();
+  // Use pre-built URL (never changes after construction)
+  const std::string& url = m_s3_config.build_url();
 
   ldout(m_cct, 10) << "fetching object_no=" << object_no
                    << " object_off=" << object_off
@@ -490,8 +486,8 @@ int S3ObjectFetcher::fetch_sync(uint64_t object_no, uint64_t object_off,
   // Calculate byte offset in S3 object
   uint64_t s3_offset = calculate_s3_offset(object_no, object_off);
 
-  // Build S3 URL
-  std::string url = m_s3_config.build_url();
+  // Use pre-built URL (never changes after construction)
+  const std::string& url = m_s3_config.build_url();
 
   // Perform HTTP Range GET
   return fetch_with_retry(url, out_bl, s3_offset, length);

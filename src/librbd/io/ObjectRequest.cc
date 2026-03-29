@@ -383,6 +383,11 @@ template <typename I>
 bool ObjectReadRequest<I>::should_read_from_s3() {
   I *image_ctx = this->m_ictx;
 
+  // Fast path: kill-switch checked without any lock overhead.
+  if (!image_ctx->s3_fetch_enabled) {
+    return false;
+  }
+
   RWLock::RLocker snap_locker(image_ctx->snap_lock);
 
   // Fetch from S3 if this image has S3 backend configured.
@@ -407,40 +412,54 @@ void ObjectReadRequest<I>::read_from_s3() {
 
   ldout(cct, 10) << "fetching object " << this->m_object_no << " from S3" << dendl;
 
-  RWLock::RLocker snap_locker(image_ctx->snap_lock);
+  // Capture everything needed from image_ctx while holding snap_lock (read).
+  S3Config s3_config;
+  uint64_t byte_start;
+  uint64_t byte_length;
+  std::string s3_url;
 
-  // Get S3 config
-  const S3Config& s3_config = image_ctx->s3_config;
+  {
+    RWLock::RLocker snap_locker(image_ctx->snap_lock);
 
-  if (!s3_config.is_valid()) {
-    snap_locker.unlock();
-    lderr(cct) << "invalid S3 configuration" << dendl;
-    this->finish(-EINVAL);
-    return;
+    if (!image_ctx->s3_config.is_valid()) {
+      lderr(cct) << "invalid S3 configuration" << dendl;
+      this->finish(-EINVAL);
+      return;
+    }
+
+    // Copy config before releasing the lock.
+    s3_config = image_ctx->s3_config;
+
+    // For non-sparse raw images in S3, fetch the ENTIRE object: the full
+    // data is written back to RADOS so subsequent reads of any offset hit
+    // the cache rather than S3.
+    uint64_t object_size = image_ctx->get_object_size();
+    byte_start = this->m_object_no * object_size;
+    byte_length = object_size;
+
+    s3_url = s3_config.build_url();
+
+    ldout(cct, 10) << "S3 URL: " << s3_url
+                   << ", fetching entire object " << this->m_object_no
+                   << " range: bytes=" << byte_start
+                   << "-" << (byte_start + byte_length - 1) << dendl;
+
+    // Fast-path: grab the already-initialized shared fetcher.
+    if (image_ctx->s3_fetcher) {
+      m_s3_fetcher = image_ctx->s3_fetcher;
+    }
   }
 
-  // For non-sparse raw images in S3, we need to fetch the ENTIRE object
-  // even if only a small range is requested. This is because:
-  // 1. We write the fetched data back to RADOS as cache
-  // 2. Subsequent reads from different offsets of the same object need the full data
-  // 3. If we only fetch partial ranges, write_full() would create incomplete objects
-  uint64_t object_size = image_ctx->get_object_size();
-  uint64_t byte_start = this->m_object_no * object_size;
-  uint64_t byte_length = object_size;  // Always fetch entire object
-
-  std::string s3_url = s3_config.build_url();
-
-  ldout(cct, 10) << "S3 URL: " << s3_url
-                 << ", fetching entire object " << this->m_object_no
-                 << " range: bytes=" << byte_start
-                 << "-" << (byte_start + byte_length - 1) << dendl;
-
-  snap_locker.unlock();
-
-  // Heap-allocate S3 fetcher so it outlives this stack frame.
-  // The detached pthread writes into m_read_data (a member pointer),
-  // so both must remain alive until handle_read_from_s3() is called.
-  m_s3_fetcher.reset(new io::S3ObjectFetcher(cct, s3_config));
+  // Slow-path (first S3 read on this image): initialize the shared fetcher
+  // under write lock so concurrent reads share the curl connection pool.
+  if (!m_s3_fetcher) {
+    RWLock::WLocker snap_wlocker(image_ctx->snap_lock);
+    if (!image_ctx->s3_fetcher) {
+      image_ctx->s3_fetcher =
+        std::make_shared<io::S3ObjectFetcher>(cct, s3_config);
+    }
+    m_s3_fetcher = image_ctx->s3_fetcher;
+  }
 
   // Fetch entire object from S3
   using klass = ObjectReadRequest<I>;

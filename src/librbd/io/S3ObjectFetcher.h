@@ -118,14 +118,17 @@ private:
   bool m_verify_ssl = true;
   int64_t m_max_download_bps = 0;
 
+  // Host and URI path extracted from the S3 URL once at construction.
+  // These never change after the fetcher is created, so caching avoids
+  // re-parsing the URL string on every request.
+  std::string m_cached_host;
+  std::string m_cached_uri;
+
   // libcurl share lock/unlock callbacks (called with 'this' as userptr)
   static void share_lock(CURL*, curl_lock_data data, curl_lock_access, void* userptr);
   static void share_unlock(CURL*, curl_lock_data data, void* userptr);
 
   struct FetchContext {
-    std::string url;
-    uint64_t byte_start;
-    uint64_t byte_length;
     bufferlist* out_bl;
     Context* on_finish;
     CURL* curl_handle;
@@ -153,16 +156,16 @@ private:
                           uint64_t byte_start, uint64_t byte_length,
                           struct curl_slist** out_headers);
 
-  // Add AWS Signature V4 authentication headers to curl request
+  // Add AWS Signature V4 authentication headers to curl request.
+  // Uses m_cached_host and m_cached_uri (computed at construction) for signing.
   void add_auth_headers(CURL* curl_handle, struct curl_slist** headers,
-                       const std::string& url, uint64_t byte_start,
-                       uint64_t byte_length);
+                       uint64_t byte_start, uint64_t byte_length);
 
   // Extract host from URL (including port if present)
-  std::string extract_host_from_url(const std::string& url);
+  static std::string extract_host_from_url(const std::string& url);
 
   // Extract URI path from URL
-  std::string extract_uri_from_url(const std::string& url);
+  static std::string extract_uri_from_url(const std::string& url);
 
   // libcurl write callback for response data
   static size_t write_callback(void* ptr, size_t size, size_t nmemb, void* userdata);

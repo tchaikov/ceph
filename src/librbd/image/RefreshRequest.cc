@@ -474,6 +474,13 @@ Context *RefreshRequest<I>::handle_v2_get_parent(int *result) {
     // Set parent type from OSD response (newer OSDs) or infer from snap_id (older OSDs)
     if (*result == 0) {
       if (parent_type_raw != 0) {
+        // Guard: the two enums must stay in sync — the cast below is only safe
+        // while their numeric values are identical.
+        static_assert(
+          (int)PARENT_TYPE_SNAPSHOT          == (int)CLS_RBD_PARENT_TYPE_SNAPSHOT          &&
+          (int)PARENT_TYPE_STANDALONE        == (int)CLS_RBD_PARENT_TYPE_STANDALONE        &&
+          (int)PARENT_TYPE_REMOTE_STANDALONE == (int)CLS_RBD_PARENT_TYPE_REMOTE_STANDALONE,
+          "ParentImageType and cls_rbd_parent_type enum values have diverged");
         // Newer OSD returned parent type - convert from OSD enum to librbd enum
         m_parent_md.parent_type = static_cast<ParentImageType>(parent_type_raw);
         ldout(cct, 15) << "parent type from OSD: " << (int)parent_type_raw << dendl;
