@@ -250,35 +250,19 @@ void ImageBackfiller::run_backfill() {
 void ImageBackfiller::backfill_object(uint64_t object_no) {
   dout(15) << "object_no=" << object_no << dendl;
 
-  // Wait for throttler to allow this operation
-  C_SaferCond wait_ctx;
-  m_throttler->start_op(object_no, &wait_ctx);
-
-  int r = wait_ctx.wait();
-  if (r < 0) {
-    derr << "throttler failed for object " << object_no << ": "
-         << cpp_strerror(r) << dendl;
-    m_failed_objects++;
-    return;
-  }
-
+  // Pre-flight checks before touching any shared resources.
   if (m_stopping.load()) {
-    dout(15) << "stopping requested, aborting object_no=" << object_no << dendl;
-    m_throttler->finish_op(object_no);
+    dout(15) << "stopping requested, skipping object_no=" << object_no << dendl;
     return;
   }
 
-  // Check if S3 fetcher is available
   if (!m_s3_fetcher) {
     derr << "S3 fetcher not configured for object " << object_no << dendl;
     m_failed_objects++;
-    m_throttler->finish_op(object_no);
     return;
   }
 
-  // Skip objects that are already in RADOS — this makes daemon restarts
-  // efficient and avoids redundant S3 fetches for already-warmed cache entries.
-  // This is a synchronous stat; blocking is fine in the backfill thread.
+  // Skip objects already in RADOS (efficient restart recovery).
   char object_name_check_buf[RBD_MAX_OBJ_NAME_SIZE];
   snprintf(object_name_check_buf, sizeof(object_name_check_buf),
            m_image_ctx->format_string, object_no);
@@ -286,29 +270,63 @@ void ImageBackfiller::backfill_object(uint64_t object_no) {
   time_t pmtime = 0;
   int stat_r = m_ioctx.stat(std::string(object_name_check_buf), &psize, &pmtime);
   if (stat_r == 0) {
-    // Object already exists in RADOS — skip S3 fetch
     dout(15) << "object " << object_no << " already in RADOS (size=" << psize
              << "), skipping S3 fetch" << dendl;
     m_completed_objects++;
     m_current_object++;
-    m_throttler->finish_op(object_no);
     return;
   }
-  // -ENOENT is expected; any other error is unexpected but non-fatal — proceed
-  // to fetch from S3 and write it anyway.
   if (stat_r != -ENOENT) {
     dout(5) << "stat for object " << object_no << " returned " << cpp_strerror(stat_r)
             << ", proceeding with S3 fetch anyway" << dendl;
   }
 
-  // Fetch data from S3 synchronously (we're in ImageBackfiller thread, blocking is OK)
-  bufferlist data_bl;
   uint64_t object_size = 1ull << m_image_ctx->order;
 
-  dout(20) << "fetching from S3: object_no=" << object_no
+  // PIPELINE: kick off the S3 fetch NOW, before waiting for a RADOS write slot.
+  //
+  // The backfill loop submits RADOS writes asynchronously (via ObjectBackfillRequest)
+  // and controls concurrency with BackfillThrottler.  When all slots are busy the
+  // throttle wait below blocks — that blocking window is exactly where we want
+  // the S3 download for THIS object to make progress instead of sitting idle.
+  //
+  // The async_fetch_thread uses the CURLSH* connection pool in m_s3_fetcher, so
+  // after the first fetch the TCP/TLS connection to S3 is kept alive and reused.
+  //
+  // Safety: s3_ctx is on the stack; backfill_object() always reaches s3_ctx.wait()
+  // before returning, so the C_SaferCond is alive for the full lifetime of the
+  // detached pthread that signals it.
+  bufferlist data_bl;
+  C_SaferCond s3_ctx;
+  dout(20) << "starting async S3 fetch: object_no=" << object_no
            << " size=" << object_size << dendl;
-  r = m_s3_fetcher->fetch_sync(object_no, 0, object_size, &data_bl);
+  m_s3_fetcher->fetch(object_no, 0, object_size, &data_bl, &s3_ctx);
 
+  // Acquire a RADOS write slot.  This may block while previous writes drain —
+  // the window where the S3 fetch above runs for free.
+  C_SaferCond throttle_ctx;
+  m_throttler->start_op(object_no, &throttle_ctx);
+  int r = throttle_ctx.wait();
+  if (r < 0) {
+    derr << "throttler failed for object " << object_no << ": "
+         << cpp_strerror(r) << dendl;
+    s3_ctx.wait();  // must drain before stack unwinds
+    m_failed_objects++;
+    return;
+  }
+
+  // Stopping check: re-check after the (potentially long) throttle wait.
+  if (m_stopping.load()) {
+    dout(15) << "stopping requested after throttle wait, aborting object_no="
+             << object_no << dendl;
+    s3_ctx.wait();  // must drain before stack unwinds
+    m_throttler->finish_op(object_no);
+    return;
+  }
+
+  // Wait for the S3 fetch — if S3 was faster than the throttle wait it's
+  // already done and s3_ctx.wait() returns immediately.
+  r = s3_ctx.wait();
   if (r < 0) {
     derr << "S3 fetch failed for object " << object_no << ": "
          << cpp_strerror(r) << dendl;

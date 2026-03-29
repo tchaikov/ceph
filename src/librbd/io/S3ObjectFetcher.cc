@@ -34,15 +34,47 @@ namespace {
   int s3_active_fetches = 0;
 }
 
+void S3ObjectFetcher::share_lock(CURL*, curl_lock_data data,
+                                 curl_lock_access, void* userptr) {
+  auto* fetcher = static_cast<S3ObjectFetcher*>(userptr);
+  fetcher->m_share_mutexes[data].lock();
+}
+
+void S3ObjectFetcher::share_unlock(CURL*, curl_lock_data data, void* userptr) {
+  auto* fetcher = static_cast<S3ObjectFetcher*>(userptr);
+  fetcher->m_share_mutexes[data].unlock();
+}
+
 S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config)
   : m_cct(cct), m_s3_config(s3_config) {
   // Thread-safe initialization of libcurl (called once per process)
   std::call_once(curl_init_flag, init_curl_once);
+
+  // Create a shared connection/DNS pool for all easy handles this fetcher
+  // creates.  The share lets libcurl reuse idle keep-alive connections across
+  // separate requests, eliminating the TCP+TLS handshake on every object fetch.
+  m_curl_share = curl_share_init();
+  if (m_curl_share) {
+    curl_share_setopt(m_curl_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+    curl_share_setopt(m_curl_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
+    curl_share_setopt(m_curl_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+    curl_share_setopt(m_curl_share, CURLSHOPT_LOCKFUNC, share_lock);
+    curl_share_setopt(m_curl_share, CURLSHOPT_UNLOCKFUNC, share_unlock);
+    curl_share_setopt(m_curl_share, CURLSHOPT_USERDATA, this);
+  }
   ldout(m_cct, 20) << "S3ObjectFetcher created" << dendl;
 }
 
 S3ObjectFetcher::~S3ObjectFetcher() {
   ldout(m_cct, 20) << "S3ObjectFetcher destroyed" << dendl;
+  if (m_sync_handle) {
+    curl_easy_cleanup(m_sync_handle);
+    m_sync_handle = nullptr;
+  }
+  if (m_curl_share) {
+    curl_share_cleanup(m_curl_share);
+    m_curl_share = nullptr;
+  }
   // Note: curl_global_cleanup() should only be called once at process exit
 }
 
@@ -224,6 +256,12 @@ CURL* S3ObjectFetcher::setup_curl_handle(const std::string& url,
   // Set user agent
   curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "ceph-rbd-s3-fetcher/1.0");
 
+  // Attach to the shared connection/DNS pool so libcurl can reuse idle
+  // keep-alive connections across requests (HTTP/1.1 connection persistence).
+  if (m_curl_share) {
+    curl_easy_setopt(curl_handle, CURLOPT_SHARE, m_curl_share);
+  }
+
   // Optional: Throttle download speed for testing (0 = unlimited)
   int64_t max_speed = m_cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps");
   if (max_speed > 0) {
@@ -256,22 +294,61 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
                        << " for url: " << url << dendl;
     }
 
+    // Reuse the persistent sync handle: curl_easy_reset() clears all per-request
+    // settings but leaves the TCP connection alive in the share's pool so the
+    // next iteration (and the next call to fetch_sync) can reuse it.
+    if (!m_sync_handle) {
+      m_sync_handle = curl_easy_init();
+      if (!m_sync_handle) {
+        return -ENOMEM;
+      }
+    } else {
+      curl_easy_reset(m_sync_handle);
+    }
     struct curl_slist* headers = nullptr;
-    CURL* curl_handle = setup_curl_handle(url, data, byte_start, byte_length, &headers);
-    if (!curl_handle) {
-      return -ENOMEM;
+    // setup_curl_handle allocates a new handle; use the persistent one instead
+    // by applying options directly.  The URL, write callback, auth headers,
+    // timeouts, SSL settings and share handle are all set here.
+    add_auth_headers(m_sync_handle, &headers, url, byte_start, byte_length);
+    if (headers) {
+      curl_easy_setopt(m_sync_handle, CURLOPT_HTTPHEADER, headers);
+    }
+    curl_easy_setopt(m_sync_handle, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(m_sync_handle, CURLOPT_HTTPGET, 1L);
+    curl_easy_setopt(m_sync_handle, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(m_sync_handle, CURLOPT_WRITEDATA, data);
+    long timeout_ms = m_s3_config.timeout_ms;
+    curl_easy_setopt(m_sync_handle, CURLOPT_TIMEOUT_MS, timeout_ms);
+    curl_easy_setopt(m_sync_handle, CURLOPT_LOW_SPEED_TIME, 30L);
+    curl_easy_setopt(m_sync_handle, CURLOPT_LOW_SPEED_LIMIT, 1024L);
+    curl_easy_setopt(m_sync_handle, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(m_sync_handle, CURLOPT_MAXREDIRS, 3L);
+    if (!m_cct->_conf.get_val<bool>("rbd_s3_verify_ssl")) {
+      curl_easy_setopt(m_sync_handle, CURLOPT_SSL_VERIFYPEER, 0L);
+      curl_easy_setopt(m_sync_handle, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
+    curl_easy_setopt(m_sync_handle, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(m_sync_handle, CURLOPT_NOPROGRESS, 1L);
+    curl_easy_setopt(m_sync_handle, CURLOPT_USERAGENT, "ceph-rbd-s3-fetcher/1.0");
+    int64_t max_speed = m_cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps");
+    if (max_speed > 0) {
+      curl_easy_setopt(m_sync_handle, CURLOPT_MAX_RECV_SPEED_LARGE,
+                       (curl_off_t)max_speed);
+    }
+    if (m_curl_share) {
+      curl_easy_setopt(m_sync_handle, CURLOPT_SHARE, m_curl_share);
     }
 
     // Perform HTTP GET request
-    CURLcode res = curl_easy_perform(curl_handle);
+    CURLcode res = curl_easy_perform(m_sync_handle);
 
     // Get HTTP status code
     long http_code = 0;
-    curl_easy_getinfo(curl_handle, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_getinfo(m_sync_handle, CURLINFO_RESPONSE_CODE, &http_code);
 
     // Get effective URL (after redirects)
     char* effective_url = nullptr;
-    curl_easy_getinfo(curl_handle, CURLINFO_EFFECTIVE_URL, &effective_url);
+    curl_easy_getinfo(m_sync_handle, CURLINFO_EFFECTIVE_URL, &effective_url);
 
     if (res == CURLE_OK) {
       // Check HTTP status code - accept both 200 (full content) and 206 (partial content)
@@ -280,12 +357,11 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
                          << " bytes from " << url
                          << " (HTTP " << http_code << ")" << dendl;
         curl_slist_free_all(headers);
-        curl_easy_cleanup(curl_handle);
+        // Keep m_sync_handle alive for reuse — do NOT call curl_easy_cleanup
         return 0;
       } else if (http_code == 404) {
         lderr(m_cct) << "S3 object not found (404): " << url << dendl;
         curl_slist_free_all(headers);
-        curl_easy_cleanup(curl_handle);
         return -ENOENT;
       } else if (http_code == 403) {
         // Log the S3 error response body for debugging
@@ -293,12 +369,10 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
         lderr(m_cct) << "S3 access forbidden (403): " << url << dendl;
         lderr(m_cct) << "S3 error response: " << error_response << dendl;
         curl_slist_free_all(headers);
-        curl_easy_cleanup(curl_handle);
         return -EACCES;
       } else if (http_code == 416) {
         lderr(m_cct) << "S3 range not satisfiable (416): " << url << dendl;
         curl_slist_free_all(headers);
-        curl_easy_cleanup(curl_handle);
         return -EINVAL;
       } else if (http_code >= 500 && http_code < 600) {
         // Server error, retry
@@ -309,7 +383,6 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
         lderr(m_cct) << "unexpected HTTP status " << http_code
                      << " from " << url << dendl;
         curl_slist_free_all(headers);
-        curl_easy_cleanup(curl_handle);
         return -EIO;
       }
     } else {
@@ -331,7 +404,7 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
     }
 
     curl_slist_free_all(headers);
-    curl_easy_cleanup(curl_handle);
+    // m_sync_handle is retained for the next retry / next call
 
     // Check if we should retry
     if (retry_count < max_retries) {

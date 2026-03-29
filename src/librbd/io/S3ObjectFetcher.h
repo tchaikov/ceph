@@ -7,11 +7,12 @@
 #include "include/buffer.h"
 #include "include/Context.h"
 #include "librbd/Types.h"
+#include <curl/curl.h>
+#include <mutex>
 #include <string>
 #include <atomic>
 
-// Forward declarations for libcurl types
-typedef void CURL;
+// Forward declaration only for curl_slist; CURL is defined via the header above.
 struct curl_slist;
 
 class CephContext;
@@ -93,6 +94,24 @@ public:
 private:
   CephContext* m_cct;
   S3Config m_s3_config;
+
+  // Shared connection/DNS cache for all easy handles created by this fetcher.
+  // HTTP keep-alive: libcurl keeps idle connections open in this pool so
+  // subsequent requests to the same S3 endpoint reuse the TCP (and TLS)
+  // connection without paying the handshake cost again.
+  CURLSH* m_curl_share = nullptr;
+
+  // Per-data-type mutexes required by libcurl for thread-safe share access.
+  std::mutex m_share_mutexes[CURL_LOCK_DATA_LAST];
+
+  // Persistent easy handle for the synchronous fetch path (fetch_with_retry).
+  // The backfill daemon calls fetch_sync() sequentially from one thread; reusing
+  // this handle lets the connection remain open between consecutive object fetches.
+  CURL* m_sync_handle = nullptr;
+
+  // libcurl share lock/unlock callbacks (called with 'this' as userptr)
+  static void share_lock(CURL*, curl_lock_data data, curl_lock_access, void* userptr);
+  static void share_unlock(CURL*, curl_lock_data data, void* userptr);
 
   struct FetchContext {
     std::string url;

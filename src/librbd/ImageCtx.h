@@ -55,6 +55,7 @@ namespace librbd {
   template <typename> class CopyupRequest;
   template <typename> class ImageRequestWQ;
   template <typename> class ObjectDispatcher;
+  class S3ObjectFetcher;
   }
   namespace journal { struct Policy; }
 
@@ -133,6 +134,10 @@ namespace librbd {
     ImageCtx *child = nullptr;
     std::unique_ptr<librados::Rados> remote_parent_cluster;  // RADOS connection for remote parent
     S3Config s3_config;  // S3 configuration for S3-backed parent images
+    // Lazily-initialized S3 fetcher shared by all CopyupRequests for this
+    // image.  The shared_ptr lets a CopyupRequest keep the fetcher alive after
+    // the parent is detached (flatten).  Initialized under parent_lock.
+    std::shared_ptr<io::S3ObjectFetcher> s3_fetcher;
     MigrationInfo migration_info;
     cls::rbd::GroupSpec group_spec;
     uint64_t stripe_unit, stripe_count;

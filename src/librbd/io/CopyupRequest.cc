@@ -1063,9 +1063,10 @@ void CopyupRequest<I>::fetch_from_s3_async() {
     return;
   }
 
-  // Copy s3_config by value BEFORE releasing parent_lock.  A concurrent
-  // flatten or close can detach the parent ImageCtx once the lock is released,
-  // making any reference into m_image_ctx->parent a dangling pointer.
+  // Copy s3_config and grab the shared fetcher BEFORE releasing parent_lock.
+  // A concurrent flatten or close can detach the parent ImageCtx once the
+  // lock is released, making any reference into m_image_ctx->parent a
+  // dangling pointer.  The shared_ptr keeps the fetcher alive independently.
   S3Config s3_config = m_image_ctx->parent->s3_config;
 
   // Validate S3 configuration
@@ -1075,6 +1076,19 @@ void CopyupRequest<I>::fetch_from_s3_async() {
     finish(-EINVAL);
     return;
   }
+
+  // Lazily create and cache one S3ObjectFetcher per parent ImageCtx.
+  // All concurrent CopyupRequests for the same parent share this instance,
+  // which means they share the curl connection pool (via the CURLSH* inside
+  // the fetcher).  HTTP keep-alive connections are reused across COW requests
+  // targeting the same S3 endpoint instead of paying TCP+TLS setup each time.
+  if (!m_image_ctx->parent->s3_fetcher) {
+    m_image_ctx->parent->s3_fetcher =
+      std::make_shared<S3ObjectFetcher>(cct, s3_config);
+  }
+  // Take a shared ref so the fetcher stays alive even if the parent is
+  // detached (flatten) before the async pthread completes.
+  m_s3_fetcher = m_image_ctx->parent->s3_fetcher;
 
   // Build full S3 URL for the raw image
   std::string s3_url = s3_config.build_url();
@@ -1091,12 +1105,6 @@ void CopyupRequest<I>::fetch_from_s3_async() {
                  << "-" << (byte_start + byte_length - 1) << dendl;
 
   parent_locker.unlock();
-
-  // Heap-allocate the fetcher so it stays alive until this CopyupRequest is
-  // destroyed, keeping its lifetime coupled to m_s3_data which the async
-  // pthread writes into.  Uses the local copy of s3_config (safe: parent
-  // may have been detached by now).
-  m_s3_fetcher.reset(new S3ObjectFetcher(cct, s3_config));
 
   auto ctx = util::create_context_callback<
     CopyupRequest<I>, &CopyupRequest<I>::handle_s3_fetch>(this);
