@@ -27,7 +27,7 @@ BackfillThrottler::~BackfillThrottler() {
   dout(10) << dendl;
   Mutex::Locker locker(m_lock);
 
-  ceph_assert(m_inflight_ops.empty());
+  ceph_assert(m_inflight_count == 0);
   ceph_assert(m_queued_ops.empty());
 }
 
@@ -36,16 +36,16 @@ void BackfillThrottler::start_op(uint64_t obj_no, Context *on_start) {
 
   Mutex::Locker locker(m_lock);
 
-  if (m_inflight_ops.size() < m_max_concurrent) {
+  if (m_inflight_count < m_max_concurrent) {
     // Can start immediately
     dout(15) << "starting obj_no=" << obj_no << " immediately (inflight="
-             << m_inflight_ops.size() << "/" << m_max_concurrent << ")" << dendl;
-    m_inflight_ops.insert(obj_no);
+             << m_inflight_count << "/" << m_max_concurrent << ")" << dendl;
+    ++m_inflight_count;
     m_work_queue->queue(on_start, 0);
   } else {
     // Queue for later
     dout(15) << "queuing obj_no=" << obj_no << " (inflight="
-             << m_inflight_ops.size() << "/" << m_max_concurrent
+             << m_inflight_count << "/" << m_max_concurrent
              << ", queued=" << m_queued_ops.size() << ")" << dendl;
     m_queued_ops.push_back({obj_no, on_start});
   }
@@ -56,19 +56,14 @@ void BackfillThrottler::finish_op(uint64_t obj_no) {
 
   Mutex::Locker locker(m_lock);
 
-  auto it = m_inflight_ops.find(obj_no);
-  if (it == m_inflight_ops.end()) {
-    derr << "obj_no=" << obj_no << " not in inflight set!" << dendl;
-    return;
-  }
-
-  m_inflight_ops.erase(it);
+  ceph_assert(m_inflight_count > 0);
+  --m_inflight_count;
   dout(15) << "finished obj_no=" << obj_no << " (inflight="
-           << m_inflight_ops.size() << "/" << m_max_concurrent << ")" << dendl;
+           << m_inflight_count << "/" << m_max_concurrent << ")" << dendl;
 
-  // Signal if all operations are complete - use SignalAll() to wake all waiters
-  if (m_inflight_ops.empty()) {
-    m_cond.SignalAll();
+  // Signal if all operations are complete
+  if (m_inflight_count == 0) {
+    m_cond.Signal();
   }
 
   // Start next queued operation if available
@@ -83,7 +78,7 @@ void BackfillThrottler::start_next_op() {
     return;
   }
 
-  if (m_inflight_ops.size() >= m_max_concurrent) {
+  if (m_inflight_count >= m_max_concurrent) {
     dout(20) << "at max concurrency" << dendl;
     return;
   }
@@ -92,10 +87,10 @@ void BackfillThrottler::start_next_op() {
   m_queued_ops.pop_front();
 
   dout(15) << "starting queued obj_no=" << queued.obj_no << " (inflight="
-           << m_inflight_ops.size() << "/" << m_max_concurrent
+           << m_inflight_count << "/" << m_max_concurrent
            << ", queued=" << m_queued_ops.size() << ")" << dendl;
 
-  m_inflight_ops.insert(queued.obj_no);
+  ++m_inflight_count;
   m_work_queue->queue(queued.on_start, 0);
 }
 
@@ -106,7 +101,7 @@ void BackfillThrottler::set_max_concurrent(uint32_t max_concurrent) {
   m_max_concurrent = max_concurrent;
 
   // Start queued ops if we have capacity now
-  while (m_inflight_ops.size() < m_max_concurrent && !m_queued_ops.empty()) {
+  while (m_inflight_count < m_max_concurrent && !m_queued_ops.empty()) {
     start_next_op();
   }
 }
@@ -119,7 +114,7 @@ uint32_t BackfillThrottler::get_max_concurrent() const {
 void BackfillThrottler::get_status(uint32_t *inflight, uint32_t *queued) const {
   Mutex::Locker locker(m_lock);
   if (inflight != nullptr) {
-    *inflight = m_inflight_ops.size();
+    *inflight = m_inflight_count;
   }
   if (queued != nullptr) {
     *queued = m_queued_ops.size();
@@ -130,8 +125,8 @@ void BackfillThrottler::wait_for_ops() {
   dout(10) << dendl;
 
   Mutex::Locker locker(m_lock);
-  while (!m_inflight_ops.empty()) {
-    dout(15) << "waiting for " << m_inflight_ops.size()
+  while (m_inflight_count > 0) {
+    dout(15) << "waiting for " << m_inflight_count
              << " in-flight operations" << dendl;
     m_cond.Wait(m_lock);
   }

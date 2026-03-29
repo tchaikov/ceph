@@ -224,7 +224,7 @@ int execute_get(const po::variables_map &vm,
   std::cout << "S3 configuration for image " << image_name << ":" << std::endl;
 
   for (const auto& kv : pairs) {
-    if (kv.first.substr(0, 3) != "s3.") {
+    if (kv.first.compare(0, 3, "s3.") != 0) {
       break;  // metadata_list is sorted; stop at first non-s3 key
     }
     std::string value = kv.second.to_str();

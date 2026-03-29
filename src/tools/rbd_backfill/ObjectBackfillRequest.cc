@@ -73,8 +73,7 @@ void ObjectBackfillRequest::send() {
 void ObjectBackfillRequest::acquire_lock() {
   dout(15) << dendl;
 
-  Context* ctx = new C_Request(
-    this, &ObjectBackfillRequest::handle_acquire_lock);
+  Context* ctx = librbd::util::create_context_callback<ObjectBackfillRequest, &ObjectBackfillRequest::handle_acquire_lock>(this);
 
   // Use cls_lock to acquire exclusive lock with timeout
   librados::ObjectWriteOperation op;
@@ -135,8 +134,7 @@ void ObjectBackfillRequest::handle_acquire_lock(int r) {
 void ObjectBackfillRequest::write_rados() {
   dout(15) << dendl;
 
-  Context* ctx = new C_Request(
-    this, &ObjectBackfillRequest::handle_write_rados);
+  Context* ctx = librbd::util::create_context_callback<ObjectBackfillRequest, &ObjectBackfillRequest::handle_write_rados>(this);
 
   librados::ObjectWriteOperation op;
   op.write_full(m_data_bl);
@@ -179,8 +177,7 @@ void ObjectBackfillRequest::update_object_map() {
     &map_op, m_object_no, m_object_no + 1,
     OBJECT_EXISTS, boost::optional<uint8_t>());
 
-  Context* ctx = new C_Request(
-    this, &ObjectBackfillRequest::handle_update_object_map);
+  Context* ctx = librbd::util::create_context_callback<ObjectBackfillRequest, &ObjectBackfillRequest::handle_update_object_map>(this);
   librados::AioCompletion* rados_completion =
     librbd::util::create_rados_callback(ctx);
 
@@ -220,8 +217,7 @@ void ObjectBackfillRequest::handle_update_object_map(int r) {
 void ObjectBackfillRequest::release_lock() {
   dout(15) << dendl;
 
-  Context* ctx = new C_Request(
-    this, &ObjectBackfillRequest::handle_release_lock);
+  Context* ctx = librbd::util::create_context_callback<ObjectBackfillRequest, &ObjectBackfillRequest::handle_release_lock>(this);
 
   // Release the lock
   librados::ObjectWriteOperation op;

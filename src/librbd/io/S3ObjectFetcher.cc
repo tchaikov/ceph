@@ -26,6 +26,21 @@ namespace {
     curl_global_init(CURL_GLOBAL_DEFAULT);
   }
 
+  // Map an HTTP response code to a POSIX errno.
+  // Used by both the sync (fetch_with_retry) and async (async_fetch_thread) paths.
+  // Returns 0 for success (200/206), negative errno for errors.
+  // Returns INT_MIN to signal "should retry" for 5xx server errors.
+  static constexpr int RETRY_SIGNAL = INT_MIN;
+  int http_code_to_errno(long http_code) {
+    if (http_code == 200 || http_code == 206) return 0;
+    if (http_code == 404) return -ENOENT;
+    if (http_code == 403) return -EACCES;
+    if (http_code == 416) return -EINVAL;
+    if (http_code >= 500 && http_code < 600) return RETRY_SIGNAL;
+    if (http_code >= 400) return -EPERM;
+    return -EIO;
+  }
+
   // Concurrency limiter: cap simultaneous S3 HTTP connections to avoid
   // overloading the S3 server when many child clones trigger COW reads
   // simultaneously. Excess threads block here (cheaply) until a slot frees.
@@ -50,7 +65,9 @@ S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config)
   : m_cct(cct),
     m_s3_config(s3_config),
     m_signer(AWSV4Signer::Credentials(s3_config.access_key, s3_config.secret_key,
-                                      s3_config.region, "s3")) {
+                                      s3_config.region, "s3")),
+    m_verify_ssl(cct->_conf.get_val<bool>("rbd_s3_verify_ssl")),
+    m_max_download_bps(cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps")) {
   // Thread-safe initialization of libcurl (called once per process)
   std::call_once(curl_init_flag, init_curl_once);
 
@@ -195,7 +212,7 @@ void S3ObjectFetcher::apply_curl_options(CURL* handle,
   curl_easy_setopt(handle, CURLOPT_LOW_SPEED_LIMIT, 1024L); // 1 KB/s minimum
   curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(handle, CURLOPT_MAXREDIRS, 3L);
-  if (!m_cct->_conf.get_val<bool>("rbd_s3_verify_ssl")) {
+  if (!m_verify_ssl) {
     curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(handle, CURLOPT_SSL_VERIFYHOST, 0L);
   }
@@ -205,9 +222,8 @@ void S3ObjectFetcher::apply_curl_options(CURL* handle,
   if (m_curl_share) {
     curl_easy_setopt(handle, CURLOPT_SHARE, m_curl_share);
   }
-  int64_t max_speed = m_cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps");
-  if (max_speed > 0) {
-    curl_easy_setopt(handle, CURLOPT_MAX_RECV_SPEED_LARGE, (curl_off_t)max_speed);
+  if (m_max_download_bps > 0) {
+    curl_easy_setopt(handle, CURLOPT_MAX_RECV_SPEED_LARGE, (curl_off_t)m_max_download_bps);
   }
 }
 
@@ -272,39 +288,29 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
     curl_easy_getinfo(m_sync_handle, CURLINFO_EFFECTIVE_URL, &effective_url);
 
     if (res == CURLE_OK) {
-      // Check HTTP status code - accept both 200 (full content) and 206 (partial content)
-      if (http_code == 200 || http_code == 206) {
+      int r = http_code_to_errno(http_code);
+      if (r == 0) {
         ldout(m_cct, 10) << "successfully fetched " << data->length()
                          << " bytes from " << url
                          << " (HTTP " << http_code << ")" << dendl;
         curl_slist_free_all(headers);
         // Keep m_sync_handle alive for reuse — do NOT call curl_easy_cleanup
         return 0;
-      } else if (http_code == 404) {
-        lderr(m_cct) << "S3 object not found (404): " << url << dendl;
-        curl_slist_free_all(headers);
-        return -ENOENT;
-      } else if (http_code == 403) {
-        // Log the S3 error response body for debugging
-        std::string error_response(data->c_str(), data->length());
-        lderr(m_cct) << "S3 access forbidden (403): " << url << dendl;
-        lderr(m_cct) << "S3 error response: " << error_response << dendl;
-        curl_slist_free_all(headers);
-        return -EACCES;
-      } else if (http_code == 416) {
-        lderr(m_cct) << "S3 range not satisfiable (416): " << url << dendl;
-        curl_slist_free_all(headers);
-        return -EINVAL;
-      } else if (http_code >= 500 && http_code < 600) {
+      } else if (r == RETRY_SIGNAL) {
         // Server error, retry
         ldout(m_cct, 10) << "S3 server error " << http_code
                          << ", will retry" << dendl;
         last_error = -EIO;
       } else {
-        lderr(m_cct) << "unexpected HTTP status " << http_code
-                     << " from " << url << dendl;
+        if (http_code == 403) {
+          std::string error_response(data->c_str(), data->length());
+          lderr(m_cct) << "S3 access forbidden (403): " << url
+                       << " response: " << error_response << dendl;
+        } else {
+          lderr(m_cct) << "S3 HTTP error " << http_code << " from " << url << dendl;
+        }
         curl_slist_free_all(headers);
-        return -EIO;
+        return r;
       }
     } else {
       // Curl error
@@ -377,117 +383,43 @@ void* S3ObjectFetcher::async_fetch_thread(void* arg) {
     ++s3_active_fetches;
   }
 
-  // Create multi handle
-  CURLM* multi_handle = curl_multi_init();
-  if (!multi_handle) {
+  // Check for cancellation before issuing any I/O.
+  if (ctx->cancel_flag && ctx->cancel_flag->load()) {
     {
       std::unique_lock<std::mutex> lock(s3_fetch_mutex);
       --s3_active_fetches;
     }
     s3_fetch_cv.notify_one();
-    ctx->on_finish->complete(-ENOMEM);
     curl_slist_free_all(ctx->headers);
     curl_easy_cleanup(ctx->curl_handle);
+    ctx->on_finish->complete(-ECANCELED);
     delete ctx;
     return nullptr;
   }
 
-  // Add easy handle to multi handle
-  curl_multi_add_handle(multi_handle, ctx->curl_handle);
+  // Perform the blocking HTTP GET.  curl_easy_perform() is the correct
+  // single-transfer API; curl_multi_*() adds overhead with no benefit here.
+  CURLcode res = curl_easy_perform(ctx->curl_handle);
 
-  // Perform the request using multi interface
-  int still_running = 0;
-  CURLMcode mc;
-
-  do {
-    // Check for cancellation before each iteration
-    if (ctx->cancel_flag && ctx->cancel_flag->load()) {
-      // Cancellation requested - abort the transfer
-      curl_multi_remove_handle(multi_handle, ctx->curl_handle);
-      curl_multi_cleanup(multi_handle);
-      curl_slist_free_all(ctx->headers);
-      curl_easy_cleanup(ctx->curl_handle);
-      {
-        std::unique_lock<std::mutex> lock(s3_fetch_mutex);
-        --s3_active_fetches;
-      }
-      s3_fetch_cv.notify_one();
-      ctx->on_finish->complete(-ECANCELED);
-      delete ctx;
-      return nullptr;
-    }
-
-    mc = curl_multi_perform(multi_handle, &still_running);
-
-    if (still_running) {
-      // Wait for activity, with timeout.
-      // Use curl_multi_wait() rather than curl_multi_poll(): the latter was
-      // introduced in libcurl 7.66.0 (2019-09), but Nautilus-era platforms
-      // ship older versions (CentOS 7: 7.29, Ubuntu 18.04: 7.58).
-      // curl_multi_wait() has identical semantics for our use case.
-      mc = curl_multi_wait(multi_handle, nullptr, 0, 1000, nullptr);
-    }
-
-    if (mc != CURLM_OK) {
-      break;
-    }
-  } while (still_running);
-
-  // Check for errors
-  int result = 0;
   long response_code = 0;
   curl_easy_getinfo(ctx->curl_handle, CURLINFO_RESPONSE_CODE, &response_code);
 
-  if (mc != CURLM_OK) {
-    // libcurl multi interface error
+  int result;
+  if (res == CURLE_OPERATION_TIMEDOUT) {
+    result = -ETIMEDOUT;
+  } else if (res == CURLE_COULDNT_CONNECT) {
+    result = -ECONNREFUSED;
+  } else if (res != CURLE_OK) {
     result = -EIO;
   } else {
-    // Check curl easy handle for transfer-level errors
-    CURLcode easy_result;
-    CURLMsg* msg;
-    int msgs_in_queue;
-    while ((msg = curl_multi_info_read(multi_handle, &msgs_in_queue))) {
-      if (msg->msg == CURLMSG_DONE) {
-        easy_result = msg->data.result;
-        if (easy_result == CURLE_OPERATION_TIMEDOUT) {
-          result = -ETIMEDOUT;
-        } else if (easy_result == CURLE_COULDNT_CONNECT) {
-          result = -ECONNREFUSED;
-        } else if (easy_result != CURLE_OK) {
-          result = -EIO;
-        }
-        break;
-      }
-    }
-
-    // Check HTTP response code if no curl error
-    if (result == 0) {
-      if (response_code == 206 || response_code == 200) {
-        result = 0;  // Success
-      } else if (response_code == 404) {
-        result = -ENOENT;
-      } else if (response_code == 416) {
-        // Range Not Satisfiable: the S3 object is smaller than the requested
-        // byte range (e.g. the raw image export was shorter than the RBD image
-        // size).  Callers (handle_s3_fetch) treat -EINVAL as "block beyond EOF"
-        // and substitute zeroes, matching the semantics of a sparse RADOS object.
-        // fetch_with_retry() also maps 416 -> -EINVAL; keep them in sync.
-        result = -EINVAL;
-      } else if (response_code >= 500) {
-        result = -EIO;  // Server error
-      } else if (response_code >= 400) {
-        result = -EPERM;  // Client error (auth, forbidden, etc)
-      } else if (response_code == 0) {
-        result = -EIO;  // No response received
-      } else {
-        result = -EIO;  // Other HTTP error
-      }
+    result = http_code_to_errno(response_code);
+    // 5xx from the async path: treat as generic I/O error (no retry here;
+    // the async path is fire-and-forget — retries are the caller's concern).
+    if (result == RETRY_SIGNAL) {
+      result = -EIO;
     }
   }
 
-  // Clean up
-  curl_multi_remove_handle(multi_handle, ctx->curl_handle);
-  curl_multi_cleanup(multi_handle);
   curl_slist_free_all(ctx->headers);
   curl_easy_cleanup(ctx->curl_handle);
 
@@ -499,9 +431,7 @@ void* S3ObjectFetcher::async_fetch_thread(void* arg) {
   }
   s3_fetch_cv.notify_one();
 
-  // Call completion callback
   ctx->on_finish->complete(result);
-
   delete ctx;
   return nullptr;
 }

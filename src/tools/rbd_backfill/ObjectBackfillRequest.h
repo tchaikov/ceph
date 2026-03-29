@@ -71,19 +71,6 @@ private:
 
   void finish(int r);
 
-  // Context wrappers for async operations
-  class C_Request : public Context {
-  public:
-    C_Request(ObjectBackfillRequest* request, void (ObjectBackfillRequest::*method)(int))
-      : m_request(request), m_method(method) {}
-    void finish(int r) override {
-      (m_request->*m_method)(r);
-    }
-  private:
-    ObjectBackfillRequest* m_request;
-    void (ObjectBackfillRequest::*m_method)(int);
-  };
-
   librados::IoCtx m_parent_ioctx;  // Copy, not reference - must remain valid for async operations
   std::string m_parent_oid;
   std::string m_lock_oid;  // Sentinel object for cls lock (parent_oid + ".s3lk")

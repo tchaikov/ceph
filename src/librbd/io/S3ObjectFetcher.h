@@ -114,6 +114,10 @@ private:
   // this handle lets the connection remain open between consecutive object fetches.
   CURL* m_sync_handle = nullptr;
 
+  // Config values cached at construction to avoid per-request config lookups.
+  bool m_verify_ssl = true;
+  int64_t m_max_download_bps = 0;
+
   // libcurl share lock/unlock callbacks (called with 'this' as userptr)
   static void share_lock(CURL*, curl_lock_data data, curl_lock_access, void* userptr);
   static void share_unlock(CURL*, curl_lock_data data, void* userptr);

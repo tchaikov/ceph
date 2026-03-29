@@ -8,8 +8,6 @@
 #include "common/Mutex.h"
 #include "common/Cond.h"
 #include <list>
-#include <map>
-#include <set>
 
 class CephContext;
 class Context;
@@ -17,8 +15,6 @@ class ContextWQ;
 
 namespace rbd {
 namespace backfill {
-
-class ObjectBackfillRequest;
 
 class BackfillThrottler {
 public:
@@ -49,7 +45,7 @@ private:
   Cond m_cond;  // Condition variable for waiting on operations
   uint32_t m_max_concurrent;
 
-  std::set<uint64_t> m_inflight_ops;
+  uint32_t m_inflight_count = 0;
 
   struct QueuedOp {
     uint64_t obj_no;

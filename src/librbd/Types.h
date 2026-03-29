@@ -150,10 +150,6 @@ struct S3Config {
     return m_cached_url;
   }
 
-  bool empty() const {
-    return !enabled || bucket.empty() || endpoint.empty();
-  }
-
 private:
   mutable std::string m_cached_url;
 };
