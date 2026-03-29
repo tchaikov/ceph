@@ -4,11 +4,11 @@
 #include "librbd/RemoteClusterUtils.h"
 #include "common/ceph_context.h"
 #include "common/config.h"
+#include "common/ConfUtils.h"
 #include "common/dout.h"
 #include "common/errno.h"
 #include "include/encoding.h"
 #include "include/stringify.h"
-#include <fstream>
 #include <boost/algorithm/string.hpp>
 
 #define dout_subsys ceph_subsys_rbd
@@ -89,66 +89,21 @@ int parse_mon_hosts_from_config(const std::string& conf_path,
 int read_and_encode_keyring(const std::string& keyring_path,
                             const std::string& client_name,
                             std::string& encoded_keyring) {
-  std::ifstream keyring_file(keyring_path);
-  if (!keyring_file.is_open()) {
-    return -ENOENT;
+  ConfFile cf;
+  std::deque<std::string> errors;
+  int r = cf.parse_file(keyring_path, &errors, nullptr);
+  if (r < 0) {
+    return (r == -ENOENT) ? -ENOENT : -EINVAL;
   }
 
-  const size_t MAX_LINE_LENGTH = 16384;  // 16KB max line length
-  std::string line;
-  bool found_client = false;
   std::string key_value;
-
-  while (std::getline(keyring_file, line)) {
-    // Skip overly long lines to prevent memory exhaustion
-    if (line.size() > MAX_LINE_LENGTH) {
-      continue;
-    }
-
-    boost::trim(line);
-
-    // Skip empty lines and comments
-    if (line.empty() || line[0] == '#' || line[0] == ';') {
-      continue;
-    }
-
-    // Check for client section
-    if (line[0] == '[') {
-      size_t close_bracket = line.find(']');
-      if (close_bracket == std::string::npos || close_bracket == 0) {
-        // Malformed section header, skip
-        continue;
-      }
-      std::string section = line.substr(1, close_bracket - 1);
-      boost::trim(section);
-      found_client = (section == client_name);
-      continue;
-    }
-
-    if (found_client) {
-      // Look for key = value
-      size_t eq_pos = line.find('=');
-      if (eq_pos != std::string::npos) {
-        std::string key = line.substr(0, eq_pos);
-        std::string value = line.substr(eq_pos + 1);
-        boost::trim(key);
-        boost::trim(value);
-
-        if (key == "key") {
-          key_value = value;
-          break;
-        }
-      }
-    }
-  }
-
-  if (key_value.empty()) {
+  r = cf.read(client_name, "key", key_value);
+  if (r < 0 || key_value.empty()) {
     return -EINVAL;
   }
 
   // Key is already base64-encoded in keyring file, no need to encode again
-  encoded_keyring = key_value;
-
+  encoded_keyring = std::move(key_value);
   return 0;
 }
 
