@@ -194,53 +194,25 @@ template <typename I>
 void CloneRequest<I>::connect_remote_parent() {
   ldout(m_cct, 20) << "connecting to remote cluster: "
                    << m_remote_parent_spec.cluster_name << dendl;
-
   ceph_assert(!m_remote_parent_spec.empty());
 
-  // Create remote cluster connection
   m_remote_parent_cluster.reset(new librados::Rados());
-
-  int r = util::connect_to_remote_cluster(
-    m_cct,
-    m_remote_parent_spec.cluster_name,
-    m_remote_parent_spec.mon_hosts,
-    m_remote_parent_spec.keyring,
-    util::DEFAULT_REMOTE_CLIENT_NAME,
-    *m_remote_parent_cluster);
-
-  if (r < 0) {
-    lderr(m_cct) << "failed to connect to remote cluster: "
-                 << cpp_strerror(r) << dendl;
-    m_remote_parent_cluster.reset();
-    complete(r);
-    return;
-  }
-
-  // Create IoCtx for parent pool in remote cluster
-  std::string parent_pool_name = m_parent_io_ctx.get_pool_name();
   m_remote_parent_io_ctx.reset(new librados::IoCtx());
-  r = m_remote_parent_cluster->ioctx_create(parent_pool_name.c_str(),
-                                            *m_remote_parent_io_ctx);
+  int r = util::open_remote_parent_ioctx(
+    m_cct, m_remote_parent_spec,
+    m_parent_io_ctx.get_pool_name(), m_parent_io_ctx.get_id(),
+    m_parent_io_ctx.get_namespace(),
+    *m_remote_parent_cluster, *m_remote_parent_io_ctx);
   if (r < 0) {
-    lderr(m_cct) << "failed to create IoCtx for parent pool '"
-                 << parent_pool_name << "' in remote cluster: "
-                 << cpp_strerror(r) << dendl;
+    lderr(m_cct) << "failed to open remote parent: " << cpp_strerror(r) << dendl;
     m_remote_parent_io_ctx.reset();
     m_remote_parent_cluster.reset();
     complete(r);
     return;
   }
 
-  // Set namespace if needed
-  std::string parent_namespace = m_parent_io_ctx.get_namespace();
-  if (!parent_namespace.empty()) {
-    m_remote_parent_io_ctx->set_namespace(parent_namespace);
-  }
-
-  ldout(m_cct, 10) << "successfully connected to remote cluster: "
-                   << m_remote_parent_spec.cluster_name << ", pool: "
-                   << parent_pool_name << dendl;
-
+  ldout(m_cct, 10) << "connected to remote cluster: "
+                   << m_remote_parent_spec.cluster_name << dendl;
   open_parent();
 }
 

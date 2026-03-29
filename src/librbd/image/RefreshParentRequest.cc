@@ -129,58 +129,17 @@ void RefreshParentRequest<I>::send_open_parent() {
     ldout(cct, 10) << "opening remote parent in cluster: "
                    << m_parent_md.remote.cluster_name << dendl;
 
-    // Establish remote cluster connection proactively (not lazily)
-    // This avoids slow-start on first I/O that needs the parent
     m_child_image_ctx.remote_parent_cluster.reset(new librados::Rados());
-
-    r = util::connect_to_remote_cluster(
-      cct,
-      m_parent_md.remote.cluster_name,
-      m_parent_md.remote.mon_hosts,
-      m_parent_md.remote.keyring,
-      util::DEFAULT_REMOTE_CLIENT_NAME,
-      *m_child_image_ctx.remote_parent_cluster);
-
+    r = util::open_remote_parent_ioctx(
+      cct, m_parent_md.remote,
+      m_parent_md.spec.pool_name, m_parent_md.spec.pool_id,
+      m_parent_md.spec.pool_namespace,
+      *m_child_image_ctx.remote_parent_cluster, parent_io_ctx);
     if (r < 0) {
-      lderr(cct) << "failed to connect to remote cluster: "
-                 << cpp_strerror(r) << dendl;
+      lderr(cct) << "failed to open remote parent: " << cpp_strerror(r) << dendl;
       m_child_image_ctx.remote_parent_cluster.reset();
       send_complete(r);
       return;
-    }
-
-    ldout(cct, 10) << "successfully connected to remote cluster" << dendl;
-
-    // Create IoCtx from remote cluster
-    // Use pool name instead of pool ID for remote parents (pool IDs are cluster-specific)
-    if (!m_parent_md.spec.pool_name.empty()) {
-      r = m_child_image_ctx.remote_parent_cluster->ioctx_create(
-        m_parent_md.spec.pool_name.c_str(), parent_io_ctx);
-      if (r < 0) {
-        lderr(cct) << "failed to create ioctx for remote parent pool '"
-                   << m_parent_md.spec.pool_name << "': "
-                   << cpp_strerror(r) << dendl;
-        // Clean up remote cluster connection to prevent resource leak
-        m_child_image_ctx.remote_parent_cluster.reset();
-        send_complete(r);
-        return;
-      }
-    } else {
-      // Fallback to pool_id if pool_name not available (backward compatibility)
-      r = m_child_image_ctx.remote_parent_cluster->ioctx_create2(
-        m_parent_md.spec.pool_id, parent_io_ctx);
-      if (r < 0) {
-        lderr(cct) << "failed to create ioctx for remote parent pool: "
-                   << cpp_strerror(r) << dendl;
-        // Clean up remote cluster connection to prevent resource leak
-        m_child_image_ctx.remote_parent_cluster.reset();
-        send_complete(r);
-        return;
-      }
-    }
-
-    if (!m_parent_md.spec.pool_namespace.empty()) {
-      parent_io_ctx.set_namespace(m_parent_md.spec.pool_namespace);
     }
   } else {
     // Local parent - use existing code path

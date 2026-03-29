@@ -226,5 +226,35 @@ int connect_to_remote_cluster(CephContext* cct,
   return 0;
 }
 
+int open_remote_parent_ioctx(CephContext* cct,
+                              const RemoteParentSpec& remote,
+                              const std::string& pool_name,
+                              int64_t pool_id,
+                              const std::string& pool_namespace,
+                              librados::Rados& cluster,
+                              librados::IoCtx& ioctx) {
+  int r = connect_to_remote_cluster(cct,
+    remote.cluster_name, remote.mon_hosts, remote.keyring,
+    DEFAULT_REMOTE_CLIENT_NAME, cluster);
+  if (r < 0) {
+    return r;
+  }
+
+  if (!pool_name.empty()) {
+    r = cluster.ioctx_create(pool_name.c_str(), ioctx);
+  } else {
+    r = cluster.ioctx_create2(pool_id, ioctx);
+  }
+  if (r < 0) {
+    cluster.shutdown();
+    return r;
+  }
+
+  if (!pool_namespace.empty()) {
+    ioctx.set_namespace(pool_namespace);
+  }
+  return 0;
+}
+
 } // namespace util
 } // namespace librbd

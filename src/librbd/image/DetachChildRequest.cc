@@ -80,54 +80,17 @@ void DetachChildRequest<I>::clone_v2_child_detach() {
     ldout(cct, 10) << "detaching from remote parent in cluster: "
                    << m_parent_info.remote.cluster_name << dendl;
 
-    // Establish remote cluster connection
     m_remote_parent_cluster.reset(new librados::Rados());
-
-    r = util::connect_to_remote_cluster(
-      cct,
-      m_parent_info.remote.cluster_name,
-      m_parent_info.remote.mon_hosts,
-      m_parent_info.remote.keyring,
-      util::DEFAULT_REMOTE_CLIENT_NAME,
-      *m_remote_parent_cluster);
-
+    r = util::open_remote_parent_ioctx(
+      cct, m_parent_info.remote,
+      m_parent_spec.pool_name, m_parent_spec.pool_id,
+      m_parent_spec.pool_namespace,
+      *m_remote_parent_cluster, m_parent_io_ctx);
     if (r < 0) {
-      lderr(cct) << "failed to connect to remote cluster: "
-                 << cpp_strerror(r) << dendl;
+      lderr(cct) << "failed to open remote parent: " << cpp_strerror(r) << dendl;
       m_remote_parent_cluster.reset();
       finish(r);
       return;
-    }
-
-    ldout(cct, 10) << "successfully connected to remote cluster" << dendl;
-
-    // Create IoCtx from remote cluster using pool name
-    if (!m_parent_spec.pool_name.empty()) {
-      r = m_remote_parent_cluster->ioctx_create(
-        m_parent_spec.pool_name.c_str(), m_parent_io_ctx);
-      if (r < 0) {
-        lderr(cct) << "failed to create ioctx for remote parent pool '"
-                   << m_parent_spec.pool_name << "': "
-                   << cpp_strerror(r) << dendl;
-        m_remote_parent_cluster.reset();
-        finish(r);
-        return;
-      }
-    } else {
-      // Fallback to pool_id (for backward compatibility, though this may fail)
-      r = m_remote_parent_cluster->ioctx_create2(
-        m_parent_spec.pool_id, m_parent_io_ctx);
-      if (r < 0) {
-        lderr(cct) << "failed to create ioctx for remote parent pool: "
-                   << cpp_strerror(r) << dendl;
-        m_remote_parent_cluster.reset();
-        finish(r);
-        return;
-      }
-    }
-
-    if (!m_parent_spec.pool_namespace.empty()) {
-      m_parent_io_ctx.set_namespace(m_parent_spec.pool_namespace);
     }
   } else {
     // Local parent - use existing code path

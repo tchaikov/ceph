@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include "include/rados/librados.hpp"
+#include "librbd/Types.h"
 
 class CephContext;
 
@@ -63,6 +64,34 @@ int connect_to_remote_cluster(CephContext* cct,
                               const std::string& keyring,
                               const std::string& client_name,
                               librados::Rados& cluster);
+
+/**
+ * Connect to a remote cluster and open an IoCtx for the specified pool.
+ *
+ * Combines connect_to_remote_cluster() with ioctx_create[2]() and optional
+ * namespace setting into a single call, eliminating duplicated boilerplate
+ * in CloneRequest, RefreshParentRequest, and DetachChildRequest.
+ *
+ * On success, cluster is connected and ioctx is open.
+ * On failure, cluster.shutdown() has been called; caller should reset/destroy
+ * the cluster object.
+ *
+ * @param cct         CephContext for configuration and logging
+ * @param remote      Remote cluster credentials (cluster name, mons, keyring)
+ * @param pool_name   Preferred pool identifier (used when non-empty)
+ * @param pool_id     Fallback pool identifier (used when pool_name is empty)
+ * @param pool_namespace  Namespace to set on the IoCtx (may be empty)
+ * @param cluster     Pre-constructed Rados object; this function initialises it
+ * @param ioctx       Output IoCtx
+ * @return 0 on success, negative error code on failure
+ */
+int open_remote_parent_ioctx(CephContext* cct,
+                              const RemoteParentSpec& remote,
+                              const std::string& pool_name,
+                              int64_t pool_id,
+                              const std::string& pool_namespace,
+                              librados::Rados& cluster,
+                              librados::IoCtx& ioctx);
 
 } // namespace util
 } // namespace librbd
