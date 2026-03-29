@@ -929,7 +929,7 @@ void CopyupRequest<I>::handle_list_lock_holders(int r) {
   // Check if any holder is a backfill daemon (cookie starts with "backfill-")
   for (auto &kv : lockers) {
     const auto &cookie = kv.first.cookie;
-    if (cookie.compare(0, strlen(BACKFILL_LOCK_COOKIE_PREFIX), BACKFILL_LOCK_COOKIE_PREFIX) == 0) {
+    if (cookie.rfind(BACKFILL_LOCK_COOKIE_PREFIX, 0) == 0) {
       ldout(cct, 10) << "backfill daemon holds lock (cookie=" << cookie
                      << ", entity=" << kv.first.locker
                      << "), breaking to preempt" << dendl;

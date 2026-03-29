@@ -9,7 +9,9 @@
 
 #include <curl/curl.h>
 #include <pthread.h>
+#include <chrono>
 #include <mutex>
+#include <thread>
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
@@ -368,10 +370,7 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
       ldout(m_cct, 10) << "waiting " << delay_ms << "ms before retry "
                        << "(base=" << base_delay_ms << "ms, jitter=" << jitter << "ms)" << dendl;
 
-      struct timespec ts;
-      ts.tv_sec = delay_ms / 1000;
-      ts.tv_nsec = (delay_ms % 1000) * 1000000;
-      nanosleep(&ts, nullptr);
+      std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
     }
 
     retry_count++;

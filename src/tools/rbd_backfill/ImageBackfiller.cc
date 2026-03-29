@@ -165,10 +165,8 @@ void ImageBackfiller::run_backfill() {
     std::vector<librados::AioCompletion *> aios;
     aios.reserve(m_num_objects);
     for (uint64_t obj_no = 0; obj_no < m_num_objects; ++obj_no) {
-      char obj_buf[RBD_MAX_OBJ_NAME_SIZE];
-      snprintf(obj_buf, sizeof(obj_buf), m_image_ctx->format_string, obj_no);
       std::string sentinel_oid =
-          std::string(obj_buf) + librbd::S3_FETCH_LOCK_SENTINEL_SUFFIX;
+          m_image_ctx->get_object_name(obj_no) + librbd::S3_FETCH_LOCK_SENTINEL_SUFFIX;
 
       auto *c = librados::Rados::aio_create_completion(nullptr, nullptr, nullptr);
       if (m_ioctx.aio_remove(sentinel_oid, c) < 0) {
@@ -264,12 +262,9 @@ void ImageBackfiller::backfill_object(uint64_t object_no) {
   }
 
   // Skip objects already in RADOS (efficient restart recovery).
-  char object_name_check_buf[RBD_MAX_OBJ_NAME_SIZE];
-  snprintf(object_name_check_buf, sizeof(object_name_check_buf),
-           m_image_ctx->format_string, object_no);
   uint64_t psize = 0;
   time_t pmtime = 0;
-  int stat_r = m_ioctx.stat(std::string(object_name_check_buf), &psize, &pmtime);
+  int stat_r = m_ioctx.stat(m_image_ctx->get_object_name(object_no), &psize, &pmtime);
   if (stat_r == 0) {
     dout(15) << "object " << object_no << " already in RADOS (size=" << psize
              << "), skipping S3 fetch" << dendl;
@@ -381,10 +376,7 @@ void ImageBackfiller::backfill_object(uint64_t object_no) {
     data_bl.append_zero(expected_size - data_bl.length());
   }
 
-  // Construct object name using ImageCtx's format_string (hex-formatted with zero-padding)
-  char object_name_buf[RBD_MAX_OBJ_NAME_SIZE];
-  snprintf(object_name_buf, sizeof(object_name_buf), m_image_ctx->format_string, object_no);
-  std::string object_name(object_name_buf);
+  std::string object_name = m_image_ctx->get_object_name(object_no);
 
   // Create completion callback
   Context *on_complete = new FunctionContext([this, object_no](int r) {
@@ -489,6 +481,7 @@ void ImageBackfiller::load_s3_config() {
     }
   }
 
+  s3_config.image_format = "raw";  // default; overridden by s3.image_format metadata if set
   get_metadata("s3.image_format", s3_config.image_format);
 
   // Set object_size - THIS IS CRITICAL for offset calculation

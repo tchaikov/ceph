@@ -4,10 +4,10 @@
 #ifndef CEPH_LIBRBD_IO_AWSV4_SIGNER_H
 #define CEPH_LIBRBD_IO_AWSV4_SIGNER_H
 
-#include <string>
-#include <map>
-#include <vector>
+#include <array>
 #include <ctime>
+#include <map>
+#include <string>
 
 namespace librbd {
 namespace io {
@@ -92,14 +92,14 @@ public:
   /**
    * Calculate HMAC-SHA256 and return raw bytes.
    */
-  static std::vector<unsigned char> hmac_sha256(
-    const std::vector<unsigned char>& key,
+  static std::array<unsigned char, 32> hmac_sha256(
+    const std::array<unsigned char, 32>& key,
     const std::string& data);
 
   /**
    * Calculate HMAC-SHA256 with string key and return raw bytes.
    */
-  static std::vector<unsigned char> hmac_sha256(
+  static std::array<unsigned char, 32> hmac_sha256(
     const std::string& key,
     const std::string& data);
 
@@ -114,7 +114,6 @@ private:
     const std::string& uri,
     const std::string& query_string,
     const std::map<std::string, std::string>& headers,
-    const std::string& signed_headers,
     const std::string& payload_hash);
 
   /**
@@ -129,13 +128,13 @@ private:
    * Calculate signing key.
    * SigningKey = HMAC-SHA256(HMAC-SHA256(HMAC-SHA256(HMAC-SHA256("AWS4" + SecretKey, Date), Region), Service), "aws4_request")
    */
-  std::vector<unsigned char> calculate_signing_key(const std::string& date_string);
+  std::array<unsigned char, 32> calculate_signing_key(const std::string& date_string);
 
   /**
    * Calculate signature.
    */
   std::string calculate_signature(
-    const std::vector<unsigned char>& signing_key,
+    const std::array<unsigned char, 32>& signing_key,
     const std::string& string_to_sign);
 
   /**
@@ -154,7 +153,6 @@ private:
   /**
    * Convert bytes to hex string.
    */
-  static std::string to_hex(const std::vector<unsigned char>& data);
   static std::string to_hex(const unsigned char* data, size_t len);
 };
 

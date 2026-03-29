@@ -148,7 +148,7 @@ int execute_list(const po::variables_map &vm,
 
     std::string scheduled_value;
     r = image.metadata_get(rbd::backfill::BACKFILL_SCHEDULED_KEY, &scheduled_value);
-    if (r >= 0 && scheduled_value == "true") {
+    if (r >= 0 && scheduled_value == rbd::backfill::BACKFILL_SCHED_TRUE) {
       std::string status_value = "unknown";
       image.metadata_get(rbd::backfill::BACKFILL_STATUS_KEY, &status_value);
 

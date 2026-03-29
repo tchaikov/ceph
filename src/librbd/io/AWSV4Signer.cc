@@ -4,6 +4,7 @@
 #include "librbd/io/AWSV4Signer.h"
 #include "common/ceph_crypto.h"
 #include "common/dout.h"
+#include "include/stringify.h"
 #include <boost/algorithm/string.hpp>
 #include <sstream>
 #include <iomanip>
@@ -61,30 +62,30 @@ std::string AWSV4Signer::sha256_hex(const std::string& data) {
   return to_hex(hash, CEPH_CRYPTO_SHA256_DIGESTSIZE);
 }
 
-std::vector<unsigned char> AWSV4Signer::hmac_sha256(
-    const std::vector<unsigned char>& key,
+std::array<unsigned char, 32> AWSV4Signer::hmac_sha256(
+    const std::array<unsigned char, 32>& key,
     const std::string& data) {
-  unsigned char digest[CEPH_CRYPTO_HMACSHA256_DIGESTSIZE];
+  std::array<unsigned char, 32> digest;
 
   ceph::crypto::HMACSHA256 hmac(key.data(), key.size());
   hmac.Update(reinterpret_cast<const unsigned char*>(data.data()), data.size());
-  hmac.Final(digest);
+  hmac.Final(digest.data());
 
-  return std::vector<unsigned char>(digest, digest + CEPH_CRYPTO_HMACSHA256_DIGESTSIZE);
+  return digest;
 }
 
-std::vector<unsigned char> AWSV4Signer::hmac_sha256(
+std::array<unsigned char, 32> AWSV4Signer::hmac_sha256(
     const std::string& key,
     const std::string& data) {
-  unsigned char digest[CEPH_CRYPTO_HMACSHA256_DIGESTSIZE];
+  std::array<unsigned char, 32> digest;
 
   ceph::crypto::HMACSHA256 hmac(
     reinterpret_cast<const unsigned char*>(key.data()),
     key.size());
   hmac.Update(reinterpret_cast<const unsigned char*>(data.data()), data.size());
-  hmac.Final(digest);
+  hmac.Final(digest.data());
 
-  return std::vector<unsigned char>(digest, digest + CEPH_CRYPTO_HMACSHA256_DIGESTSIZE);
+  return digest;
 }
 
 std::string AWSV4Signer::uri_encode(const std::string& str, bool encode_slash) {
@@ -112,17 +113,15 @@ std::string AWSV4Signer::uri_encode(const std::string& str, bool encode_slash) {
   return escaped.str();
 }
 
-std::string AWSV4Signer::to_hex(const std::vector<unsigned char>& data) {
-  return to_hex(data.data(), data.size());
-}
-
 std::string AWSV4Signer::to_hex(const unsigned char* data, size_t len) {
-  std::ostringstream oss;
-  oss << std::hex << std::setfill('0');
+  static const char hex_chars[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(len * 2);
   for (size_t i = 0; i < len; ++i) {
-    oss << std::setw(2) << static_cast<unsigned int>(data[i]);
+    result.push_back(hex_chars[data[i] >> 4]);
+    result.push_back(hex_chars[data[i] & 0x0f]);
   }
-  return oss.str();
+  return result;
 }
 
 std::string AWSV4Signer::create_canonical_request(
@@ -130,7 +129,6 @@ std::string AWSV4Signer::create_canonical_request(
     const std::string& uri,
     const std::string& query_string,
     const std::map<std::string, std::string>& headers,
-    const std::string& signed_headers,
     const std::string& payload_hash) {
   std::ostringstream canonical_request;
 
@@ -150,8 +148,13 @@ std::string AWSV4Signer::create_canonical_request(
   }
   canonical_request << "\n";
 
-  // SignedHeaders
-  canonical_request << signed_headers << "\n";
+  // SignedHeaders — derived directly from the (sorted) map keys.
+  std::vector<std::string> keys;
+  keys.reserve(headers.size());
+  for (const auto& h : headers) {
+    keys.push_back(h.first);
+  }
+  canonical_request << joinify(keys.begin(), keys.end(), std::string(";")) << "\n";
 
   // HashedPayload
   canonical_request << payload_hash;
@@ -173,7 +176,7 @@ std::string AWSV4Signer::create_string_to_sign(
   return string_to_sign.str();
 }
 
-std::vector<unsigned char> AWSV4Signer::calculate_signing_key(
+std::array<unsigned char, 32> AWSV4Signer::calculate_signing_key(
     const std::string& date_string) {
   // kSecret = AWS4 + SecretAccessKey
   std::string k_secret = "AWS4" + m_credentials.secret_key;
@@ -194,10 +197,10 @@ std::vector<unsigned char> AWSV4Signer::calculate_signing_key(
 }
 
 std::string AWSV4Signer::calculate_signature(
-    const std::vector<unsigned char>& signing_key,
+    const std::array<unsigned char, 32>& signing_key,
     const std::string& string_to_sign) {
   auto signature = hmac_sha256(signing_key, string_to_sign);
-  return to_hex(signature);
+  return to_hex(signature.data(), signature.size());
 }
 
 std::string AWSV4Signer::build_authorization_header(
@@ -243,21 +246,18 @@ AWSV4Signer::SignedRequest AWSV4Signer::sign_request(
     headers[boost::algorithm::to_lower_copy(header.first)] = header.second;
   }
 
-  // Create signed headers list — keys are already lowercase in the map.
-  std::ostringstream signed_headers_stream;
-  bool first = true;
+  // Create signed headers list — keys are already lowercase (sorted) in the map.
+  std::vector<std::string> header_keys;
+  header_keys.reserve(headers.size());
   for (const auto& header : headers) {
-    if (!first) {
-      signed_headers_stream << ";";
-    }
-    signed_headers_stream << header.first;
-    first = false;
+    header_keys.push_back(header.first);
   }
-  std::string signed_headers = signed_headers_stream.str();
+  std::string signed_headers =
+    joinify(header_keys.begin(), header_keys.end(), std::string(";"));
 
   // Create canonical request
   std::string canonical_request = create_canonical_request(
-    method, uri, query_string, headers, signed_headers, payload_hash);
+    method, uri, query_string, headers, payload_hash);
 
   // Step 2: Create string to sign
   std::string scope = date_string + "/" + m_credentials.region + "/" +

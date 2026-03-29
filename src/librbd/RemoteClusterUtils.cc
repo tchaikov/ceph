@@ -167,13 +167,8 @@ int connect_to_remote_cluster(CephContext* cct,
   }
 
   // Set monitor addresses
-  std::string mon_host_str;
-  for (size_t i = 0; i < mon_hosts.size(); ++i) {
-    if (i > 0) {
-      mon_host_str += ",";
-    }
-    mon_host_str += mon_hosts[i];
-  }
+  std::string mon_host_str = joinify(mon_hosts.begin(), mon_hosts.end(),
+                                     std::string(","));
 
   r = cluster.conf_set("mon_host", mon_host_str.c_str());
   if (r < 0) {

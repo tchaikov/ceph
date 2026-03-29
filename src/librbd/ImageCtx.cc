@@ -765,7 +765,7 @@ public:
     config_overrides.clear();
 
     // extract config overrides
-    for (auto meta_pair : meta) {
+    for (const auto& meta_pair : meta) {
       if (!boost::starts_with(meta_pair.first, METADATA_CONF_PREFIX)) {
         continue;
       }
@@ -779,7 +779,7 @@ public:
       }
 
       if (config.find_option(key) != nullptr) {
-        std::string val(meta_pair.second.c_str(), meta_pair.second.length());
+        std::string val = meta_pair.second.to_str();
         int r = config.set_val(key, val);
         if (r >= 0) {
           ldout(cct, 20) << __func__ << ": " << key << "=" << val << dendl;
@@ -823,13 +823,13 @@ public:
 
     // Load S3 configuration from image metadata
     s3_config = S3Config();  // Reset to defaults first
-    for (auto meta_pair : meta) {
+    for (const auto& meta_pair : meta) {
       if (!boost::starts_with(meta_pair.first, "s3.")) {
         continue;
       }
 
       std::string key = meta_pair.first.substr(3);  // Remove "s3." prefix
-      std::string val(meta_pair.second.c_str(), meta_pair.second.length());
+      std::string val = meta_pair.second.to_str();
 
       if (key == "enabled") {
         s3_config.enabled = (val == "true" || val == "1");
