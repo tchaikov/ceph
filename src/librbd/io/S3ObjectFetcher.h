@@ -9,10 +9,14 @@
 #include "librbd/io/AWSV4Signer.h"
 #include "librbd/Types.h"
 #include <curl/curl.h>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <atomic>
+#include <thread>
+#include <vector>
 
 // Forward declaration only for curl_slist; CURL is defined via the header above.
 struct curl_slist;
@@ -82,8 +86,8 @@ public:
    * @param out_bl Output buffer to fill with data
    * @param on_finish Completion callback (called with result code)
    * @param cancel_flag Optional shared cancellation flag (nullptr = no cancellation).
-   *        Shared ownership keeps the flag alive past the caller's lifetime when
-   *        fetch_url() spawns a detached thread.
+   *        Shared ownership ensures the flag remains valid for the duration of
+   *        the async fetch even if the caller is destroyed before it completes.
    */
   void fetch(uint64_t object_no, uint64_t object_off, uint64_t length,
              bufferlist* out_bl, Context* on_finish,
@@ -124,18 +128,28 @@ private:
   std::string m_cached_host;
   std::string m_cached_uri;
 
-  // libcurl share lock/unlock callbacks (called with 'this' as userptr)
-  static void share_lock(CURL*, curl_lock_data data, curl_lock_access, void* userptr);
-  static void share_unlock(CURL*, curl_lock_data data, void* userptr);
-
   struct FetchContext {
     bufferlist* out_bl;
     Context* on_finish;
     CURL* curl_handle;
     struct curl_slist* headers;
-    // Shared ownership keeps the flag alive past the caller's delete.
+    // Shared ownership ensures the flag remains valid for the lifetime of the
+    // async fetch even if the caller is destroyed before it completes.
     std::shared_ptr<std::atomic<bool>> cancel_flag;
   };
+
+  // Fixed-size thread pool for async S3 fetches.
+  // Threads are created at construction and joined at destruction, so the
+  // pool provides clean lifecycle management with no per-request overhead.
+  std::vector<std::thread> m_worker_threads;
+  std::deque<FetchContext*> m_work_queue;
+  std::mutex m_work_mutex;
+  std::condition_variable m_work_cv;
+  bool m_shutdown = false;
+
+  // libcurl share lock/unlock callbacks (called with 'this' as userptr)
+  static void share_lock(CURL*, curl_lock_data data, curl_lock_access, void* userptr);
+  static void share_unlock(CURL*, curl_lock_data data, void* userptr);
 
   // Calculate byte offset in S3 object from RBD object number
   uint64_t calculate_s3_offset(uint64_t object_no, uint64_t object_off) const;
@@ -170,8 +184,11 @@ private:
   // libcurl write callback for response data
   static size_t write_callback(void* ptr, size_t size, size_t nmemb, void* userdata);
 
-  // Thread entry point for async fetch processing
-  static void* async_fetch_thread(void* arg);
+  // Worker thread loop: dequeues FetchContext items and executes them.
+  void worker_thread_body();
+
+  // Execute a single fetch: performs the HTTP GET and invokes on_finish.
+  void execute_fetch(FetchContext* ctx);
 };
 
 } // namespace io

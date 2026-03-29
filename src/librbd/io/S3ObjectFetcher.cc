@@ -10,7 +10,6 @@
 #include <curl/curl.h>
 #include <chrono>
 #include <mutex>
-#include <thread>
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
@@ -27,7 +26,7 @@ namespace {
   }
 
   // Map an HTTP response code to a POSIX errno.
-  // Used by both the sync (fetch_with_retry) and async (async_fetch_thread) paths.
+  // Used by both the sync (fetch_with_retry) and async (execute_fetch) paths.
   // Returns 0 for success (200/206), negative errno for errors.
   // Returns INT_MIN to signal "should retry" for 5xx server errors.
   static constexpr int RETRY_SIGNAL = INT_MIN;
@@ -41,13 +40,9 @@ namespace {
     return -EIO;
   }
 
-  // Concurrency limiter: cap simultaneous S3 HTTP connections to avoid
-  // overloading the S3 server when many child clones trigger COW reads
-  // simultaneously. Excess threads block here (cheaply) until a slot frees.
-  static constexpr int S3_MAX_CONCURRENT_FETCHES = 8;
-  std::mutex s3_fetch_mutex;
-  std::condition_variable s3_fetch_cv;
-  int s3_active_fetches = 0;
+  // Number of worker threads in the async fetch pool.
+  // Bounds simultaneous S3 HTTP connections for this fetcher instance.
+  static constexpr int S3_WORKER_THREADS = 8;
 }
 
 void S3ObjectFetcher::share_lock(CURL*, curl_lock_data data,
@@ -91,11 +86,41 @@ S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config)
     curl_share_setopt(m_curl_share, CURLSHOPT_UNLOCKFUNC, share_unlock);
     curl_share_setopt(m_curl_share, CURLSHOPT_USERDATA, this);
   }
-  ldout(m_cct, 20) << "S3ObjectFetcher created" << dendl;
+  // Start the fixed-size worker thread pool for async fetches.
+  for (int i = 0; i < S3_WORKER_THREADS; ++i) {
+    m_worker_threads.emplace_back(&S3ObjectFetcher::worker_thread_body, this);
+  }
+  ldout(m_cct, 20) << "S3ObjectFetcher created (" << S3_WORKER_THREADS
+                   << " worker threads)" << dendl;
 }
 
 S3ObjectFetcher::~S3ObjectFetcher() {
-  ldout(m_cct, 20) << "S3ObjectFetcher destroyed" << dendl;
+  ldout(m_cct, 20) << "S3ObjectFetcher destroying" << dendl;
+
+  // Signal all worker threads to exit and wait for them to finish.
+  // Workers must drain before curl resources are released.
+  {
+    std::lock_guard<std::mutex> lock(m_work_mutex);
+    m_shutdown = true;
+  }
+  m_work_cv.notify_all();
+  for (auto& t : m_worker_threads) {
+    t.join();
+  }
+
+  // Drain any requests queued but not yet started (edge case: abnormal
+  // shutdown while items were enqueued but no worker had dequeued them yet).
+  // Under normal image-close the queue is empty here because callers hold
+  // shared_ptr refs to this fetcher until all their requests complete.
+  while (!m_work_queue.empty()) {
+    FetchContext* ctx = m_work_queue.front();
+    m_work_queue.pop_front();
+    curl_slist_free_all(ctx->headers);
+    curl_easy_cleanup(ctx->curl_handle);
+    ctx->on_finish->complete(-ECANCELED);
+    delete ctx;
+  }
+
   if (m_sync_handle) {
     curl_easy_cleanup(m_sync_handle);
     m_sync_handle = nullptr;
@@ -105,6 +130,7 @@ S3ObjectFetcher::~S3ObjectFetcher() {
     m_curl_share = nullptr;
   }
   // Note: curl_global_cleanup() should only be called once at process exit
+  ldout(m_cct, 20) << "S3ObjectFetcher destroyed" << dendl;
 }
 
 size_t S3ObjectFetcher::write_callback(void* ptr, size_t size, size_t nmemb,
@@ -237,11 +263,10 @@ int S3ObjectFetcher::fetch_with_retry(const std::string& url,
                                        bufferlist* data,
                                        uint64_t byte_start,
                                        uint64_t byte_length) {
-  // NOTE: This synchronous path (used by the backfill daemon via fetch_sync)
-  // does NOT hold a slot in s3_active_fetches.  The backfill daemon serialises
-  // S3 fetches within each ImageBackfiller thread (one fetch at a time per
-  // image), so BackfillThrottler implicitly caps the per-image concurrency.
-  // Cross-image concurrency (N images × 1 fetch) is acceptable load on S3.
+  // NOTE: This synchronous path is used by the backfill daemon via fetch_sync.
+  // The daemon serialises S3 fetches within each ImageBackfiller thread
+  // (one fetch at a time per image), so BackfillThrottler caps per-image
+  // concurrency. Cross-image concurrency (N images × 1 fetch) is acceptable.
   int retry_count = 0;
   int last_error = 0;
   uint32_t max_retries = m_s3_config.max_retries;
@@ -350,31 +375,33 @@ uint64_t S3ObjectFetcher::calculate_s3_offset(uint64_t object_no, uint64_t objec
 
 
 
-void* S3ObjectFetcher::async_fetch_thread(void* arg) {
-  FetchContext* ctx = static_cast<FetchContext*>(arg);
-
-  // Acquire a concurrency slot before performing any network I/O.
-  // This prevents S3 server overload when many clones trigger simultaneous
-  // COW reads from the same parent (e.g., 4 VMs booting concurrently).
-  {
-    std::unique_lock<std::mutex> lock(s3_fetch_mutex);
-    s3_fetch_cv.wait(lock,
-      [] { return s3_active_fetches < S3_MAX_CONCURRENT_FETCHES; });
-    ++s3_active_fetches;
+void S3ObjectFetcher::worker_thread_body() {
+  while (true) {
+    FetchContext* ctx;
+    {
+      std::unique_lock<std::mutex> lock(m_work_mutex);
+      m_work_cv.wait(lock, [this] {
+        return m_shutdown || !m_work_queue.empty();
+      });
+      if (m_work_queue.empty()) {
+        // m_shutdown is true and no pending work — exit
+        break;
+      }
+      ctx = m_work_queue.front();
+      m_work_queue.pop_front();
+    }
+    execute_fetch(ctx);
   }
+}
 
+void S3ObjectFetcher::execute_fetch(FetchContext* ctx) {
   // Check for cancellation before issuing any I/O.
   if (ctx->cancel_flag && ctx->cancel_flag->load()) {
-    {
-      std::unique_lock<std::mutex> lock(s3_fetch_mutex);
-      --s3_active_fetches;
-    }
-    s3_fetch_cv.notify_one();
     curl_slist_free_all(ctx->headers);
     curl_easy_cleanup(ctx->curl_handle);
     ctx->on_finish->complete(-ECANCELED);
     delete ctx;
-    return nullptr;
+    return;
   }
 
   // Perform the blocking HTTP GET.  curl_easy_perform() is the correct
@@ -393,8 +420,7 @@ void* S3ObjectFetcher::async_fetch_thread(void* arg) {
     result = -EIO;
   } else {
     result = http_code_to_errno(response_code);
-    // 5xx from the async path: treat as generic I/O error (no retry here;
-    // the async path is fire-and-forget — retries are the caller's concern).
+    // 5xx: treat as generic I/O error — retries are the caller's concern.
     if (result == RETRY_SIGNAL) {
       result = -EIO;
     }
@@ -403,17 +429,8 @@ void* S3ObjectFetcher::async_fetch_thread(void* arg) {
   curl_slist_free_all(ctx->headers);
   curl_easy_cleanup(ctx->curl_handle);
 
-  // Release concurrency slot before invoking the completion callback so a
-  // waiting thread can start its S3 fetch while we handle the result.
-  {
-    std::unique_lock<std::mutex> lock(s3_fetch_mutex);
-    --s3_active_fetches;
-  }
-  s3_fetch_cv.notify_one();
-
   ctx->on_finish->complete(result);
   delete ctx;
-  return nullptr;
 }
 
 void S3ObjectFetcher::fetch_url(const std::string& url,
@@ -454,19 +471,14 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
     return;
   }
 
-  // Launch async fetch thread — detached so it cleans up automatically
-  try {
-    std::thread([ctx]() { async_fetch_thread(ctx); }).detach();
-  } catch (const std::system_error& e) {
-    lderr(cct) << "failed to create async fetch thread: " << e.what() << dendl;
-    curl_slist_free_all(ctx->headers);
-    curl_easy_cleanup(ctx->curl_handle);
-    on_finish->complete(-ENOMEM);
-    delete ctx;
-    return;
+  // Enqueue for the worker thread pool; a worker will call execute_fetch(ctx).
+  {
+    std::lock_guard<std::mutex> lock(m_work_mutex);
+    m_work_queue.push_back(ctx);
   }
+  m_work_cv.notify_one();
 
-  ldout(cct, 15) << "launched async S3 fetch thread" << dendl;
+  ldout(cct, 15) << "queued async S3 fetch" << dendl;
 }
 
 void S3ObjectFetcher::fetch(uint64_t object_no, uint64_t object_off,
