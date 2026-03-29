@@ -86,6 +86,20 @@ struct RemoteParentSpec {
   }
 };
 
+/// Metadata key constants for S3-backed parent image configuration.
+/// These are the full rbd_metadata keys as stored via `rbd image-meta set`.
+static constexpr const char* S3_META_KEY_ENABLED    = "s3.enabled";
+static constexpr const char* S3_META_KEY_BUCKET     = "s3.bucket";
+static constexpr const char* S3_META_KEY_ENDPOINT   = "s3.endpoint";
+static constexpr const char* S3_META_KEY_REGION     = "s3.region";
+static constexpr const char* S3_META_KEY_PREFIX     = "s3.prefix";
+static constexpr const char* S3_META_KEY_ACCESS_KEY = "s3.access_key";
+static constexpr const char* S3_META_KEY_SECRET_KEY = "s3.secret_key";
+static constexpr const char* S3_META_KEY_IMAGE_NAME = "s3.image_name";
+static constexpr const char* S3_META_KEY_IMAGE_FMT  = "s3.image_format";
+static constexpr const char* S3_META_KEY_TIMEOUT_MS = "s3.timeout_ms";
+static constexpr const char* S3_META_KEY_MAX_RETRIES= "s3.max_retries";
+
 /// S3 configuration for S3-backed parent images
 // Distributed-lock constants for the S3 fetch path.
 // Used by both CopyupRequest (I/O path) and ObjectBackfillRequest (backfill

@@ -45,9 +45,12 @@ ObjectBackfillRequest::ObjectBackfillRequest(
     m_finished(false),
     m_data_bl(data) {  // Store pre-fetched data
 
-  // Generate unique lock cookie using thread ID and timestamp
+  // Generate a unique lock cookie: prefix + request address + wall-clock time.
+  // Using the object address rather than pthread_self() avoids collisions from
+  // thread-ID reuse after a daemon restart within the same second.
   m_lock_cookie = librbd::BACKFILL_LOCK_COOKIE_PREFIX +
-                  stringify(pthread_self()) + "-" + stringify(ceph_clock_now());
+                  stringify(reinterpret_cast<uintptr_t>(this)) + "-" +
+                  stringify(ceph_clock_now());
 
   // Lock name is the object name
   m_lock_name = librbd::S3_FETCH_LOCK_NAME;

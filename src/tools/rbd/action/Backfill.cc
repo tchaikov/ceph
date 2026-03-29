@@ -10,6 +10,7 @@
 #include <iostream>
 #include <boost/program_options.hpp>
 #include "tools/rbd_backfill/Types.h"
+#include "librbd/Types.h"
 
 namespace rbd {
 namespace action {
@@ -24,9 +25,10 @@ namespace {
 
 int validate_s3_backed_image(librbd::Image& image) {
   std::string value;
-  int r = image.metadata_get("s3.bucket", &value);
+  int r = image.metadata_get(librbd::S3_META_KEY_BUCKET, &value);
   if (r < 0) {
-    std::cerr << "rbd: image is not S3-backed (no s3.bucket metadata)" << std::endl;
+    std::cerr << "rbd: image is not S3-backed (no " << librbd::S3_META_KEY_BUCKET
+              << " metadata)" << std::endl;
     return r;
   }
   return 0;

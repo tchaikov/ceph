@@ -822,6 +822,9 @@ public:
       discard_granularity_bytes = 0;
     }
 
+    // Cache whether the S3 fetch feature is enabled globally (avoid per-I/O config reads)
+    s3_fetch_enabled = cct->_conf.template get_val<bool>("rbd_s3_fetch_enabled");
+
     // Load S3 configuration from image metadata
     s3_config = S3Config();  // Reset to defaults first
     bool s3_secret_key_invalid = false;

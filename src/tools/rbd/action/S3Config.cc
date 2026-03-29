@@ -6,6 +6,8 @@
 #include "tools/rbd/Utils.h"
 #include "common/errno.h"
 #include "include/buffer.h"
+#include "include/stringify.h"
+#include "librbd/Types.h"
 #include <iostream>
 #include <boost/program_options.hpp>
 
@@ -118,15 +120,15 @@ int execute_set(const po::variables_map &vm,
 
   // Set S3 configuration metadata
   std::map<std::string, std::string> metadata = {
-    {"s3.enabled", "true"},
-    {"s3.bucket", s3_bucket},
-    {"s3.endpoint", s3_endpoint},
-    {"s3.region", s3_region},
-    {"s3.prefix", s3_prefix},
-    {"s3.image_name", s3_image_name},
-    {"s3.image_format", s3_image_format},
-    {"s3.timeout_ms", std::to_string(s3_timeout_ms)},
-    {"s3.max_retries", std::to_string(s3_max_retries)}
+    {librbd::S3_META_KEY_ENABLED,    "true"},
+    {librbd::S3_META_KEY_BUCKET,     s3_bucket},
+    {librbd::S3_META_KEY_ENDPOINT,   s3_endpoint},
+    {librbd::S3_META_KEY_REGION,     s3_region},
+    {librbd::S3_META_KEY_PREFIX,     s3_prefix},
+    {librbd::S3_META_KEY_IMAGE_NAME, s3_image_name},
+    {librbd::S3_META_KEY_IMAGE_FMT,  s3_image_format},
+    {librbd::S3_META_KEY_TIMEOUT_MS, stringify(s3_timeout_ms)},
+    {librbd::S3_META_KEY_MAX_RETRIES,stringify(s3_max_retries)},
   };
 
   // Add credentials if provided.
@@ -136,10 +138,10 @@ int execute_set(const po::variables_map &vm,
   // deployments requiring stronger credential protection, rotate the S3
   // credentials regularly and restrict pool access using Ceph auth caps.
   if (has_access_key) {
-    metadata["s3.access_key"] = s3_access_key;
+    metadata[librbd::S3_META_KEY_ACCESS_KEY] = s3_access_key;
     ceph::bufferlist secret_bl; secret_bl.append(s3_secret_key);
     ceph::bufferlist secret_encoded; secret_bl.encode_base64(secret_encoded);
-    metadata["s3.secret_key"] = secret_encoded.to_str();
+    metadata[librbd::S3_META_KEY_SECRET_KEY] = secret_encoded.to_str();
   }
 
   // Set all metadata
@@ -154,7 +156,7 @@ int execute_set(const po::variables_map &vm,
 
   std::cout << "S3 configuration set successfully for image " << image_name << std::endl;
   if (!has_access_key) {
-    std::cout << "Note: No credentials provided, using anonymous access" << std::endl;
+    std::cout << "Note: No credentials provided; S3 requests will be unsigned" << std::endl;
   }
 
   return 0;
@@ -205,7 +207,7 @@ int execute_get(const po::variables_map &vm,
     return r;
   }
 
-  auto it = pairs.find("s3.enabled");
+  auto it = pairs.find(librbd::S3_META_KEY_ENABLED);
   if (it == pairs.end()) {
     std::cout << "S3 configuration is not set for image " << image_name << std::endl;
     return 0;
@@ -224,7 +226,7 @@ int execute_get(const po::variables_map &vm,
     }
     std::string value = kv.second.to_str();
     // Mask secret key for display
-    if (kv.first == "s3.secret_key" && !value.empty()) {
+    if (kv.first == librbd::S3_META_KEY_SECRET_KEY && !value.empty()) {
       std::cout << "  " << kv.first << ": ********" << std::endl;
     } else {
       std::cout << "  " << kv.first << ": " << value << std::endl;
@@ -273,9 +275,12 @@ int execute_clear(const po::variables_map &vm,
 
   // Remove all S3 metadata keys
   std::vector<std::string> keys = {
-    "s3.enabled", "s3.bucket", "s3.endpoint", "s3.region",
-    "s3.access_key", "s3.secret_key", "s3.prefix",
-    "s3.image_name", "s3.image_format", "s3.timeout_ms", "s3.max_retries"
+    librbd::S3_META_KEY_ENABLED,    librbd::S3_META_KEY_BUCKET,
+    librbd::S3_META_KEY_ENDPOINT,   librbd::S3_META_KEY_REGION,
+    librbd::S3_META_KEY_ACCESS_KEY, librbd::S3_META_KEY_SECRET_KEY,
+    librbd::S3_META_KEY_PREFIX,     librbd::S3_META_KEY_IMAGE_NAME,
+    librbd::S3_META_KEY_IMAGE_FMT,  librbd::S3_META_KEY_TIMEOUT_MS,
+    librbd::S3_META_KEY_MAX_RETRIES,
   };
 
   for (const auto& key : keys) {

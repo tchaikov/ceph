@@ -687,9 +687,8 @@ bool CopyupRequest<I>::should_fetch_from_s3() {
   // deadlock if a writer is waiting (PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP).
   auto cct = m_image_ctx->cct;
 
-  // Check if S3 back-fill feature is enabled globally
-  bool s3_enabled = cct->_conf.template get_val<bool>("rbd_s3_fetch_enabled");
-  if (!s3_enabled) {
+  // Check if S3 fetch is enabled (cached at image open; avoids per-I/O config reads)
+  if (!m_image_ctx->s3_fetch_enabled) {
     ldout(cct, 20) << "S3 fetch disabled by config" << dendl;
     return false;
   }
@@ -1173,12 +1172,9 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
   // the in-memory ObjectMap and the on-disk RADOS cls record under parent_lock.
   unlock_parent_object();
 
-  // Use the S3 data for the copyup operation
-  m_copyup_data = m_s3_data;
+  // Transfer S3 data into the copyup buffer (move avoids copying 4MB).
+  m_copyup_data = std::move(m_s3_data);
   m_data_is_from_s3 = true;
-
-  // Clear S3 data buffer to free memory
-  m_s3_data.clear();
 
   // Continue with normal copyup flow
   m_image_ctx->snap_lock.get_read();

@@ -133,7 +133,8 @@ namespace librbd {
     ImageCtx *parent;
     ImageCtx *child = nullptr;
     std::unique_ptr<librados::Rados> remote_parent_cluster;  // RADOS connection for remote parent
-    S3Config s3_config;  // S3 configuration for S3-backed parent images
+    S3Config s3_config;        // S3 configuration for S3-backed parent images
+    bool s3_fetch_enabled = false;  // cached from rbd_s3_fetch_enabled config option
     // Lazily-initialized S3 fetcher shared by all CopyupRequests for this
     // image.  The shared_ptr lets a CopyupRequest keep the fetcher alive after
     // the parent is detached (flatten).  Initialized under parent_lock.
