@@ -227,7 +227,8 @@ int execute_status(const po::variables_map &vm,
                     (scheduled_value == rbd::backfill::BACKFILL_SCHED_TRUE || scheduled_value == rbd::backfill::BACKFILL_SCHED_IN_PROGRESS));
   bool finished = (scheduled_r < 0 &&
                    (!status_value.empty() &&
-                    (status_value == "complete" || status_value == "failed")));
+                    (status_value == rbd::backfill::BACKFILL_STATUS_COMPLETE ||
+                     status_value == rbd::backfill::BACKFILL_STATUS_FAILED)));
 
   if (!scheduled && !finished) {
     std::cerr << "rbd: backfill not scheduled for this image" << std::endl;

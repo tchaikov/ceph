@@ -11,9 +11,9 @@
 #include "cls/lock/cls_lock_client.h"
 #include "cls/rbd/cls_rbd_client.h"
 #include "librbd/ObjectMap.h"
+#include "include/stringify.h"
 #include "librbd/Utils.h"
 #include <boost/optional.hpp>
-#include <sstream>
 
 #define dout_context m_cct
 #define dout_subsys ceph_subsys_rbd
@@ -46,9 +46,8 @@ ObjectBackfillRequest::ObjectBackfillRequest(
     m_data_bl(data) {  // Store pre-fetched data
 
   // Generate unique lock cookie using thread ID and timestamp
-  std::stringstream ss;
-  ss << librbd::BACKFILL_LOCK_COOKIE_PREFIX << pthread_self() << "-" << ceph_clock_now();
-  m_lock_cookie = ss.str();
+  m_lock_cookie = librbd::BACKFILL_LOCK_COOKIE_PREFIX +
+                  stringify(pthread_self()) + "-" + stringify(ceph_clock_now());
 
   // Lock name is the object name
   m_lock_name = librbd::S3_FETCH_LOCK_NAME;

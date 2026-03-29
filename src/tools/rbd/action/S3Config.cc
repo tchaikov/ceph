@@ -16,16 +16,6 @@ namespace s3_config {
 namespace at = argument_types;
 namespace po = boost::program_options;
 
-static int set_metadata(librbd::Image &image, const std::string &key,
-                        const std::string &value) {
-  return image.metadata_set(key, value);
-}
-
-static int get_metadata(librbd::Image &image, const std::string &key,
-                        std::string *value) {
-  return image.metadata_get(key, value);
-}
-
 static std::string base64_encode(const std::string &input) {
   ceph::bufferlist bl;
   bl.append(input);
@@ -159,7 +149,7 @@ int execute_set(const po::variables_map &vm,
 
   // Set all metadata
   for (const auto& kv : metadata) {
-    r = set_metadata(image, kv.first, kv.second);
+    r = image.metadata_set(kv.first, kv.second);
     if (r < 0) {
       std::cerr << "rbd: error setting metadata " << kv.first << ": "
                 << cpp_strerror(r) << std::endl;
@@ -212,32 +202,37 @@ int execute_get(const po::variables_map &vm,
     return r;
   }
 
-  // Get S3 configuration metadata
-  std::vector<std::string> keys = {
-    "s3.enabled", "s3.bucket", "s3.endpoint", "s3.region",
-    "s3.access_key", "s3.secret_key", "s3.prefix",
-    "s3.image_name", "s3.image_format", "s3.timeout_ms", "s3.max_retries"
-  };
+  // Fetch all S3 metadata in a single RADOS round-trip
+  std::map<std::string, ceph::bufferlist> pairs;
+  r = image.metadata_list("s3.", 20, &pairs);
+  if (r < 0) {
+    std::cerr << "rbd: error listing metadata: " << cpp_strerror(r) << std::endl;
+    return r;
+  }
 
-  std::string enabled;
-  r = get_metadata(image, "s3.enabled", &enabled);
-  if (r < 0 || (enabled != "true" && enabled != "1")) {
+  auto it = pairs.find("s3.enabled");
+  if (it == pairs.end()) {
+    std::cout << "S3 configuration is not set for image " << image_name << std::endl;
+    return 0;
+  }
+  std::string enabled = it->second.to_str();
+  if (enabled != "true" && enabled != "1") {
     std::cout << "S3 configuration is not set for image " << image_name << std::endl;
     return 0;
   }
 
   std::cout << "S3 configuration for image " << image_name << ":" << std::endl;
 
-  for (const auto& key : keys) {
-    std::string value;
-    r = get_metadata(image, key, &value);
-    if (r == 0) {
-      // Mask secret key for display
-      if (key == "s3.secret_key" && !value.empty()) {
-        std::cout << "  " << key << ": ********" << std::endl;
-      } else {
-        std::cout << "  " << key << ": " << value << std::endl;
-      }
+  for (const auto& kv : pairs) {
+    if (kv.first.substr(0, 3) != "s3.") {
+      break;  // metadata_list is sorted; stop at first non-s3 key
+    }
+    std::string value = kv.second.to_str();
+    // Mask secret key for display
+    if (kv.first == "s3.secret_key" && !value.empty()) {
+      std::cout << "  " << kv.first << ": ********" << std::endl;
+    } else {
+      std::cout << "  " << kv.first << ": " << value << std::endl;
     }
   }
 

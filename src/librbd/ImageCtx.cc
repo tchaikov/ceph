@@ -861,9 +861,13 @@ public:
       } else if (key == "prefix") {
         s3_config.prefix = val;
       } else if (key == "timeout_ms") {
-        try { s3_config.timeout_ms = std::stoul(val); } catch (...) {}
+        try { s3_config.timeout_ms = std::stoul(val); } catch (...) {
+          lderr(cct) << __func__ << ": invalid s3.timeout_ms value: " << val << dendl;
+        }
       } else if (key == "max_retries") {
-        try { s3_config.max_retries = std::stoul(val); } catch (...) {}
+        try { s3_config.max_retries = std::stoul(val); } catch (...) {
+          lderr(cct) << __func__ << ": invalid s3.max_retries value: " << val << dendl;
+        }
       }
     }
 
