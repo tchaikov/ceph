@@ -37,19 +37,16 @@ Threads::Threads(CephContext *cct)
 }
 
 Threads::~Threads() {
-  if (timer) {
+  {
     Mutex::Locker timer_locker(timer_lock);
     timer->shutdown();
   }
+  timer.reset();
 
-  // work_queue will be automatically deleted before thread_pool
-  // due to unique_ptr destruction order
+  work_queue->drain();
+  work_queue.reset();
 
-  if (thread_pool) {
-    thread_pool->stop();
-  }
-
-  // Smart pointers handle cleanup automatically
+  thread_pool->stop();
 }
 
 // BackfillDaemon implementation
