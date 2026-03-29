@@ -7,7 +7,6 @@
 #include "include/stringify.h"
 #include <boost/algorithm/string.hpp>
 #include <sstream>
-#include <iomanip>
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
@@ -83,28 +82,25 @@ std::array<unsigned char, 32> AWSV4Signer::hmac_sha256(
 }
 
 std::string AWSV4Signer::uri_encode(const std::string& str, bool encode_slash) {
-  std::ostringstream escaped;
-  escaped.fill('0');
-  escaped << std::hex;
+  static const char upper_hex[] = "0123456789ABCDEF";
+  std::string result;
+  result.reserve(str.size() * 3);  // worst case: every byte percent-encoded
 
   for (unsigned char c : str) {
-    // Keep alphanumeric and other accepted characters intact
-    // Use locale-independent character checks instead of isalnum()
-    if ((c >= '0' && c <= '9') ||  // digit
-        (c >= 'A' && c <= 'Z') ||  // uppercase letter
-        (c >= 'a' && c <= 'z') ||  // lowercase letter
+    if ((c >= '0' && c <= '9') ||
+        (c >= 'A' && c <= 'Z') ||
+        (c >= 'a' && c <= 'z') ||
         c == '-' || c == '_' || c == '.' || c == '~' ||
         (!encode_slash && c == '/')) {
-      escaped << c;
+      result += static_cast<char>(c);
     } else {
-      // Percent-encode all other characters
-      escaped << std::uppercase;
-      escaped << '%' << std::setw(2) << static_cast<int>(c);
-      escaped << std::nouppercase;
+      result += '%';
+      result += upper_hex[c >> 4];
+      result += upper_hex[c & 0x0f];
     }
   }
 
-  return escaped.str();
+  return result;
 }
 
 std::string AWSV4Signer::to_hex(const unsigned char* data, size_t len) {
@@ -123,6 +119,7 @@ std::string AWSV4Signer::create_canonical_request(
     const std::string& uri,
     const std::string& query_string,
     const std::map<std::string, std::string>& headers,
+    const std::string& signed_headers,
     const std::string& payload_hash) {
   std::ostringstream canonical_request;
 
@@ -142,13 +139,8 @@ std::string AWSV4Signer::create_canonical_request(
   }
   canonical_request << "\n";
 
-  // SignedHeaders — derived directly from the (sorted) map keys.
-  std::vector<std::string> keys;
-  keys.reserve(headers.size());
-  for (const auto& h : headers) {
-    keys.push_back(h.first);
-  }
-  canonical_request << joinify(keys.begin(), keys.end(), std::string(";")) << "\n";
+  // SignedHeaders — passed in from sign_request() to avoid rebuilding.
+  canonical_request << signed_headers << "\n";
 
   // HashedPayload
   canonical_request << payload_hash;
@@ -246,18 +238,19 @@ AWSV4Signer::SignedRequest AWSV4Signer::sign_request(
     headers[boost::algorithm::to_lower_copy(header.first)] = header.second;
   }
 
-  // Create signed headers list — keys are already lowercase (sorted) in the map.
-  std::vector<std::string> header_keys;
-  header_keys.reserve(headers.size());
+  // Build signed_headers string in one pass — keys are already lowercase
+  // and sorted by the std::map iteration order.
+  std::string signed_headers;
   for (const auto& header : headers) {
-    header_keys.push_back(header.first);
+    if (!signed_headers.empty()) {
+      signed_headers += ';';
+    }
+    signed_headers += header.first;
   }
-  std::string signed_headers =
-    joinify(header_keys.begin(), header_keys.end(), std::string(";"));
 
-  // Create canonical request
+  // Create canonical request — pass signed_headers to avoid rebuilding it.
   std::string canonical_request = create_canonical_request(
-    method, uri, query_string, headers, payload_hash);
+    method, uri, query_string, headers, signed_headers, payload_hash);
 
   // Step 2: Create string to sign
   std::string scope = date_string + "/" + m_credentials.region + "/" +

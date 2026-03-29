@@ -9,7 +9,6 @@
 #include "librbd/ImageCtx.h"
 #include "librbd/Utils.h"
 #include "librbd/RemoteClusterUtils.h"
-#include "librbd/internal.h"
 #include "librbd/image/CloseRequest.h"
 #include "librbd/image/OpenRequest.h"
 #include "librbd/io/ObjectDispatcher.h"
@@ -248,93 +247,10 @@ void RefreshParentRequest<I>::load_parent_s3_config() {
   CephContext *cct = m_child_image_ctx.cct;
   ldout(cct, 10) << this << " " << __func__ << dendl;
 
-  // Load S3 configuration from parent image metadata
-  // Metadata keys: s3.enabled, s3.bucket, s3.endpoint, s3.region,
-  //                s3.access_key, s3.secret_key, s3.prefix,
-  //                s3.timeout_ms, s3.max_retries, s3.image_name, s3.image_format
-
-  S3Config& s3_config = m_parent_image_ctx->s3_config;
-
-  // Helper lambda to get metadata value
-  auto get_metadata = [this, cct](const std::string& key, std::string& value) -> bool {
-    int r = librbd::metadata_get(m_parent_image_ctx, key, &value);
-    if (r < 0 && r != -ENOENT) {
-      ldout(cct, 5) << "warning: failed to read " << key << ": "
-                    << cpp_strerror(r) << dendl;
-      return false;
-    }
-    return (r == 0);
-  };
-
-  // Read s3.enabled
-  std::string enabled_str;
-  if (!get_metadata("s3.enabled", enabled_str)) {
-    ldout(cct, 15) << "S3 not configured for parent image" << dendl;
-    return;
-  }
-
-  s3_config.enabled = (enabled_str == "true" || enabled_str == "1");
-  if (!s3_config.enabled) {
-    ldout(cct, 15) << "S3 disabled for parent image" << dendl;
-    return;
-  }
-
-  // Read required fields
-  get_metadata("s3.bucket", s3_config.bucket);
-  get_metadata("s3.endpoint", s3_config.endpoint);
-
-  // Read optional fields
-  get_metadata("s3.region", s3_config.region);
-  get_metadata("s3.access_key", s3_config.access_key);
-
-  // Secret key is stored base64-encoded for security
-  std::string encoded_secret_key;
-  if (get_metadata("s3.secret_key", encoded_secret_key)) {
-    // Decode base64-encoded secret key
-    bufferlist encoded_bl;
-    encoded_bl.append(encoded_secret_key);
-    bufferlist decoded_bl;
-    try {
-      decoded_bl.decode_base64(encoded_bl);
-      s3_config.secret_key = decoded_bl.to_str();
-    } catch (buffer::error& err) {
-      // If we have an access key but failed to decode the secret key,
-      // this is a critical configuration error
-      if (!s3_config.access_key.empty()) {
-        lderr(cct) << "CRITICAL: failed to decode s3.secret_key for authenticated access. "
-                   << "S3 configuration is invalid - all reads from this parent will fail. "
-                   << "Please check the s3.secret_key metadata on the parent image." << dendl;
-        s3_config.enabled = false;
-        return;
-      }
-      // Otherwise it's anonymous access - continue without credentials
-      ldout(cct, 10) << "note: no valid s3.secret_key, using anonymous access" << dendl;
-      s3_config.secret_key = "";
-    }
-  }
-
-  get_metadata("s3.prefix", s3_config.prefix);
-  get_metadata("s3.image_name", s3_config.image_name);
-  get_metadata("s3.image_format", s3_config.image_format);
-
-  std::string timeout_str, retries_str;
-  if (get_metadata("s3.timeout_ms", timeout_str)) {
-    try {
-      s3_config.timeout_ms = std::stoul(timeout_str);
-    } catch (...) {
-      ldout(cct, 5) << "warning: invalid s3.timeout_ms value: " << timeout_str << dendl;
-    }
-  }
-
-  if (get_metadata("s3.max_retries", retries_str)) {
-    try {
-      s3_config.max_retries = std::stoul(retries_str);
-    } catch (...) {
-      ldout(cct, 5) << "warning: invalid s3.max_retries value: " << retries_str << dendl;
-    }
-  }
-
-  // Validate configuration
+  // S3 configuration is already populated in m_parent_image_ctx->s3_config by
+  // apply_metadata(), which is called during state->open() above.  No separate
+  // metadata round-trips are needed here; just validate and log.
+  const S3Config& s3_config = m_parent_image_ctx->s3_config;
   if (s3_config.is_valid()) {
     ldout(cct, 10) << "loaded S3 configuration for parent: "
                    << "bucket=" << s3_config.bucket
@@ -343,9 +259,8 @@ void RefreshParentRequest<I>::load_parent_s3_config() {
                    << ", region=" << s3_config.region
                    << ", anonymous=" << s3_config.is_anonymous()
                    << dendl;
-  } else {
+  } else if (s3_config.enabled) {
     ldout(cct, 5) << "warning: incomplete S3 configuration for parent image" << dendl;
-    s3_config.enabled = false;
   }
 }
 

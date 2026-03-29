@@ -376,11 +376,12 @@ void DetachChildRequest<I>::finish(int r) {
     auto cluster_ptr = m_remote_parent_cluster;
     m_remote_parent_cluster.reset();  // Release our reference immediately
 
-    // Schedule async cleanup - this will happen after finish() returns
+    // Schedule async cleanup on the work queue so the potentially-blocking
+    // Rados destructor runs off the I/O path.  cluster_ptr goes out of scope
+    // at the end of the lambda, triggering the Rados shutdown there.
     m_image_ctx.op_work_queue->queue(
-      new FunctionContext([cluster_ptr](int r) {
-        // cluster_ptr will be destroyed when this lambda goes out of scope
-        // The Rados destructor will be called, but it won't block our main thread
+      new FunctionContext([cluster_ptr](int) {
+        cluster_ptr->shutdown();
       }),
       0);
 

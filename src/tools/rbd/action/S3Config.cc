@@ -16,13 +16,6 @@ namespace s3_config {
 namespace at = argument_types;
 namespace po = boost::program_options;
 
-static std::string base64_encode(const std::string &input) {
-  ceph::bufferlist bl;
-  bl.append(input);
-  ceph::bufferlist encoded;
-  bl.encode_base64(encoded);
-  return encoded.to_str();
-}
 
 void get_set_arguments(po::options_description *positional,
                        po::options_description *options) {
@@ -144,7 +137,9 @@ int execute_set(const po::variables_map &vm,
   // credentials regularly and restrict pool access using Ceph auth caps.
   if (has_access_key) {
     metadata["s3.access_key"] = s3_access_key;
-    metadata["s3.secret_key"] = base64_encode(s3_secret_key);
+    ceph::bufferlist secret_bl; secret_bl.append(s3_secret_key);
+    ceph::bufferlist secret_encoded; secret_bl.encode_base64(secret_encoded);
+    metadata["s3.secret_key"] = secret_encoded.to_str();
   }
 
   // Set all metadata

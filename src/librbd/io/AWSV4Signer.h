@@ -114,6 +114,7 @@ private:
     const std::string& uri,
     const std::string& query_string,
     const std::map<std::string, std::string>& headers,
+    const std::string& signed_headers,
     const std::string& payload_hash);
 
   /**
