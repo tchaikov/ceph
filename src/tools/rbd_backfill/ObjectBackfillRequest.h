@@ -15,8 +15,6 @@ class CephContext;
 namespace rbd {
 namespace backfill {
 
-class Threads;
-
 /**
  * ObjectBackfillRequest - State machine for backfilling a single object
  *
@@ -40,7 +38,6 @@ public:
     const ceph::bufferlist& data,  // Pre-fetched data from S3
     const std::string& image_id,   // Parent image ID for object map updates
     CephContext* cct,
-    Threads* threads,
     Context* on_finish);
 
   ~ObjectBackfillRequest();
@@ -93,7 +90,6 @@ private:
                            // Must match CopyupRequest::m_parent_lock_oid
   uint64_t m_object_no;
   std::string m_image_id;          // Parent image ID for object map updates
-  Threads* m_threads;
   CephContext* m_cct;
   Context* m_on_finish;
 
@@ -113,7 +109,6 @@ private:
 
   // Lock timeout configuration
   static constexpr uint32_t LOCK_TIMEOUT_SECONDS = 30;
-  static constexpr const char* LOCK_OWNER = "rbd-backfill";
 };
 
 } // namespace backfill

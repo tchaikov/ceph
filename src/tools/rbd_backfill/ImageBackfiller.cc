@@ -158,16 +158,32 @@ void ImageBackfiller::run_backfill() {
   // confirmed so that a restart (which now checks RADOS existence via stat)
   // still works correctly: the actual data objects are unaffected.
   if (completed + failed == m_num_objects && failed == 0) {
-    dout(5) << "cleaning up sentinel lock objects (.s3lk)" << dendl;
+    dout(5) << "cleaning up " << m_num_objects
+            << " sentinel lock objects (.s3lk)" << dendl;
+
+    // Fire all removes in parallel and wait for the batch to finish.
+    std::vector<librados::AioCompletion *> aios;
+    aios.reserve(m_num_objects);
     for (uint64_t obj_no = 0; obj_no < m_num_objects; ++obj_no) {
-      char sentinel_buf[RBD_MAX_OBJ_NAME_SIZE + 5];  // +5 for ".s3lk"
       char obj_buf[RBD_MAX_OBJ_NAME_SIZE];
       snprintf(obj_buf, sizeof(obj_buf), m_image_ctx->format_string, obj_no);
-      snprintf(sentinel_buf, sizeof(sentinel_buf), "%s.s3lk", obj_buf);
-      int rm_r = m_ioctx.remove(std::string(sentinel_buf));
+      std::string sentinel_oid =
+          std::string(obj_buf) + librbd::S3_FETCH_LOCK_SENTINEL_SUFFIX;
+
+      auto *c = librados::Rados::aio_create_completion(nullptr, nullptr, nullptr);
+      if (m_ioctx.aio_remove(sentinel_oid, c) < 0) {
+        c->release();
+      } else {
+        aios.push_back(c);
+      }
+    }
+    for (auto *c : aios) {
+      c->wait_for_complete();
+      int rm_r = c->get_return_value();
+      c->release();
       if (rm_r < 0 && rm_r != -ENOENT) {
-        dout(10) << "failed to remove sentinel " << sentinel_buf
-                 << ": " << cpp_strerror(rm_r) << dendl;
+        dout(10) << "failed to remove sentinel lock object: "
+                 << cpp_strerror(rm_r) << dendl;
       }
     }
     dout(5) << "sentinel cleanup complete" << dendl;
@@ -366,7 +382,6 @@ void ImageBackfiller::backfill_object(uint64_t object_no) {
     data_bl,          // Pass pre-fetched data
     m_image_ctx->id,  // Image ID for object map updates
     m_cct,
-    m_threads,
     on_complete
   );
 

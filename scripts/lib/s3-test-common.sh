@@ -490,6 +490,18 @@ verify_checksum() {
 declare -A TEST_RESULTS
 declare -A TEST_TIMES
 
+run_test() {
+    local name=$1; shift
+    local start=$(date +%s)
+    local result="FAILED"
+    log_step ">>> $name"
+    if "$@"; then result="PASSED"; fi
+    local end=$(date +%s)
+    record_test_result "$name" "$result" $((end - start))
+    log_success "$name: $result"
+    echo
+}
+
 record_test_result() {
     local test_name=$1
     local result=$2  # "PASSED" or "FAILED"

@@ -49,19 +49,6 @@ create_pool "$POOL"
 enable_s3_fetch
 
 # ============================================================================
-run_test() {
-    local name=$1; shift
-    local start=$(date +%s)
-    local result="FAILED"
-    log_step ">>> $name"
-    if "$@"; then result="PASSED"; fi
-    local end=$(date +%s)
-    record_test_result "$name" "$result" $((end - start))
-    log_success "$name: $result"
-    echo
-}
-
-# ============================================================================
 test_metadata_no_inheritance() {
     # Child clones must NOT inherit S3 metadata from the parent.
     # Background: if a child inherits s3.enabled=true, QEMU would try to fetch

@@ -31,13 +31,11 @@ ObjectBackfillRequest::ObjectBackfillRequest(
   const ceph::bufferlist& data,
   const std::string& image_id,
   CephContext* cct,
-  Threads* threads,
   Context* on_finish)
   : m_parent_ioctx(parent_ioctx),  // Copy IoCtx - safe for async use
     m_parent_oid(parent_oid),
     m_object_no(object_no),
     m_image_id(image_id),
-    m_threads(threads),
     m_cct(cct),
     m_on_finish(on_finish),
     m_lock("ObjectBackfillRequest::m_lock"),
@@ -60,7 +58,7 @@ ObjectBackfillRequest::ObjectBackfillRequest(
   // (m_parent_oid + ".s3lk").  Using a separate sentinel prevents the
   // cls_lock side-effect of creating the data object as an empty RADOS
   // object, and ensures mutual exclusion with COW operations from child images.
-  m_lock_oid = m_parent_oid + ".s3lk";
+  m_lock_oid = m_parent_oid + librbd::S3_FETCH_LOCK_SENTINEL_SUFFIX;
 }
 
 ObjectBackfillRequest::~ObjectBackfillRequest() {

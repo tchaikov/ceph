@@ -805,7 +805,7 @@ void CopyupRequest<I>::fetch_from_s3_with_lock() {
   // placed on m_parent_oid itself, a concurrent child would see the object as
   // "existing" (stat returns 0) but read zero bytes, producing corrupt copyup
   // data for any partial write that relied on the non-zero parent content.
-  m_parent_lock_oid = m_parent_oid + ".s3lk";
+  m_parent_lock_oid = m_parent_oid + S3_FETCH_LOCK_SENTINEL_SUFFIX;
 
   ldout(cct, 15) << "parent oid: " << m_parent_oid
                  << ", lock oid: " << m_parent_lock_oid << dendl;
@@ -1032,12 +1032,15 @@ void CopyupRequest<I>::retry_read_from_parent() {
   Mutex *timer_lock;
   ImageCtx::get_timer_instance(cct, &timer, &timer_lock);
   {
+    // Capture op_work_queue *before* the alive check so we never dereference
+    // 'this' inside the lambda after the flag may have been cleared.
+    auto wq = m_image_ctx->op_work_queue;
     auto alive = m_alive;   // capture by value (shared ownership)
     Mutex::Locker locker(*timer_lock);
     timer->add_event_after(delay_ms / 1000.0,
-      new FunctionContext([this, alive](int r) {
+      new FunctionContext([this, alive, wq](int r) {
         if (!alive->load()) return;
-        m_image_ctx->op_work_queue->queue(
+        wq->queue(
           new FunctionContext([this, alive](int r) {
             if (!alive->load()) return;
             read_from_parent();

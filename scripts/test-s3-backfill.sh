@@ -64,19 +64,6 @@ start_minio $MINIO_PORT $MINIO_CONSOLE_PORT "$MINIO_DATA_DIR"
 setup_s3_bucket $MINIO_PORT "$S3_BUCKET"
 
 # ============================================================================
-run_test() {
-    local name=$1; shift
-    local start=$(date +%s)
-    local result="FAILED"
-    log_step ">>> $name"
-    if "$@"; then result="PASSED"; fi
-    local end=$(date +%s)
-    record_test_result "$name" "$result" $((end - start))
-    log_success "$name: $result"
-    echo
-}
-
-# ============================================================================
 test_backfill_lifecycle() {
     # Daemon discovers a backfill-scheduled image and copies all objects from
     # S3 to RADOS.  Verifies: image discovered, thread started, object count
