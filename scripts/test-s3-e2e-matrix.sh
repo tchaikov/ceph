@@ -516,14 +516,8 @@ create_cross_cluster_parent() {
 
     log_info "Creating S3-backed parent in remote cluster: $pool/$parent_name ($size_mb MB)"
 
-    # Create parent image file
     local temp_file="/tmp/${s3_image_name}"
-    dd if=/dev/zero of="$temp_file" bs=1M count=$size_mb 2>/dev/null
-
-    # Write block markers
-    for i in $(seq 0 $((size_mb/4 - 1))); do
-        printf "PARENT-BLOCK-%04d" $i | dd of="$temp_file" bs=4M seek=$i conv=notrunc 2>/dev/null
-    done
+    create_test_image_with_pattern "$size_mb" "$temp_file"
 
     # Upload to S3
     if [ "$MANAGED_S3" = true ]; then

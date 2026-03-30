@@ -974,8 +974,6 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     ContextWQ *op_work_queue;
     ImageCtx::get_thread_pool_instance(cct, &thread_pool, &op_work_queue);
 
-    // For standalone clones, we pass nullptr for snap_name and CEPH_NOSNAP for snap_id
-    // This tells CloneRequest to create a standalone clone
     C_SaferCond cond;
     auto *req = image::CloneRequest<>::create(
       config, p_ioctx, parent_id, "", CEPH_NOSNAP, c_ioctx, c_name,
@@ -1032,7 +1030,6 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
       return -EINVAL;
     }
 
-    // Parse remote cluster configuration
     std::vector<std::string> remote_mon_hosts;
     std::string remote_cluster_name;
     int r = util::parse_mon_hosts_from_config(remote_cluster_conf, remote_mon_hosts, remote_cluster_name);
@@ -1042,7 +1039,6 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
       return r;
     }
 
-    // Read and encode keyring
     std::string encoded_keyring;
     if (!remote_keyring.empty()) {
       r = util::read_and_encode_keyring(remote_keyring, remote_client_name, encoded_keyring);
@@ -1138,8 +1134,6 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     ContextWQ *op_work_queue;
     ImageCtx::get_thread_pool_instance(cct, &thread_pool, &op_work_queue);
 
-    // For remote standalone clones, we pass empty snap_name and CEPH_NOSNAP for snap_id
-    // Along with RemoteParentSpec to tell CloneRequest this is a remote standalone clone
     C_SaferCond cond;
     auto *req = image::CloneRequest<>::create(
       config, p_ioctx, parent_id, "", CEPH_NOSNAP, c_ioctx, c_name,

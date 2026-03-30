@@ -30,7 +30,6 @@ start_minio() {
 
     log_info "Starting MinIO on port $port..."
 
-    # Create data directory
     mkdir -p "$data_dir"
 
     # Start MinIO — credentials must be env vars on the server process, not just exported
@@ -86,13 +85,8 @@ setup_s3_bucket() {
 
     log_info "Setting up S3 bucket: $bucket"
 
-    # Configure mc alias
     "$MINIO_BIN/mc" alias set local "http://127.0.0.1:$port" minioadmin minioadmin 2>&1 | grep -v "^mc:" || true
-
-    # Create bucket
     "$MINIO_BIN/mc" mb "local/$bucket" 2>&1 | grep -v "^mc:" || log_info "Bucket already exists"
-
-    # Set anonymous download policy
     "$MINIO_BIN/mc" anonymous set download "local/$bucket" 2>&1 | grep -v "^mc:"
 
     log_success "S3 bucket ready: $bucket"
@@ -404,8 +398,8 @@ wait_for_backfill_complete() {
     local timeout=${5:-60}
 
     log_info "Waiting up to ${timeout}s for $expected objects with prefix $prefix..."
+    local count=0
     for i in $(seq 1 $timeout); do
-        local count
         count=$(count_rados_objects "$conf" "$pool" "$prefix")
         if [ "$count" -ge "$expected" ]; then
             log_success "Backfill complete: $count/$expected objects present (${i}s)"
@@ -413,7 +407,7 @@ wait_for_backfill_complete() {
         fi
         sleep 1
     done
-    log_fail "Backfill timeout: only $(count_rados_objects "$conf" "$pool" "$prefix")/$expected objects after ${timeout}s"
+    log_fail "Backfill timeout: only $count/$expected objects after ${timeout}s"
     return 1
 }
 

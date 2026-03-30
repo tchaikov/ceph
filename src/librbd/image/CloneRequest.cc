@@ -55,7 +55,6 @@ CloneRequest<I>::CloneRequest(ConfigProxy& config,
 
   m_cct = reinterpret_cast<CephContext *>(m_ioctx.cct());
 
-  // Detect standalone clone: no snapshot name and CEPH_NOSNAP
   if (m_parent_snap_name.empty() && m_parent_snap_id == CEPH_NOSNAP) {
     m_is_standalone_clone = true;
   }
@@ -103,7 +102,6 @@ CloneRequest<I>::CloneRequest(ConfigProxy& config,
 
   m_cct = reinterpret_cast<CephContext *>(m_ioctx.cct());
 
-  // Detect standalone clone: no snapshot name and CEPH_NOSNAP
   if (m_parent_snap_name.empty() && m_parent_snap_id == CEPH_NOSNAP) {
     m_is_standalone_clone = true;
   }
@@ -182,7 +180,6 @@ void CloneRequest<I>::validate_options() {
     return;
   }
 
-  // For cross-cluster clones, connect to remote cluster first
   if (!m_remote_parent_spec.empty()) {
     connect_remote_parent();
   } else {
@@ -223,12 +220,10 @@ void CloneRequest<I>::open_parent() {
   ceph_assert(m_is_standalone_clone ||
               (m_parent_snap_name.empty() ^ (m_parent_snap_id == CEPH_NOSNAP)));
 
-  // Use remote IoCtx if we connected to a remote cluster, otherwise use local IoCtx
   librados::IoCtx& parent_io_ctx = m_remote_parent_io_ctx ?
                                    *m_remote_parent_io_ctx : m_parent_io_ctx;
 
   if (m_is_standalone_clone) {
-    // Open parent at HEAD (no snapshot)
     m_parent_image_ctx = I::create("", m_parent_image_id, nullptr,
                                    parent_io_ctx, false);
   } else if (m_parent_snap_id != CEPH_NOSNAP) {
@@ -475,13 +470,11 @@ void CloneRequest<I>::attach_parent() {
 
   AttachParentRequest<I>* req;
   if (!m_remote_parent_spec.empty()) {
-    // Create remote standalone parent attachment
     ldout(m_cct, 10) << "attaching remote parent from cluster: "
                      << m_remote_parent_spec.cluster_name << dendl;
     req = AttachParentRequest<I>::create(
       *m_imctx, m_pspec, m_size, false, m_remote_parent_spec, ctx);
   } else {
-    // Create local parent attachment (snapshot or local standalone)
     req = AttachParentRequest<I>::create(
       *m_imctx, m_pspec, m_size, false, ctx);
   }
@@ -572,7 +565,6 @@ void CloneRequest<I>::handle_metadata_list(int r) {
     // should not be copied to child clones which read data through normal RBD CoW.
     for (const auto& kv : metadata) {
       const std::string& key = kv.first;
-      // Skip any metadata keys starting with "s3."
       if (boost::starts_with(key, librbd::S3_META_NS)) {
         ldout(m_cct, 10) << "skipping S3 metadata key: " << key << dendl;
         continue;

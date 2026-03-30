@@ -191,7 +191,7 @@ run_s3_cross_cluster() {
     # Start MinIO on the host
     mkdir -p "$minio_data"
     MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
-        "$HOME/dev/minio/bin/minio" server "$minio_data" \
+        "$MINIO_BIN/minio" server "$minio_data" \
         --address "0.0.0.0:${minio_port}" \
         --console-address "0.0.0.0:$((minio_port + 1))" \
         > /tmp/minio-cross-cluster.log 2>&1 &
@@ -204,12 +204,12 @@ run_s3_cross_cluster() {
         return 1
     fi
 
-    "$HOME/dev/minio/bin/mc" alias set cross "$s3_endpoint" minioadmin minioadmin > /dev/null 2>&1
-    "$HOME/dev/minio/bin/mc" mb "cross/$s3_bucket" > /dev/null 2>&1 || true
+    "$MINIO_BIN/mc" alias set cross "$s3_endpoint" minioadmin minioadmin > /dev/null 2>&1
+    "$MINIO_BIN/mc" mb "cross/$s3_bucket" > /dev/null 2>&1 || true
 
     # Create and upload parent data (20 MB)
     dd if=/dev/urandom bs=1M count=20 status=none | \
-        "$HOME/dev/minio/bin/mc" pipe "cross/$s3_bucket/cross-parent-raw" > /dev/null 2>&1
+        "$MINIO_BIN/mc" pipe "cross/$s3_bucket/cross-parent-raw" > /dev/null 2>&1
     log_success "Uploaded 20MB parent image to S3"
 
     # Determine host IP as seen from containers (bridge network gateway)
@@ -311,7 +311,7 @@ run_s3_cross_cluster_concurrent() {
     # Start a dedicated MinIO instance
     mkdir -p "$minio_data"
     MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
-        "$HOME/dev/minio/bin/minio" server "$minio_data" \
+        "$MINIO_BIN/minio" server "$minio_data" \
         --address "0.0.0.0:${minio_port}" \
         --console-address "0.0.0.0:$((minio_port + 1))" \
         > /tmp/minio-xconcur.log 2>&1 &
@@ -324,12 +324,12 @@ run_s3_cross_cluster_concurrent() {
         return 1
     fi
 
-    "$HOME/dev/minio/bin/mc" alias set xconcur "$s3_endpoint" minioadmin minioadmin > /dev/null 2>&1
-    "$HOME/dev/minio/bin/mc" mb "xconcur/$s3_bucket" > /dev/null 2>&1 || true
+    "$MINIO_BIN/mc" alias set xconcur "$s3_endpoint" minioadmin minioadmin > /dev/null 2>&1
+    "$MINIO_BIN/mc" mb "xconcur/$s3_bucket" > /dev/null 2>&1 || true
 
     # Upload random parent data
     dd if=/dev/urandom bs=1M count=$parent_size_mb of="$parent_raw" status=none
-    "$HOME/dev/minio/bin/mc" cp "$parent_raw" "xconcur/$s3_bucket/xconcur-parent-raw" > /dev/null
+    "$MINIO_BIN/mc" cp "$parent_raw" "xconcur/$s3_bucket/xconcur-parent-raw" > /dev/null
     log_success "Uploaded ${parent_size_mb}MB parent image to S3"
 
     # Determine host IP as seen from containers
