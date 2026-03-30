@@ -339,7 +339,6 @@ void CopyupRequest<I>::update_object_maps() {
   bool copy_on_read = m_pending_requests.empty();
   uint8_t head_object_map_state = OBJECT_EXISTS;
 
-  // Check if this is a copyup from a standalone parent
   bool is_standalone_parent = false;
   {
     RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
@@ -683,7 +682,6 @@ bool CopyupRequest<I>::should_fetch_from_s3() {
   // deadlock if a writer is waiting (PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP).
   auto cct = m_image_ctx->cct;
 
-  // Check if S3 fetch is enabled (cached at image open; avoids per-I/O config reads)
   if (!m_image_ctx->s3_fetch_enabled) {
     ldout(cct, 20) << "S3 fetch disabled by config" << dendl;
     return false;
@@ -694,13 +692,11 @@ bool CopyupRequest<I>::should_fetch_from_s3() {
     return false;
   }
 
-  // Check if parent is a standalone clone (not snapshot-based)
   if (m_image_ctx->parent_md.parent_type != PARENT_TYPE_STANDALONE &&
       m_image_ctx->parent_md.parent_type != PARENT_TYPE_REMOTE_STANDALONE) {
     return false;
   }
 
-  // Check if parent has S3 configuration
   if (!m_image_ctx->parent->s3_config.is_valid()) {
     ldout(cct, 20) << "parent S3 config invalid or missing" << dendl;
     return false;
@@ -719,7 +715,6 @@ void CopyupRequest<I>::check_parent_object_exists(std::string parent_oid,
 
   ldout(cct, 15) << "checking existence of parent object: " << parent_oid << dendl;
 
-  // Use stat to check if object exists
   using klass = CopyupRequest<I>;
   librados::AioCompletion *rados_completion =
     util::create_rados_callback<klass, &klass::handle_check_parent_object_exists>(this);
@@ -828,7 +823,6 @@ void CopyupRequest<I>::fetch_from_s3_with_lock() {
                         m_lock_cookie, S3_FETCH_LOCK_TAG, "S3 fetch in progress",
                         lock_duration, 0);
 
-  // Send lock operation
   using klass = CopyupRequest<I>;
   librados::AioCompletion *rados_completion =
     util::create_rados_callback<klass, &klass::handle_lock_parent_object>(this);
@@ -907,7 +901,6 @@ void CopyupRequest<I>::handle_list_lock_holders(int r) {
     return;
   }
 
-  // Parse lock info response
   std::map<rados::cls::lock::locker_id_t,
            rados::cls::lock::locker_info_t> lockers;
   ClsLockType lock_type;
@@ -922,7 +915,6 @@ void CopyupRequest<I>::handle_list_lock_holders(int r) {
     return;
   }
 
-  // Check if any holder is a backfill daemon (cookie starts with "backfill-")
   for (auto &kv : lockers) {
     const auto &cookie = kv.first.cookie;
     if (boost::starts_with(cookie, BACKFILL_LOCK_COOKIE_PREFIX)) {
@@ -1062,7 +1054,6 @@ void CopyupRequest<I>::fetch_from_s3_async() {
   auto cct = m_image_ctx->cct;
   ldout(cct, 10) << "starting S3 fetch for object " << m_object_no << dendl;
 
-  // Get S3 configuration from parent
   RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
   if (m_image_ctx->parent == nullptr) {
     ldout(cct, 5) << "parent detached during S3 fetch" << dendl;
@@ -1098,7 +1089,6 @@ void CopyupRequest<I>::fetch_from_s3_async() {
   // detached (flatten) before the async pthread completes.
   m_s3_fetcher = m_image_ctx->parent->s3_fetcher;
 
-  // Build full S3 URL for the raw image
   std::string s3_url = s3_config.build_url();
 
   // Calculate byte range based on object number.

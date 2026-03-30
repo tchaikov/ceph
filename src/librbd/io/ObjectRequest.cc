@@ -256,8 +256,6 @@ void ObjectReadRequest<I>::handle_read_object(int r) {
   ldout(image_ctx->cct, 20) << "r=" << r << dendl;
 
   if (r == -ENOENT) {
-    // Check if this image is S3-backed before falling back to parent
-    // This handles the case where this image is a parent with S3 backend
     if (should_read_from_s3()) {
       read_from_s3();
       return;
@@ -461,7 +459,6 @@ void ObjectReadRequest<I>::read_from_s3() {
     m_s3_fetcher = image_ctx->s3_fetcher;
   }
 
-  // Fetch entire object from S3
   using klass = ObjectReadRequest<I>;
   Context *ctx = util::create_context_callback<klass, &klass::handle_read_from_s3>(this);
 
@@ -474,7 +471,6 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
   ldout(image_ctx->cct, 10) << "S3 fetch result: r=" << r
                              << " bytes=" << m_read_data->length() << dendl;
 
-  // Update S3 performance counters
   if (image_ctx->perfcounter) {
     if (r < 0) {
       image_ctx->perfcounter->inc(l_librbd_s3_fetch_errors);
@@ -529,8 +525,6 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
   // This populates the cache without blocking the read completion
   write_back_s3_data(full_object_data);
 
-  // Return read result immediately without waiting for write-back
-  // Write-back happens asynchronously in the background
   this->finish(0);
 }
 
@@ -543,13 +537,10 @@ void ObjectReadRequest<I>::write_back_s3_data(bufferlist& full_object_data) {
                  << " bytes (entire object) to parent cache object: "
                  << this->m_oid << " (fire-and-forget)" << dendl;
 
-  // Create write operation to write the entire object
-  // Since we fetched the entire object from S3, we can use write_full()
+  // write_full() replaces rather than offsets — correct since we fetched the whole object
   librados::ObjectWriteOperation write_op;
   write_op.write_full(full_object_data);
 
-  // Submit async write operation as fire-and-forget
-  // We don't wait for completion - the write happens in the background
   auto rados_completion = librados::Rados::aio_create_completion();
 
   int r = image_ctx->data_ctx.aio_operate(this->m_oid, rados_completion, &write_op);
@@ -572,7 +563,6 @@ void ObjectReadRequest<I>::update_object_map_for_s3_write_back() {
   I *image_ctx = this->m_ictx;
   auto cct = image_ctx->cct;
 
-  // Check if this image has object map feature enabled
   bool has_object_map = (image_ctx->features & RBD_FEATURE_OBJECT_MAP) != 0;
 
   if (!has_object_map) {
@@ -593,9 +583,7 @@ void ObjectReadRequest<I>::update_object_map_for_s3_write_back() {
       ldout(cct, 10) << "updated in-memory object map for object "
                      << this->m_object_no << " to OBJECT_EXISTS" << dendl;
 
-      Context *ctx = new FunctionContext([object_no = this->m_object_no](int r) {
-        // Errors are already logged by ObjectMap infrastructure
-      });
+      Context *ctx = new FunctionContext([](int r) {});
 
       ZTracer::Trace trace;
       bool sent = obj_map->template aio_update<Context>(
