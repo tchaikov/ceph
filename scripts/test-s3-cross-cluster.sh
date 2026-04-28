@@ -275,6 +275,39 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
     rbd_on cluster2 "flatten xchild_pool/xcluster-child"
     log_success "Flatten of cross-cluster S3-backed child completed"
 
+    # ────────────────────────────────────────────────────────────────────────
+    # Bug #3 regression check: after flattening a cross-cluster lazy clone
+    # on cluster2, the PARENT pool on cluster1 must contain RADOS objects.
+    # Before the fire_parent_s3_writeback type-check fix, fire_parent_s3_writeback
+    # early-returned for PARENT_TYPE_REMOTE_STANDALONE (line 1244 was checking
+    # only PARENT_TYPE_STANDALONE).  Net effect: data was fetched from S3 and
+    # written into the child pool, but never persisted back to the parent's
+    # cache pool — the user's "after flatten, base volume has no data" report.
+    # ────────────────────────────────────────────────────────────────────────
+    log_step "Verifying parent has cached objects after flatten (bug #3 regression)"
+    local parent_prefix parent_obj_count
+    parent_prefix=$(exec_on cluster1 \
+        "./bin/rbd --conf /tmp/cluster1/ceph.conf info xcluster_pool/xcluster-parent 2>/dev/null \
+         | awk '/block_name_prefix:/ {print \$2}'")
+    if [ -z "$parent_prefix" ]; then
+        log_error "Could not get parent block_name_prefix on cluster1"
+        return 1
+    fi
+    # Give async fire-and-forget write-backs a few seconds to land in RADOS.
+    sleep 3
+    parent_obj_count=$(exec_on cluster1 \
+        "./bin/rados --conf /tmp/cluster1/ceph.conf -p xcluster_pool ls 2>/dev/null \
+         | grep -c \"^${parent_prefix}\\.\"" || echo "0")
+    log_info "Parent has $parent_obj_count RADOS data object(s) (prefix: $parent_prefix)"
+    if [ "$parent_obj_count" -lt 1 ]; then
+        log_fail "Bug #3 regression: parent has 0 cached objects after cross-cluster flatten"
+        log_error "  Expected: >= 1 (S3 data was fetched and should be cached on parent's pool)"
+        log_error "  Got:      $parent_obj_count"
+        log_error "  This means fire_parent_s3_writeback early-returned for REMOTE_STANDALONE."
+        return 1
+    fi
+    log_success "Parent has $parent_obj_count cached object(s) — write-back to remote parent works"
+
     # Cleanup
     rbd_on  cluster2 "rm xchild_pool/xcluster-child" 2>/dev/null || true
     rbd_on  cluster1 "rm xcluster_pool/xcluster-parent" 2>/dev/null || true
@@ -286,6 +319,135 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
     rm -rf "$minio_data" /tmp/minio-cross-cluster.log
 
     log_success "=== S3-Backed Cross-Cluster Test PASSED ==="
+}
+
+# ── Test: cross-cluster `rbd children` lists remote child ─────────────────────
+# Bug #5: list_descendants used pool-name comparison alone to detect cross-
+# cluster children.  When both clusters happened to use the same pool name
+# (a common naming convention — e.g. both have "ebs_ceph_ssd"), the comparison
+# collapsed and the iterator returned -ENOENT trying to find the remote
+# child id in the parent's local pool.  Fix records cluster_name in
+# ChildImageSpec at attach time and short-circuits remote children at
+# list time using that authoritative signal.
+run_s3_cross_cluster_rbd_children() {
+    log_step "=== Test: rbd children on cross-cluster S3-backed parent (bug #5) ==="
+
+    local minio_port=19400
+    local minio_data="/tmp/minio-rbdchildren-$$"
+    local s3_bucket="rbdchildren-test"
+    local s3_endpoint="http://127.0.0.1:${minio_port}"
+    # Use the SAME pool name on both clusters so we hit the pool_name-collision
+    # case that the bug requires.
+    local shared_pool="ebs_ceph_ssd"
+    local child_pool="ebs_ceph_ssd"
+
+    # Start dedicated MinIO
+    mkdir -p "$minio_data"
+    MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
+        "$MINIO_BIN/minio" server "$minio_data" \
+        --address "0.0.0.0:${minio_port}" \
+        --console-address "0.0.0.0:$((minio_port + 1))" \
+        > /tmp/minio-rbdchildren.log 2>&1 &
+    local minio_pid=$!
+    sleep 3
+    if ! kill -0 $minio_pid 2>/dev/null; then
+        log_error "MinIO failed to start"; cat /tmp/minio-rbdchildren.log
+        return 1
+    fi
+
+    "$MINIO_BIN/mc" alias set rbdchildren "$s3_endpoint" minioadmin minioadmin > /dev/null 2>&1
+    "$MINIO_BIN/mc" mb "rbdchildren/$s3_bucket" > /dev/null 2>&1 || true
+    dd if=/dev/urandom bs=1M count=4 status=none | \
+        "$MINIO_BIN/mc" pipe "rbdchildren/$s3_bucket/rbdchildren-parent-raw" > /dev/null 2>&1
+    local HOST_IP
+    HOST_IP=$(docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || echo "172.17.0.1")
+    local container_s3="http://${HOST_IP}:${minio_port}"
+
+    # Create shared-name pools on both clusters
+    ceph_on cluster1 "osd pool create $shared_pool 32" 2>&1 || true
+    ceph_on cluster2 "osd pool create $shared_pool 32" 2>&1 || true
+    ceph_on cluster2 "osd pool create $child_pool 32"  2>&1 || true
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf pool init $shared_pool"
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init $shared_pool"
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init $child_pool"
+
+    # Parent on cluster1 with S3 config
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf create \
+        --size 4M --object-size 4M $shared_pool/rbdchildren-parent"
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf s3-config set \
+        $shared_pool/rbdchildren-parent \
+        --s3-endpoint   '${container_s3}' \
+        --s3-bucket     '${s3_bucket}' \
+        --s3-image-name 'rbdchildren-parent-raw' \
+        --s3-access-key minioadmin \
+        --s3-secret-key minioadmin"
+
+    # Bridge cluster1 access into cluster2's filesystem
+    local mon_addr key
+    mon_addr=$(docker exec ceph-cluster1 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; \
+         /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf mon dump --format json 2>/dev/null \
+         | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[\"mons\"][0][\"addr\"].split(\"/\")[0])'")
+    key=$(docker exec ceph-cluster1 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; \
+         /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf auth get-key client.admin")
+    docker exec -u cephdev ceph-cluster2 bash -c "mkdir -p /home/cephdev/.ceph
+cat > /home/cephdev/.ceph/xcluster1.conf << 'EOF'
+[global]
+mon_host = ${mon_addr}
+EOF
+cat > /home/cephdev/.ceph/xcluster1.keyring << 'EOF'
+[client.admin]
+key = ${key}
+EOF
+chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
+
+    # Create cross-cluster standalone clone on cluster2 → cluster1's parent.
+    # The CHILD lives in cluster2's pool with the SAME NAME as cluster1's
+    # parent pool — this triggers the pool-name-collision the bug needs.
+    docker exec -u cephdev ceph-cluster2 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+         ./bin/rbd --conf /tmp/cluster2/ceph.conf clone-standalone \
+             --remote-cluster-conf   /home/cephdev/.ceph/xcluster1.conf \
+             --remote-keyring        /home/cephdev/.ceph/xcluster1.keyring \
+             $shared_pool/rbdchildren-parent \
+             $child_pool/rbdchildren-child"
+    log_success "Cross-cluster clone created (parent and child both in pool '$shared_pool')"
+
+    # Run `rbd children` on cluster1 against the parent.  Pre-fix, this
+    # returned -ENOENT because the child id from cluster2 wasn't found in
+    # cluster1's same-named pool.  With the cluster_name fix, it should
+    # succeed and list the child as "(remote)".
+    log_step "Running rbd children on cluster1 (must succeed and show remote child)"
+    local children_output children_exit=0
+    children_output=$(exec_on cluster1 \
+        "./bin/rbd --conf /tmp/cluster1/ceph.conf children $shared_pool/rbdchildren-parent" 2>&1) \
+        || children_exit=$?
+
+    if [ "$children_exit" -ne 0 ]; then
+        log_fail "Bug #5 regression: rbd children FAILED with exit $children_exit"
+        echo "$children_output"
+        return 1
+    fi
+    log_info "rbd children output:"
+    echo "$children_output"
+
+    if ! echo "$children_output" | grep -qi "remote"; then
+        log_fail "Bug #5 regression: child not marked '(remote)' — ChildImageSpec.cluster_name not consulted"
+        return 1
+    fi
+    log_success "rbd children listed cross-cluster child as remote (cluster_name dispatch works)"
+
+    # Cleanup
+    rbd_on  cluster2 "rm $child_pool/rbdchildren-child"     2>/dev/null || true
+    rbd_on  cluster1 "rm $shared_pool/rbdchildren-parent"   2>/dev/null || true
+    ceph_on cluster1 "osd pool delete $shared_pool $shared_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete $shared_pool $shared_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+    kill $minio_pid 2>/dev/null || true
+    rm -rf "$minio_data" /tmp/minio-rbdchildren.log
+
+    log_success "=== rbd children Cross-Cluster Test PASSED ==="
 }
 
 # ── Test: S3 cross-cluster concurrent COW ────────────────────────────────────
@@ -511,6 +673,7 @@ start_ceph_cluster cluster2
 
 [ $RUN_PLAIN      -eq 1 ] && run_plain_cross_cluster
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster
+[ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_rbd_children
 [ $RUN_S3         -eq 1 ] && [ $RUN_CONCURRENT -eq 1 ] && run_s3_cross_cluster_concurrent
 
 echo
