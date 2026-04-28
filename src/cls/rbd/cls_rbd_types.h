@@ -232,7 +232,15 @@ struct ChildImageSpec {
   int64_t pool_id = -1;
   std::string pool_namespace;
   std::string image_id;
-  std::string pool_name;  // Pool name for cross-cluster children (pool IDs are cluster-specific)
+  std::string pool_name;     // pool name for cross-cluster children (pool IDs
+                             // are cluster-specific and cannot be opened from
+                             // the parent cluster's IoCtx)
+  std::string cluster_name;  // empty = same cluster as parent; non-empty =
+                             // child lives in a different cluster (the pool_id
+                             // is in *this* cluster, not the parent's).
+                             // list_descendants uses this to skip lookups in
+                             // the parent's local pool when the child is
+                             // remote.
 
   ChildImageSpec() {}
   ChildImageSpec(int64_t pool_id, const std::string& pool_namespace,
@@ -250,7 +258,8 @@ struct ChildImageSpec {
     return (pool_id == rhs.pool_id &&
             pool_namespace == rhs.pool_namespace &&
             image_id == rhs.image_id &&
-            pool_name == rhs.pool_name);
+            pool_name == rhs.pool_name &&
+            cluster_name == rhs.cluster_name);
   }
   inline bool operator<(const ChildImageSpec& rhs) const {
     if (pool_id != rhs.pool_id) {
@@ -262,9 +271,14 @@ struct ChildImageSpec {
     if (image_id != rhs.image_id) {
       return image_id < rhs.image_id;
     }
-    // pool_name distinguishes cross-cluster children that share the same
-    // pool_id+image_id (pool IDs are only unique within a single cluster).
-    return pool_name < rhs.pool_name;
+    if (pool_name != rhs.pool_name) {
+      return pool_name < rhs.pool_name;
+    }
+    // cluster_name is the final tiebreaker: two children with the same
+    // (pool_id, namespace, image_id, pool_name) but different clusters are
+    // distinct (cluster names disambiguate identical pool layouts across
+    // sibling clusters).
+    return cluster_name < rhs.cluster_name;
   }
 };
 WRITE_CLASS_ENCODER(ChildImageSpec);

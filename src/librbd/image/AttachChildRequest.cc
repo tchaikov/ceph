@@ -189,6 +189,16 @@ void AttachChildRequest<I>::v2_child_attach() {
     m_image_ctx->id};
   child_spec.pool_name = m_image_ctx->md_ctx.get_pool_name();
 
+  // Cross-cluster check: child's IoCtx and parent's IoCtx come from different
+  // librados Rados handles iff this is a cross-cluster clone.  Record the
+  // child's cluster_name only in that case so list_descendants can identify
+  // the entry as remote without depending on (potentially identical) pool
+  // names in the two clusters.
+  if (m_image_ctx->md_ctx.get_instance_id() !=
+      m_parent_image_ctx->md_ctx.get_instance_id()) {
+    child_spec.cluster_name = m_image_ctx->cct->_conf->cluster;
+  }
+
   librados::ObjectWriteOperation op;
   cls_client::child_attach(&op, m_parent_snap_id, child_spec);
 

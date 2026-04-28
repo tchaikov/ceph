@@ -439,10 +439,26 @@ int Image<I>::list_descendants(
     return r;
   }
 
+  // Track cross-cluster children by (pool_id, image_id) so the lookup loop
+  // below can short-circuit them without trying to find them in any local
+  // pool.  cluster_name is the authoritative signal — pool_name comparison
+  // alone is unreliable when both clusters use the same pool naming
+  // convention (e.g. both have a pool called "ebs_ceph_ssd").
+  std::set<std::pair<int64_t, std::string>> cross_cluster_ids;
+  const std::string& local_cluster = cct->_conf->cluster;
+
   for (auto& child_image : child_images) {
     images->push_back({
       child_image.pool_id, child_image.pool_name, child_image.pool_namespace,
       child_image.image_id, "", false});
+
+    if (!child_image.cluster_name.empty() &&
+        child_image.cluster_name != local_cluster) {
+      // Remote child — cannot be opened from this cluster's IoCtx.
+      cross_cluster_ids.insert({child_image.pool_id, child_image.image_id});
+      continue;
+    }
+
     if (!child_max_level || *child_max_level > 0) {
       IoCtx ioctx;
       r = util::create_ioctx(ictx->md_ctx, "child image", child_image.pool_id,
@@ -467,6 +483,15 @@ int Image<I>::list_descendants(
   librados::IoCtx child_io_ctx;
   std::map<std::string, std::pair<std::string, bool>> child_image_id_to_info;
   for (auto& image : *images) {
+    if (cross_cluster_ids.count({image.pool_id, image.image_id})) {
+      // Recorded as cross-cluster at attach time; mark and skip the local
+      // pool lookup entirely.
+      ldout(cct, 10) << "cross-cluster child: pool_name=" << image.pool_name
+                     << ", image_id=" << image.image_id << dendl;
+      image.image_name = image.image_id + " (remote)";
+      image.trash = false;
+      continue;
+    }
     if (child_pool_id == -1 || child_pool_id != image.pool_id ||
         child_io_ctx.get_namespace() != image.pool_namespace) {
       r = util::create_ioctx(ictx->md_ctx, "child image", image.pool_id,
