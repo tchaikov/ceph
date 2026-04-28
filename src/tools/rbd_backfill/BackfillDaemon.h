@@ -69,12 +69,10 @@ private:
   // the lock and timer callbacks themselves run with the lock held
   // (safe_callbacks=true).
   void schedule_rescan();
-  // Public entry; acquires no lock.  Used by tests / external callers that
-  // want to force an immediate rescan independent of the timer.
+  // Do one pass of the rescan work without re-arming the timer.
+  // Must NOT be called with m_threads->timer_lock held — RADOS scan can
+  // take seconds.
   void rescan_tick();
-  // Internal: do one pass of the rescan work without re-arming the timer.
-  // Caller must NOT hold m_threads->timer_lock — RADOS scan can take seconds.
-  void do_rescan_tick();
 
   void handle_image_complete(const ImageSpec& spec, int r);
 

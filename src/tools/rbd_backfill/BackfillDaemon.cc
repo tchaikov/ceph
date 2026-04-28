@@ -483,20 +483,26 @@ void BackfillDaemon::schedule_rescan() {
     // Drop the lock around the heavy scan work (which may take seconds), then
     // re-acquire it just for the re-arm.  Without dropping, we'd hold up any
     // other timer events (and shutdown's cancel_event) for the whole scan.
+    //
+    // m_shutdown is monotonic (set once via exchange(true)), so a single
+    // load before the work is sufficient — the re-arm guard below picks up
+    // a flip during the scan because we re-load there too.
     m_rescan_event = nullptr;
     m_threads->timer_lock.Unlock();
-    bool stopping = false;
+    // try/catch is defensive: discover_scheduled_images / start_image_backfillers
+    // are int-returning today, but anything they call deeper (RADOS, librbd
+    // open) could throw bad_alloc.  Re-acquire timer_lock on rethrow so the
+    // timer thread doesn't deadlock its own caller.
     try {
-      stopping = m_shutdown.load();
-      if (!stopping) {
-        do_rescan_tick();
+      if (!m_shutdown.load()) {
+        rescan_tick();
       }
     } catch (...) {
       m_threads->timer_lock.Lock();
       throw;
     }
     m_threads->timer_lock.Lock();
-    if (!stopping && !m_shutdown.load()) {
+    if (!m_shutdown.load()) {
       schedule_rescan();
     }
   });
@@ -504,16 +510,9 @@ void BackfillDaemon::schedule_rescan() {
   dout(20) << "rescan timer armed for +" << m_rescan_interval << "s" << dendl;
 }
 
+// Must be called WITHOUT timer_lock held — pool_list2 / discover do RADOS
+// ops that can take seconds.
 void BackfillDaemon::rescan_tick() {
-  // Public entry point used by tests and external callers.  Acquires
-  // timer_lock as needed.  The actual work is in do_rescan_tick.
-  do_rescan_tick();
-}
-
-void BackfillDaemon::do_rescan_tick() {
-  // Must be called WITHOUT timer_lock held — pool_list2 / discover do RADOS
-  // ops that can take seconds.
-
   std::vector<ImageSpec> new_specs;
   int r = discover_scheduled_images(&new_specs);
   if (r < 0) {
