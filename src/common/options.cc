@@ -7488,6 +7488,12 @@ static std::vector<Option> get_rbd_options() {
     .set_default(2000)
     .set_description("maximum time in milliseconds to wait for S3 fetch cancellation"),
 
+    Option("rbd_backfill_rescan_interval", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(30)
+    .set_description("seconds between BackfillDaemon rescans of scheduled images "
+                     "(0 disables periodic rescan and reverts to one-shot mode: "
+                     "the daemon exits once all images at startup are backfilled)"),
+
     Option("rbd_journal_order", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_min_max(12, 26)
     .set_default(24)

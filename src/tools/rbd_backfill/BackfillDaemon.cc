@@ -74,31 +74,52 @@ int BackfillDaemon::init() {
     return r;
   }
 
-  r = discover_scheduled_images();
-  if (r < 0) {
-    derr << "failed to discover scheduled images: " << cpp_strerror(r) << dendl;
-    return r;
-  }
-
   m_threads = std::make_unique<Threads>(m_cct);
   m_throttler = std::make_unique<BackfillThrottler>(m_cct, m_threads->work_queue.get());
 
-  dout(5) << "daemon initialized successfully" << dendl;
+  m_rescan_interval = m_cct->_conf.get_val<uint64_t>("rbd_backfill_rescan_interval");
+
+  dout(5) << "daemon initialized successfully (rescan_interval="
+          << m_rescan_interval << "s, "
+          << (m_rescan_interval == 0 ? "one-shot mode" : "continuous mode")
+          << ")" << dendl;
   return 0;
 }
 
 void BackfillDaemon::run() {
   dout(10) << dendl;
 
-  int r = start_image_backfillers();
+  // Initial discovery — pick up images already scheduled at daemon startup.
+  std::vector<ImageSpec> initial_specs;
+  int r = discover_scheduled_images(&initial_specs);
+  if (r < 0) {
+    derr << "failed to discover scheduled images: " << cpp_strerror(r) << dendl;
+    return;
+  }
+
+  r = start_image_backfillers(initial_specs);
   if (r < 0) {
     derr << "failed to start image backfillers: " << cpp_strerror(r) << dendl;
     return;
   }
 
-  dout(5) << "started " << m_image_backfillers.size() << " image backfillers" << dendl;
+  {
+    Mutex::Locker locker(m_lock);
+    dout(5) << "started " << m_image_backfillers.size() << " image backfiller(s)" << dendl;
+  }
 
-  // Main loop - wait for shutdown signal
+  // If rescan is enabled, schedule the first periodic tick.  This keeps the
+  // daemon alive past the initial set: subsequent `rbd backfill schedule`
+  // invocations are picked up within rescan_interval seconds.
+  if (m_rescan_interval > 0) {
+    Mutex::Locker timer_locker(m_threads->timer_lock);
+    schedule_rescan();
+  }
+
+  // Main loop — wait for either:
+  //   - explicit shutdown via signal handler / shutdown(), OR
+  //   - one-shot completion (m_stopping set in handle_image_complete when
+  //     rescan is disabled and all backfillers finish).
   {
     Mutex::Locker locker(m_lock);
     while (!m_stopping) {
@@ -113,9 +134,17 @@ void BackfillDaemon::run() {
 void BackfillDaemon::shutdown() {
   dout(10) << dendl;
 
-  // Guard against double-shutdown (signal handler + main() both call shutdown)
+  // Guard against double-shutdown (signal handler + main() both call shutdown).
+  // The second caller MUST wait for the first to finish, not return immediately,
+  // because ~BackfillDaemon asserts m_threads/m_throttler are reset and the
+  // first caller may still be reset()ing them.
   if (m_shutdown.exchange(true)) {
-    dout(10) << "already shut down, ignoring" << dendl;
+    Mutex::Locker locker(m_lock);
+    while (!m_shutdown_done) {
+      dout(10) << "another thread is shutting down; waiting for completion" << dendl;
+      m_shutdown_cond.Wait(m_lock);
+    }
+    dout(10) << "shutdown already completed by another thread" << dendl;
     return;
   }
 
@@ -123,6 +152,17 @@ void BackfillDaemon::shutdown() {
     Mutex::Locker locker(m_lock);
     m_stopping = true;
     m_cond.Signal();
+  }
+
+  // Cancel any pending rescan timer event so it does not run during teardown
+  // (the timer thread holds timer_lock; do not also hold m_lock here to avoid
+  // a lock-order inversion with rescan_tick).
+  if (m_threads) {
+    Mutex::Locker timer_locker(m_threads->timer_lock);
+    if (m_rescan_event) {
+      m_threads->timer->cancel_event(m_rescan_event);
+      m_rescan_event = nullptr;
+    }
   }
 
   // Move all backfillers out before stopping.  Two requirements pull in
@@ -164,6 +204,15 @@ void BackfillDaemon::shutdown() {
   m_threads.reset();
   m_rados.shutdown();
 
+  // Signal any concurrent caller (the other of signal-handler vs main) that
+  // shutdown is fully complete and m_threads/m_throttler are reset, so it is
+  // now safe to let ~BackfillDaemon run.
+  {
+    Mutex::Locker locker(m_lock);
+    m_shutdown_done = true;
+    m_shutdown_cond.SignalAll();
+  }
+
   dout(5) << "daemon shutdown complete" << dendl;
 }
 
@@ -186,8 +235,22 @@ int BackfillDaemon::connect_to_cluster() {
   return 0;
 }
 
-int BackfillDaemon::discover_scheduled_images() {
+int BackfillDaemon::discover_scheduled_images(std::vector<ImageSpec>* new_specs) {
   dout(10) << dendl;
+
+  ceph_assert(new_specs != nullptr);
+
+  // Snapshot the in-progress set so we can skip images we already claimed in
+  // a prior pass.  Without this, a still-running backfill on image X would
+  // end up appended again on the next rescan tick.  Copying under m_lock and
+  // then iterating without it keeps the per-tick scan fast.
+  std::set<ImageSpec> already_running;
+  {
+    Mutex::Locker locker(m_lock);
+    for (auto& kv : m_image_backfillers) {
+      already_running.insert(kv.first);
+    }
+  }
 
   // List all pools
   std::list<std::pair<int64_t, std::string>> pools;
@@ -197,7 +260,8 @@ int BackfillDaemon::discover_scheduled_images() {
     return r;
   }
 
-  dout(10) << "scanning " << pools.size() << " pools for scheduled images" << dendl;
+  dout(10) << "scanning " << pools.size() << " pools for scheduled images "
+           << "(skipping " << already_running.size() << " already running)" << dendl;
 
   // Iterate through each pool to find scheduled images
   for (const auto& pool : pools) {
@@ -321,7 +385,13 @@ int BackfillDaemon::discover_scheduled_images() {
         spec.image_name = p.image_spec->name;
         spec.image_id = p.image_spec->id;
 
-        m_image_specs.push_back(spec);
+        if (already_running.count(spec)) {
+          // Picked up in a prior tick; image transitioned to in_progress in
+          // its own metadata but we already have a backfiller running.  Skip.
+          continue;
+        }
+
+        new_specs->push_back(spec);
 
         dout(10) << "claimed and discovered scheduled image: " << pool_name
                  << (ns.empty() ? "" : "/" + ns)
@@ -332,19 +402,19 @@ int BackfillDaemon::discover_scheduled_images() {
     }
   }
 
-  if (m_image_specs.empty()) {
-    dout(0) << "no images scheduled for backfill found (use 'rbd backfill schedule' to schedule images)" << dendl;
+  if (new_specs->empty()) {
+    dout(10) << "no newly scheduled images found this pass" << dendl;
   } else {
-    dout(5) << "discovered " << m_image_specs.size() << " scheduled images" << dendl;
+    dout(5) << "discovered " << new_specs->size() << " new scheduled image(s)" << dendl;
   }
 
   return 0;
 }
 
-int BackfillDaemon::start_image_backfillers() {
-  dout(10) << dendl;
+int BackfillDaemon::start_image_backfillers(const std::vector<ImageSpec>& specs) {
+  dout(10) << "starting " << specs.size() << " backfiller(s)" << dendl;
 
-  for (const auto& spec : m_image_specs) {
+  for (const auto& spec : specs) {
     dout(10) << "starting backfiller for " << spec.pool_name
              << "/" << spec.image_name << dendl;
 
@@ -370,13 +440,84 @@ int BackfillDaemon::start_image_backfillers() {
     }
 
     backfiller->create("img_backfill");
-    m_image_backfillers[spec] = std::move(backfiller);
+    {
+      Mutex::Locker locker(m_lock);
+      m_image_backfillers[spec] = std::move(backfiller);
+    }
 
     dout(5) << "started backfiller for " << spec.pool_name
             << "/" << spec.image_name << dendl;
   }
 
   return 0;
+}
+
+// Caller must hold m_threads->timer_lock.  Splitting the locking responsibility
+// from this function avoids a deadlock: SafeTimer is constructed with
+// safe_callbacks=true, so the timer thread holds timer_lock while running our
+// FunctionContext.  Re-acquiring timer_lock inside that callback would deadlock.
+void BackfillDaemon::schedule_rescan() {
+  if (m_rescan_interval == 0 || m_shutdown.load()) {
+    return;
+  }
+  if (m_rescan_event != nullptr) {
+    // Already armed.  Don't double-arm.
+    return;
+  }
+  m_rescan_event = new FunctionContext([this](int r) {
+    // Runs on the timer thread with timer_lock HELD (safe_callbacks=true).
+    // Drop the lock around the heavy scan work (which may take seconds), then
+    // re-acquire it just for the re-arm.  Without dropping, we'd hold up any
+    // other timer events (and shutdown's cancel_event) for the whole scan.
+    m_rescan_event = nullptr;
+    m_threads->timer_lock.Unlock();
+    bool stopping = false;
+    try {
+      stopping = m_shutdown.load();
+      if (!stopping) {
+        do_rescan_tick();
+      }
+    } catch (...) {
+      m_threads->timer_lock.Lock();
+      throw;
+    }
+    m_threads->timer_lock.Lock();
+    if (!stopping && !m_shutdown.load()) {
+      schedule_rescan();
+    }
+  });
+  m_threads->timer->add_event_after(m_rescan_interval, m_rescan_event);
+  dout(20) << "rescan timer armed for +" << m_rescan_interval << "s" << dendl;
+}
+
+void BackfillDaemon::rescan_tick() {
+  // Public entry point used by tests and external callers.  Acquires
+  // timer_lock as needed.  The actual work is in do_rescan_tick.
+  do_rescan_tick();
+}
+
+void BackfillDaemon::do_rescan_tick() {
+  // Must be called WITHOUT timer_lock held — pool_list2 / discover do RADOS
+  // ops that can take seconds.
+
+  std::vector<ImageSpec> new_specs;
+  int r = discover_scheduled_images(&new_specs);
+  if (r < 0) {
+    derr << "rescan: discover failed: " << cpp_strerror(r)
+         << "; will retry on next tick" << dendl;
+    return;
+  }
+  if (new_specs.empty()) {
+    return;
+  }
+  r = start_image_backfillers(new_specs);
+  if (r < 0) {
+    derr << "rescan: failed to start " << new_specs.size()
+         << " new backfiller(s): " << cpp_strerror(r) << dendl;
+    return;
+  }
+  dout(5) << "rescan: started " << new_specs.size()
+          << " newly scheduled backfiller(s)" << dendl;
 }
 
 void BackfillDaemon::handle_image_complete(const ImageSpec& spec, int r) {
@@ -394,12 +535,14 @@ void BackfillDaemon::handle_image_complete(const ImageSpec& spec, int r) {
   dout(5) << "image backfill complete: " << spec.pool_name
           << "/" << spec.image_name << " r=" << r << dendl;
 
-  // Smart pointer will automatically clean up when erased
   m_image_backfillers.erase(it);
 
-  // If all backfillers are done, we can shut down
-  if (m_image_backfillers.empty()) {
-    dout(5) << "all image backfillers complete, initiating shutdown" << dendl;
+  // Auto-shutdown only in legacy one-shot mode.  When rescan is enabled, the
+  // daemon stays alive between scheduling cycles — exiting on empty-map would
+  // race with `rbd backfill schedule` invocations and force operators to
+  // restart the daemon for every new image.
+  if (m_rescan_interval == 0 && m_image_backfillers.empty()) {
+    dout(5) << "all image backfillers complete (rescan disabled), initiating shutdown" << dendl;
     m_stopping = true;
     m_cond.Signal();
   }

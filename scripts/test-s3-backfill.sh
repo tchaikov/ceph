@@ -784,6 +784,92 @@ test_parent_du_after_child_writeback() {
 }
 
 # ============================================================================
+test_backfill_rescan_picks_up_new_image() {
+    # Verifies that BackfillDaemon's periodic rescan picks up images scheduled
+    # AFTER daemon startup.  Before this fix, the daemon was a one-shot scanner:
+    # `rbd backfill schedule` invocations after init were ignored until the
+    # daemon was restarted.  With rbd_backfill_rescan_interval > 0, scheduled
+    # images are claimed within one rescan tick.
+
+    local size_mb=8        # 2 objects per image — quick to backfill
+    local img1="$POOL/rescan-img1"
+    local img2="$POOL/rescan-img2"
+    local raw1="/tmp/backfill-test-rescan1-$$.raw"
+    local raw2="/tmp/backfill-test-rescan2-$$.raw"
+    local interval=5       # short interval so the test finishes quickly
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img1" 2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img2" 2>/dev/null || true
+
+    create_test_image_with_pattern $size_mb "$raw1"
+    create_test_image_with_pattern $size_mb "$raw2"
+    "$MINIO_BIN/mc" cp "$raw1" "local/$S3_BUCKET/rescan-img1.raw" 2>&1 | grep -v "^mc:" || true
+    "$MINIO_BIN/mc" cp "$raw2" "local/$S3_BUCKET/rescan-img2.raw" 2>&1 | grep -v "^mc:" || true
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img1" --size ${size_mb}M
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img1" \
+        --s3-endpoint "$S3_ENDPOINT" --s3-bucket "$S3_BUCKET" \
+        --s3-image-name "rescan-img1.raw" \
+        --s3-access-key minioadmin --s3-secret-key minioadmin
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img2" --size ${size_mb}M
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img2" \
+        --s3-endpoint "$S3_ENDPOINT" --s3-bucket "$S3_BUCKET" \
+        --s3-image-name "rescan-img2.raw" \
+        --s3-access-key minioadmin --s3-secret-key minioadmin
+
+    # Schedule img1 BEFORE daemon starts.  img2 will be scheduled afterward
+    # to exercise the rescan path.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$img1"
+
+    # Start daemon with a short rescan interval via --rbd-backfill-rescan-interval.
+    log_info "Starting daemon with rescan_interval=${interval}s"
+    "$BUILD_DIR/bin/rbd-backfill" --conf "$CEPH_CONF" --foreground \
+        --rbd-backfill-rescan-interval "$interval" \
+        > "$BACKFILL_LOG" 2>&1 &
+    BACKFILL_PID=$!
+    sleep 2
+    if ! kill -0 "$BACKFILL_PID" 2>/dev/null; then
+        log_fail "rbd-backfill failed to start with --rbd-backfill-rescan-interval"
+        cat "$BACKFILL_LOG"
+        return 1
+    fi
+
+    local prefix1
+    prefix1=$(get_block_prefix "$CEPH_CONF" "$POOL" "rescan-img1")
+    local expected_objs=$(( (size_mb + 3) / 4 ))
+
+    if ! wait_for_backfill_complete "$CEPH_CONF" "$POOL" "$prefix1" "$expected_objs" 30; then
+        log_fail "img1 (scheduled before daemon start) was not backfilled"
+        stop_backfill_daemon
+        return 1
+    fi
+    log_success "img1 backfilled (initial discovery)"
+
+    # Now schedule img2 AFTER daemon is running.  Without rescan, this would
+    # never be picked up.  With rescan, the daemon should claim it within
+    # the next tick (≤ ${interval}s) and complete shortly after.
+    log_info "Scheduling img2 while daemon is running (testing rescan)"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$img2"
+
+    local prefix2
+    prefix2=$(get_block_prefix "$CEPH_CONF" "$POOL" "rescan-img2")
+
+    if ! wait_for_backfill_complete "$CEPH_CONF" "$POOL" "$prefix2" "$expected_objs" $((interval * 4)); then
+        log_fail "img2 (scheduled after daemon start) was NOT picked up — rescan broken"
+        tail -40 "$BACKFILL_LOG"
+        stop_backfill_daemon
+        return 1
+    fi
+    log_success "img2 backfilled via periodic rescan"
+
+    stop_backfill_daemon
+    rm -f "$raw1" "$raw2"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img1" 2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img2" 2>/dev/null || true
+}
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -798,5 +884,6 @@ run_test "backfill_status_transitions" test_backfill_status_transitions
 run_test "backfill_status_on_failure"  test_backfill_status_on_failure
 run_test "parent_du_after_backfill"         test_parent_du_after_backfill
 run_test "parent_du_after_child_writeback"  test_parent_du_after_child_writeback
+run_test "backfill_rescan_picks_up_new_image" test_backfill_rescan_picks_up_new_image
 
 print_test_summary
