@@ -195,6 +195,20 @@ void BackfillDaemon::shutdown() {
     backfiller->stop();
   }
 
+  // Destroy the ImageBackfillers BEFORE m_threads.reset() / m_rados.shutdown().
+  // ~ImageBackfiller calls m_image_ctx->state->close(), which in turn fires
+  // ManagedLock::complete_shutdown asynchronously onto librbd's ThreadPool
+  // (the tp_librbd worker).  That callback ends up in Watcher::unregister_watch
+  // → Mutex::lock on a Watcher mutex that lives inside the ImageCtx.  If we
+  // let `to_stop` go out of scope at function-end (i.e. AFTER m_rados.shutdown
+  // disconnects the IoCtx the image_ctx was opened against), the in-flight
+  // callback runs against a half-destroyed image and Mutex::lock fails its
+  // ceph_assert(r == 0) — the daemon then hangs forever in abort()'s event
+  // dump because m_rados is already torn down.  Closing here (synchronously,
+  // since ImageState::close blocks until its SaferCond fires) drains all
+  // librbd async cleanup before we yank the rados connection out from under it.
+  to_stop.clear();
+
   if (m_throttler) {
     dout(10) << "waiting for throttler operations to complete" << dendl;
     m_throttler->wait_for_ops();

@@ -383,6 +383,19 @@ stop_backfill_daemon() {
     if [ -n "$BACKFILL_PID" ] && kill -0 $BACKFILL_PID 2>/dev/null; then
         log_info "Stopping rbd-backfill (PID: $BACKFILL_PID)..."
         kill $BACKFILL_PID 2>/dev/null || true
+        # Wait up to 10s for graceful exit; fall back to SIGKILL.  Without this
+        # cap a daemon-side teardown bug could hang the test harness for >20
+        # minutes (see #35: librbd ManagedLock complete_shutdown vs rados
+        # shutdown ordering race surfaced as a Mutex::lock assertion).
+        local deadline=$(( $(date +%s) + 10 ))
+        while kill -0 "$BACKFILL_PID" 2>/dev/null; do
+            if [ $(date +%s) -ge $deadline ]; then
+                log_warn "rbd-backfill did not exit within 10s of SIGTERM; sending SIGKILL"
+                kill -9 "$BACKFILL_PID" 2>/dev/null || true
+                break
+            fi
+            sleep 0.5
+        done
         wait $BACKFILL_PID 2>/dev/null || true
     fi
     BACKFILL_PID=""
