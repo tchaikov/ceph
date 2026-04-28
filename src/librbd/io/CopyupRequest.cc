@@ -342,7 +342,8 @@ void CopyupRequest<I>::update_object_maps() {
   bool is_standalone_parent = false;
   {
     RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
-    if (m_image_ctx->parent_md.parent_type == PARENT_TYPE_STANDALONE) {
+    if (m_image_ctx->parent_md.parent_type == PARENT_TYPE_STANDALONE ||
+        m_image_ctx->parent_md.parent_type == PARENT_TYPE_REMOTE_STANDALONE) {
       is_standalone_parent = true;
       // Keep head_object_map_state = OBJECT_EXISTS (not OBJECT_EXISTS_CLEAN):
       // the FAST_DIFF path below would otherwise mark this as OBJECT_EXISTS_CLEAN,
@@ -1240,7 +1241,8 @@ void CopyupRequest<I>::fire_parent_s3_writeback() {
     RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
 
     if (m_image_ctx->parent == nullptr ||
-        m_image_ctx->parent_md.parent_type != PARENT_TYPE_STANDALONE ||
+        (m_image_ctx->parent_md.parent_type != PARENT_TYPE_STANDALONE &&
+         m_image_ctx->parent_md.parent_type != PARENT_TYPE_REMOTE_STANDALONE) ||
         !m_data_is_from_s3 ||
         m_copyup_data.length() == 0) {
       return;
