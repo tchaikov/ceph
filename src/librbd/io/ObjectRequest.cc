@@ -503,8 +503,9 @@ void ObjectReadRequest<I>::handle_list_lock_holders_for_read(int r) {
   ldout(cct, 15) << "r=" << r << dendl;
 
   if (r < 0) {
-    ldout(cct, 5) << "failed to list lock holders, falling back to own fetch: "
-                  << cpp_strerror(r) << dendl;
+    // Match CopyupRequest::handle_list_lock_holders: same event, same level.
+    ldout(cct, 10) << "failed to list lock holders, falling back to own fetch: "
+                   << cpp_strerror(r) << dendl;
     ceph_assert(!m_s3_lock_acquired);
     m_skip_writeback = true;
     read_from_s3();
@@ -519,8 +520,8 @@ void ObjectReadRequest<I>::handle_list_lock_holders_for_read(int r) {
   auto it = m_lock_info_bl.cbegin();
   r = rados::cls::lock::get_lock_info_finish(&it, &lockers, &lock_type, &tag);
   if (r < 0) {
-    ldout(cct, 5) << "failed to parse lock info, falling back to own fetch: "
-                  << cpp_strerror(r) << dendl;
+    ldout(cct, 10) << "failed to parse lock info, falling back to own fetch: "
+                   << cpp_strerror(r) << dendl;
     ceph_assert(!m_s3_lock_acquired);
     m_skip_writeback = true;
     read_from_s3();
@@ -846,6 +847,8 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
       m_read_data->clear();
       librados::ObjectReadOperation op;
       op.read(this->m_object_off, this->m_object_len, m_read_data, nullptr);
+      // Carry the caller's op flags (matches read_object's primary path).
+      op.set_op_flags2(m_op_flags);
 
       using klass = ObjectReadRequest<I>;
       librados::AioCompletion *rados_completion =
