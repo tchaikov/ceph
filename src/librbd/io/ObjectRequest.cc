@@ -15,14 +15,18 @@
 #include "librbd/ExclusiveLock.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/ObjectMap.h"
+#include "librbd/Types.h"
 #include "librbd/Utils.h"
 #include "librbd/io/S3ObjectFetcher.h"
 #include "librbd/io/AioCompletion.h"
 #include "librbd/io/CopyupRequest.h"
 #include "librbd/io/ImageRequest.h"
 #include "librbd/io/ReadResult.h"
+#include "cls/lock/cls_lock_client.h"
+#include "cls/lock/cls_lock_types.h"
 #include "cls/rbd/cls_rbd_client.h"
 
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/bind.hpp>
 #include <boost/optional.hpp>
 
@@ -257,7 +261,7 @@ void ObjectReadRequest<I>::handle_read_object(int r) {
 
   if (r == -ENOENT) {
     if (should_read_from_s3()) {
-      read_from_s3();
+      read_from_s3_with_lock();
       return;
     }
 
@@ -404,6 +408,232 @@ bool ObjectReadRequest<I>::should_read_from_s3() {
 }
 
 template <typename I>
+void ObjectReadRequest<I>::read_from_s3_with_lock() {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+  ldout(cct, 15) << "attempting to lock object for S3 read: " << this->m_oid << dendl;
+
+  // Sentinel oid: locking the data oid directly would make stat() return 0
+  // (object exists, length 0) and trick a peer's "is the object populated?"
+  // check, so place the lock on a sibling object.  Same convention as
+  // CopyupRequest::fetch_from_s3_with_lock; both paths coordinate on the
+  // same sentinel oid for cross-process dedup against backfill.
+  m_lock_oid = this->m_oid + S3_FETCH_LOCK_SENTINEL_SUFFIX;
+  if (m_lock_cookie.empty()) {
+    // "_r_" marker distinguishes read-side cookies from CopyupRequest's
+    // copyup-side cookies — useful when listing lock holders for diagnostics.
+    m_lock_cookie = image_ctx->id + "_r_" + stringify(this->m_object_no);
+  }
+
+  uint32_t lock_timeout = image_ctx->s3_parent_lock_timeout;
+  utime_t lock_duration(lock_timeout, 0);
+
+  librados::ObjectWriteOperation lock_op;
+  rados::cls::lock::lock(&lock_op, S3_FETCH_LOCK_NAME, LOCK_EXCLUSIVE,
+                         m_lock_cookie, S3_FETCH_LOCK_TAG, "S3 read in progress",
+                         lock_duration, 0);
+
+  using klass = ObjectReadRequest<I>;
+  librados::AioCompletion *rados_completion =
+    util::create_rados_callback<klass, &klass::handle_lock_for_s3_read>(this);
+
+  int r = image_ctx->data_ctx.aio_operate(m_lock_oid, rados_completion, &lock_op);
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::handle_lock_for_s3_read(int r) {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+  ldout(cct, 15) << "lock result: r=" << r << dendl;
+
+  if (r == 0) {
+    m_s3_lock_acquired = true;
+    ldout(cct, 10) << "acquired S3 read lock, re-stat'ing object before fetch" << dendl;
+    recheck_oid_after_lock();
+  } else if (r == -EBUSY || r == -EEXIST) {
+    ldout(cct, 10) << "lock busy, identifying holder" << dendl;
+    try_preempt_backfill_lock_for_read();
+  } else {
+    // Don't fail user IO on coordination errors — proceed with own fetch.
+    // Skip writeback as a precaution since we don't know the lock state.
+    ldout(cct, 5) << "failed to acquire S3 read lock: " << cpp_strerror(r)
+                  << ", proceeding with own fetch (skip writeback)" << dendl;
+    m_skip_writeback = true;
+    read_from_s3();
+  }
+}
+
+template <typename I>
+void ObjectReadRequest<I>::try_preempt_backfill_lock_for_read() {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+  ldout(cct, 15) << "listing lock holders on " << m_lock_oid << dendl;
+
+  librados::ObjectReadOperation read_op;
+  rados::cls::lock::get_lock_info_start(&read_op, S3_FETCH_LOCK_NAME);
+
+  m_lock_info_bl.clear();
+  using klass = ObjectReadRequest<I>;
+  librados::AioCompletion *rados_completion =
+    util::create_rados_callback<klass, &klass::handle_list_lock_holders_for_read>(this);
+
+  int r = image_ctx->data_ctx.aio_operate(
+    m_lock_oid, rados_completion, &read_op, &m_lock_info_bl);
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::handle_list_lock_holders_for_read(int r) {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+  ldout(cct, 15) << "r=" << r << dendl;
+
+  if (r < 0) {
+    ldout(cct, 5) << "failed to list lock holders, falling back to own fetch: "
+                  << cpp_strerror(r) << dendl;
+    m_skip_writeback = true;
+    read_from_s3();
+    return;
+  }
+
+  std::map<rados::cls::lock::locker_id_t,
+           rados::cls::lock::locker_info_t> lockers;
+  ClsLockType lock_type;
+  std::string tag;
+
+  auto it = m_lock_info_bl.cbegin();
+  r = rados::cls::lock::get_lock_info_finish(&it, &lockers, &lock_type, &tag);
+  if (r < 0) {
+    ldout(cct, 5) << "failed to parse lock info, falling back to own fetch: "
+                  << cpp_strerror(r) << dendl;
+    m_skip_writeback = true;
+    read_from_s3();
+    return;
+  }
+
+  for (auto &kv : lockers) {
+    const auto &cookie = kv.first.cookie;
+    if (boost::starts_with(cookie, BACKFILL_LOCK_COOKIE_PREFIX)) {
+      ldout(cct, 10) << "backfill daemon holds lock (cookie=" << cookie
+                     << ", entity=" << kv.first.locker
+                     << "), breaking to preempt" << dendl;
+
+      librados::ObjectWriteOperation break_op;
+      rados::cls::lock::break_lock(&break_op, S3_FETCH_LOCK_NAME,
+                                   cookie, kv.first.locker);
+
+      using klass = ObjectReadRequest<I>;
+      librados::AioCompletion *break_completion =
+        util::create_rados_callback<klass, &klass::handle_break_backfill_lock_for_read>(this);
+      int br = image_ctx->data_ctx.aio_operate(
+        m_lock_oid, break_completion, &break_op);
+      ceph_assert(br == 0);
+      break_completion->release();
+      return;
+    }
+  }
+
+  // No backfill holder — another foreground user request holds the lock.
+  // User-vs-user is cooperative on the writeback only: we fetch our own
+  // S3 copy in parallel (no waiting on the holder) but skip the RADOS
+  // write_full + object_map update so the holder populates the object
+  // exactly once.  Two write_fulls would cost duplicate IOPS without
+  // changing the resulting bytes — RBD parents are immutable raw exports.
+  ldout(cct, 10) << "lock held by another user request, fetching own copy + "
+                 << "skipping writeback (peer will populate)" << dendl;
+  m_skip_writeback = true;
+  read_from_s3();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::handle_break_backfill_lock_for_read(int r) {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+  ldout(cct, 15) << "break_lock result: r=" << r << dendl;
+
+  // -ENOENT means the daemon released between our list and our break;
+  // any other error is logged but not fatal — re-attempting the acquire
+  // is the right next step in either case.
+  if (r < 0 && r != -ENOENT) {
+    ldout(cct, 5) << "break_lock returned " << cpp_strerror(r)
+                  << ", retrying lock acquire anyway" << dendl;
+  }
+  read_from_s3_with_lock();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::recheck_oid_after_lock() {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+  ldout(cct, 15) << "stat'ing " << this->m_oid
+                 << " after lock acquire to short-circuit duplicate fetch" << dendl;
+
+  // A peer (e.g., the backfill daemon completing while we were taking the
+  // lock) may have populated the object.  If so we skip the S3 round-trip
+  // and re-issue the RADOS read instead.
+  using klass = ObjectReadRequest<I>;
+  librados::AioCompletion *rados_completion =
+    util::create_rados_callback<klass, &klass::handle_recheck_oid_after_lock>(this);
+
+  int r = image_ctx->data_ctx.aio_stat(this->m_oid, rados_completion, nullptr, nullptr);
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::handle_recheck_oid_after_lock(int r) {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+
+  if (r == -ENOENT) {
+    ldout(cct, 15) << "object still missing after lock, proceeding to S3" << dendl;
+    read_from_s3();
+    return;
+  }
+  if (r < 0) {
+    ldout(cct, 5) << "stat failed after lock: " << cpp_strerror(r)
+                  << ", proceeding to S3 anyway" << dendl;
+    read_from_s3();
+    return;
+  }
+
+  // Object now exists in RADOS (peer populated it).  Release lock and
+  // re-issue the RADOS read.
+  ldout(cct, 10) << "object now populated; releasing lock and re-reading from RADOS"
+                 << dendl;
+  unlock_after_s3_read();
+  read_object();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::unlock_after_s3_read() {
+  if (!m_s3_lock_acquired) {
+    return;
+  }
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+  ldout(cct, 15) << "unlocking " << m_lock_oid << dendl;
+
+  // Fire-and-forget unlock — failures are tolerable since cls_lock auto-expires
+  // via duration.  No callback to 'this': the request may be deleted before
+  // the unlock completes.
+  librados::ObjectWriteOperation unlock_op;
+  rados::cls::lock::unlock(&unlock_op, S3_FETCH_LOCK_NAME, m_lock_cookie);
+
+  auto rados_completion = librados::Rados::aio_create_completion();
+  int r = image_ctx->data_ctx.aio_operate(m_lock_oid, rados_completion, &unlock_op);
+  rados_completion->release();
+  if (r < 0) {
+    ldout(cct, 5) << "warning: failed to submit async unlock: "
+                  << cpp_strerror(r) << dendl;
+  }
+  m_s3_lock_acquired = false;
+}
+
+template <typename I>
 void ObjectReadRequest<I>::read_from_s3() {
   I *image_ctx = this->m_ictx;
   auto cct = image_ctx->cct;
@@ -485,11 +715,13 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
     if (r == -ENOENT || r == -EINVAL) {
       ldout(image_ctx->cct, 10) << "object " << this->m_object_no
                                  << " does not exist in S3 (sparse image)" << dendl;
+      unlock_after_s3_read();
       this->finish(-ENOENT);
       return;
     }
 
     lderr(image_ctx->cct) << "failed to fetch from S3: " << cpp_strerror(r) << dendl;
+    unlock_after_s3_read();
     this->finish(r);
     return;
   }
@@ -539,6 +771,18 @@ void ObjectReadRequest<I>::write_back_s3_data_then_finish(
   I *image_ctx = this->m_ictx;
   auto cct = image_ctx->cct;
 
+  // Cross-process dedup: when another foreground user holds the s3_fetch_lock,
+  // we set m_skip_writeback = true and fetched our own copy in parallel.  The
+  // lock holder is responsible for the write_full + object_map update; us
+  // doing it too would just waste RADOS IOPS.  Note: we never acquired the
+  // lock in this case, so unlock_after_s3_read() is a no-op.
+  if (m_skip_writeback) {
+    ldout(cct, 10) << "skipping writeback: peer user holds lock, will populate"
+                   << dendl;
+    this->finish(0);
+    return;
+  }
+
   // Zero-block sparseness: if S3 returned all zeros, skip both the data
   // write-back and the object_map update so the parent pool stays sparse.
   // Same trade-off as ObjectBackfillRequest::write_rados — we re-fetch on
@@ -546,6 +790,7 @@ void ObjectReadRequest<I>::write_back_s3_data_then_finish(
   if (full_object_data.is_zero()) {
     ldout(cct, 10) << "object " << this->m_oid
                    << " is all-zero from S3, skipping write-back + map update" << dendl;
+    unlock_after_s3_read();
     this->finish(0);
     return;
   }
@@ -575,6 +820,7 @@ void ObjectReadRequest<I>::write_back_s3_data_then_finish(
     rados_completion->release();
     // Read itself succeeded; surface success to the user even if cache
     // write-back failed.  The next reader will re-fetch from S3.
+    unlock_after_s3_read();
     this->finish(0);
     return;
   }
@@ -596,6 +842,11 @@ void ObjectReadRequest<I>::handle_write_back_done(int r) {
     update_object_map_for_s3_write_back();
   }
 
+  // Release the s3_fetch_lock so peers waiting to acquire it (or to break
+  // a stale lock) can proceed.  Fire-and-forget: this request will finish
+  // before the unlock RADOS round-trip completes, which is fine — cls_lock
+  // auto-expires via the configured TTL if the unlock is lost.
+  unlock_after_s3_read();
   this->finish(0);
 }
 

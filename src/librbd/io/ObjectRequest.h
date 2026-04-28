@@ -155,6 +155,20 @@ private:
   // is closed concurrently (e.g., during flatten).
   std::shared_ptr<S3ObjectFetcher> m_s3_fetcher;
 
+  // Cross-process dedup state — mirrors CopyupRequest, but for the read path.
+  // The lock target is m_oid + S3_FETCH_LOCK_SENTINEL_SUFFIX so concurrent
+  // CopyupRequests on the same S3-backed parent and ObjectReadRequests on
+  // that same image coordinate via the same sentinel object.
+  bool m_s3_lock_acquired = false;
+  // When another foreground user request holds the lock we fetch our own
+  // copy and return data to the caller, but skip the local RADOS write_full
+  // and object_map update — the lock holder is already committed to that
+  // work and a duplicate write_full just wastes RADOS IOPS.
+  bool m_skip_writeback = false;
+  std::string m_lock_oid;     // m_oid + S3_FETCH_LOCK_SENTINEL_SUFFIX
+  std::string m_lock_cookie;  // "<image_id>_r_<object_no>"
+  ceph::bufferlist m_lock_info_bl;  // buffer for async get_lock_info response
+
   void read_object();
   void handle_read_object(int r);
 
@@ -165,11 +179,19 @@ private:
 
   // S3 backend support for reads
   bool should_read_from_s3();
+  void read_from_s3_with_lock();
+  void handle_lock_for_s3_read(int r);
+  void try_preempt_backfill_lock_for_read();
+  void handle_list_lock_holders_for_read(int r);
+  void handle_break_backfill_lock_for_read(int r);
+  void recheck_oid_after_lock();
+  void handle_recheck_oid_after_lock(int r);
   void read_from_s3();
   void handle_read_from_s3(int r);
   void write_back_s3_data_then_finish(bufferlist& full_object_data);
   void handle_write_back_done(int r);
   void update_object_map_for_s3_write_back();
+  void unlock_after_s3_read();
 };
 
 template <typename ImageCtxT = ImageCtx>

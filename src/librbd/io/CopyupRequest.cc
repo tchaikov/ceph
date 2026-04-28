@@ -943,19 +943,21 @@ void CopyupRequest<I>::handle_list_lock_holders(int r) {
     }
   }
 
-  // No backfill daemon found — lock is held by another CopyupRequest
-  // (foreground user I/O).  Do NOT apply exponential backoff (user I/O
-  // must not wait for other user I/O via a background-style retry loop).
-  // Re-check parent existence immediately: the other request may have
-  // already written it.  If still absent, proceed without the lock —
-  // a duplicate S3 fetch is harmless (write_full is idempotent).
-  ldout(cct, 10) << "lock held by another user request, re-checking parent" << dendl;
-  auto cancelled = m_cancelled;
-  m_image_ctx->op_work_queue->queue(
-    new FunctionContext([this, cancelled](int) {
-      if (cancelled->load()) return;
-      read_from_parent();
-    }), 0);
+  // No backfill daemon found — lock is held by another foreground user
+  // request.  Do NOT preempt (user vs user is cooperative on the writeback,
+  // not the fetch): fetch our own S3 copy in parallel and skip the
+  // parent-RADOS writeback.  The lock holder is already committed to
+  // populating the parent object; us writing too would just spend duplicate
+  // RADOS IOPS on a write_full that the holder will issue anyway.  Setting
+  // m_skip_parent_writeback short-circuits fire_parent_s3_writeback() in the
+  // copyup completion path while leaving the in-memory data flow intact.
+  ldout(cct, 10) << "lock held by another user request, fetching own copy "
+                 << "and skipping writeback (peer will populate parent)" << dendl;
+  m_skip_parent_writeback = true;
+  // No lock to release; fetch_from_s3_async checks m_s3_lock_acquired before
+  // unlocking on its error paths, and unlock_parent_object() is a no-op when
+  // the flag is false.
+  fetch_from_s3_async();
 }
 
 template <typename I>
@@ -1225,6 +1227,17 @@ void CopyupRequest<I>::unlock_parent_object() {
 template <typename I>
 void CopyupRequest<I>::fire_parent_s3_writeback() {
   auto cct = m_image_ctx->cct;
+
+  // The lock holder owns the writeback.  When this request raced a peer
+  // user that already held the s3_fetch_lock, we fetched our own copy of
+  // the data (returned to the caller via the in-memory bufferlist) but
+  // must not write to the parent — the peer will issue its own write_full
+  // for that.  Two write_fulls would double the RADOS IOPS for no benefit.
+  if (m_skip_parent_writeback) {
+    ldout(cct, 10) << "skipping parent writeback: lock holder peer will populate "
+                   << "parent object " << m_object_no << dendl;
+    return;
+  }
 
   // Capture all state needed for the async ops while holding child locks.
   // Once all locals are populated we release the locks and fire both the

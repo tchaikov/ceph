@@ -126,6 +126,12 @@ private:
   // via write_full would truncate the already-correct 4MB parent RADOS object
   // to just the size of the write extents (e.g. 4KB).
   bool m_data_is_from_s3 = false;
+  // Set when this request raced another user holding the lock and chose to
+  // fetch its own S3 copy without acquiring the lock.  The lock holder is
+  // already committed to writing the parent object; this request must skip
+  // its own write_full and object_map update so the parent oid is populated
+  // exactly once.  Reads still get correct data from the in-memory bufferlist.
+  bool m_skip_parent_writeback = false;
   uint32_t m_s3_retry_count = 0;
   ceph::bufferlist m_s3_data;
   ceph::bufferlist m_lock_info_bl;  // buffer for async get_lock_info response
