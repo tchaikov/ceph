@@ -212,6 +212,14 @@ ObjectReadRequest<I>::ObjectReadRequest(I *ictx, const std::string &oid,
 }
 
 template <typename I>
+ObjectReadRequest<I>::~ObjectReadRequest() {
+  // Signal any still-pending wait_for_peer_writeback timer lambda to bail
+  // before it dereferences `this`.  The lambda captured m_cancelled by value
+  // (shared_ptr) so the flag remains valid even after this object is freed.
+  m_cancelled->store(true);
+}
+
+template <typename I>
 void ObjectReadRequest<I>::send() {
   I *image_ctx = this->m_ictx;
   ldout(image_ctx->cct, 20) << dendl;
@@ -707,13 +715,20 @@ void ObjectReadRequest<I>::handle_peer_writeback_poll(int r) {
   // delay.  Use the ImageCtx-level SafeTimer so we don't block any of the
   // current callback's threads.  Pattern mirrors CopyupRequest's
   // retry_read_from_parent timer wiring.
+  // Capture m_cancelled by value (shared_ptr): if `this` gets destroyed
+  // before the timer fires, the flag persists and the lambda bails before
+  // dereferencing freed memory.  See ~ObjectReadRequest() for the store.
   SafeTimer *timer;
   Mutex *timer_lock;
   ImageCtx::get_timer_instance(cct, &timer, &timer_lock);
+  auto cancelled = m_cancelled;
   Mutex::Locker locker(*timer_lock);
   timer->add_event_after(
     PEER_WRITEBACK_POLL_INTERVAL_MS / 1000.0,
-    new FunctionContext([this](int) { wait_for_peer_writeback(); }));
+    new FunctionContext([this, cancelled](int) {
+      if (cancelled->load()) return;
+      wait_for_peer_writeback();
+    }));
 }
 
 template <typename I>

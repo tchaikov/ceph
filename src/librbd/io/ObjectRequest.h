@@ -11,6 +11,7 @@
 #include "common/zipkin_trace.h"
 #include "librbd/ObjectMap.h"
 #include "librbd/io/Types.h"
+#include <atomic>
 #include <map>
 #include <memory>
 
@@ -116,6 +117,11 @@ public:
                     ceph::bufferlist* read_data, ExtentMap* extent_map,
                     Context *completion);
 
+  // Set m_cancelled BEFORE the base ~ObjectRequest runs so the
+  // wait_for_peer_writeback timer lambda (captures shared_ptr by value) bails
+  // even if it fires concurrently with destruction.
+  ~ObjectReadRequest() override;
+
   void send() override;
 
   const char *get_op_type() const override {
@@ -181,6 +187,14 @@ private:
   // missing RADOS until the peer's write_full lands and inflating S3 GET
   // count.  Counter caps the wait at PEER_WRITEBACK_MAX_POLLS attempts.
   uint32_t m_peer_poll_count = 0;
+  // Cancellation flag captured by value (shared_ptr) into the
+  // wait_for_peer_writeback timer lambda.  When this request is destroyed
+  // (finish() -> delete this -> ~ObjectReadRequest), the destructor stores
+  // true here BEFORE the base ~ObjectRequest runs, so a still-pending timer
+  // lambda checks this->load() and bails before dereferencing the
+  // (about-to-be-)freed `this`.  Same pattern as CopyupRequest::m_cancelled.
+  std::shared_ptr<std::atomic<bool>> m_cancelled{
+    std::make_shared<std::atomic<bool>>(false)};
   std::string m_lock_oid;     // m_oid + S3_FETCH_LOCK_SENTINEL_SUFFIX
   std::string m_lock_cookie;  // "<image_id>_r_<object_no>"
   ceph::bufferlist m_lock_info_bl;  // buffer for async get_lock_info response
