@@ -453,6 +453,56 @@ create_test_image_with_pattern() {
     done
 }
 
+# Create a raw image where 4 MB blocks alternate between pattern and all-zero.
+# Even-numbered blocks (0, 2, 4, ...) get "PARENT-BLOCK-NNNN" header; odd-numbered
+# blocks remain all-zero.  Used to test zero-object handling consistency across
+# the daemon, read, and write S3 fetch paths.
+# Usage: create_test_image_zero_alternating <size_mb> <out_file>
+create_test_image_zero_alternating() {
+    local size_mb=$1
+    local out_file=$2
+
+    dd if=/dev/zero of="$out_file" bs=1M count="$size_mb" status=none
+    local num_blocks=$((size_mb / 4))
+    for i in $(seq 0 $((num_blocks - 1))); do
+        if [ $((i % 2)) -eq 0 ]; then
+            printf "PARENT-BLOCK-%04d" $i | dd of="$out_file" bs=4M seek=$i conv=notrunc status=none
+        fi
+    done
+}
+
+# Create a sparse raw image: only the first <num_filled> 4 MB blocks contain a
+# pattern; the rest are zero.  Used to test that empty tail blocks don't trigger
+# unnecessary S3 round-trips.
+# Usage: create_test_image_sparse <size_mb> <num_filled_blocks> <out_file>
+create_test_image_sparse() {
+    local size_mb=$1
+    local num_filled=$2
+    local out_file=$3
+
+    dd if=/dev/zero of="$out_file" bs=1M count="$size_mb" status=none
+    local i
+    for i in $(seq 0 $((num_filled - 1))); do
+        printf "PARENT-BLOCK-%04d" $i | dd of="$out_file" bs=4M seek=$i conv=notrunc status=none
+    done
+}
+
+# Create a raw image where block 0 is all-zero and blocks 1..N have a pattern.
+# Lets tests that probe "zero block handling" target the well-known offset 0
+# (rbd bench has no --io-offset, so we have to put the zero block first).
+# Usage: create_test_image_zero_first <size_mb> <out_file>
+create_test_image_zero_first() {
+    local size_mb=$1
+    local out_file=$2
+
+    dd if=/dev/zero of="$out_file" bs=1M count="$size_mb" status=none
+    local num_blocks=$((size_mb / 4))
+    local i
+    for i in $(seq 1 $((num_blocks - 1))); do
+        printf "PARENT-BLOCK-%04d" $i | dd of="$out_file" bs=4M seek=$i conv=notrunc status=none
+    done
+}
+
 # Verify two files are byte-for-byte identical (md5sum comparison).
 # Usage: verify_checksum <file_a> <file_b>
 verify_checksum() {

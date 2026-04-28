@@ -2,10 +2,11 @@
 # run-s3-tests.sh — Master runner for S3-backed standalone clone test suite
 #
 # Usage:
-#   ./run-s3-tests.sh                   # All tests except cross-cluster (requires docker)
+#   ./run-s3-tests.sh                   # All tests except cross-cluster + perf
 #   ./run-s3-tests.sh --quick           # edge-cases + matrix scenario 1 only (~30s)
 #   ./run-s3-tests.sh --full            # Everything including cross-cluster
-#   ./run-s3-tests.sh --suite <name>    # One suite: edge|failure|matrix|backfill|cow|preemption|cross
+#   ./run-s3-tests.sh --perf            # Performance suite only (~15 min)
+#   ./run-s3-tests.sh --suite <name>    # One suite: edge|failure|matrix|backfill|cow|preemption|cross|perf
 #
 # Test order (dependency-safe):
 #   1. edge-cases        — metadata, s3-config roundtrip, rbd info, ranged GET
@@ -15,6 +16,7 @@
 #   5. concurrent-cow    — 4 clients, COW throttle test
 #   6. preemption        — daemon vs client lock contention
 #   7. cross-cluster     — Docker dual-cluster (requires docker)
+#   perf                 — Performance benchmarks (independent; not in --full)
 
 set -e
 
@@ -32,10 +34,11 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --quick)        MODE="quick";  shift ;;
         --full)         MODE="full";   shift ;;
+        --perf)         MODE="perf";   shift ;;
         --suite)        SUITE="$2";    MODE="suite"; shift 2 ;;
         --conf)         CEPH_CONF_ARG="--conf $2"; shift 2 ;;
         -h|--help)
-            sed -n '2,12p' "$0" | sed 's/^# //'
+            sed -n '2,14p' "$0" | sed 's/^# //'
             exit 0 ;;
         *) log_warn "Unknown option: $1"; shift ;;
     esac
@@ -80,6 +83,7 @@ run_backfill()   { run_suite "backfill"           "test-s3-backfill.sh"; }
 run_cow()        { run_suite "concurrent-cow"     "test-s3-concurrent-cow.sh"; }
 run_preemption() { run_suite "preemption"         "test-s3-preemption.sh"; }
 run_cross()      { run_suite "cross-cluster"      "test-s3-cross-cluster.sh"; }
+run_perf()       { run_suite "performance"        "test-s3-performance.sh"; }
 
 # ── Mode dispatch ─────────────────────────────────────────────────────────────
 echo
@@ -101,6 +105,9 @@ case $MODE in
         run_preemption
         run_cross
         ;;
+    perf)
+        run_perf
+        ;;
     suite)
         case $SUITE in
             edge)        run_edge ;;
@@ -110,9 +117,10 @@ case $MODE in
             cow)         run_cow ;;
             preemption)  run_preemption ;;
             cross)       run_cross ;;
+            perf)        run_perf ;;
             *)
                 log_error "Unknown suite: '$SUITE'"
-                log_error "Valid suites: edge | failure | matrix | backfill | cow | preemption | cross"
+                log_error "Valid suites: edge | failure | matrix | backfill | cow | preemption | cross | perf"
                 exit 1
                 ;;
         esac
