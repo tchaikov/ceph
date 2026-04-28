@@ -1,0 +1,134 @@
+FROM debian:stable
+
+# Use debian:stable (rolling) so the container's glibc / libssl / libstdc++
+# match the host's — host-built binaries under /ceph/build are bind-mounted
+# in and need a compatible runtime to load.
+#
+# Apt mirror: TUNA (Tsinghua) over HTTP.  Default deb.debian.org is slow
+# from mainland China; HTTPS would require pulling ca-certificates into
+# the base image just to validate apt's TLS, which we avoid.  TUNA is
+# well-maintained and serves the same Debian archive bytes.  The
+# libssl3t64 deb13u1↔deb13u2 point-release mismatch that motivated past
+# mirror experiments only affects -dev packages, and we don't install
+# any here (runtime-only image; binaries come from host bind-mount).
+RUN echo "Types: deb\n\
+URIs: http://mirrors.tuna.tsinghua.edu.cn/debian/\n\
+Suites: stable stable-updates\n\
+Components: main contrib non-free non-free-firmware\n\
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg" > /etc/apt/sources.list.d/debian.sources
+
+# Install Ceph RUNTIME dependencies only.  We do NOT compile Ceph inside
+# the container — host-built binaries are bind-mounted via /ceph (see
+# docker-compose.yml `volumes:`).  Installing only the runtime shared
+# libraries (no -dev packages) keeps the image small and avoids the
+# transient libssl3t64 point-release mismatch in the Debian stable
+# channel (deb13u1 vs deb13u2) that affects -dev packages.
+#
+# Library list mirrors `ldd build/bin/rbd` on the Debian-13 host.
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-prettytable \
+    python3-yaml \
+    libssl3t64 \
+    libcurl3t64-gnutls \
+    libleveldb1d \
+    libnss3 \
+    libsnappy1v5 \
+    libgoogle-perftools4t64 \
+    libaio1t64 \
+    libblkid1 \
+    libkeyutils1 \
+    liboath0 \
+    libxml2 \
+    libuuid1 \
+    libexpat1 \
+    libboost-iostreams1.83.0 \
+    libboost-program-options1.83.0 \
+    libboost-thread1.83.0 \
+    libstdc++6 \
+    libgcc-s1 \
+    libnuma1 \
+    libgnutls30 \
+    libldap2 \
+    libgssapi-krb5-2 \
+    libnghttp2-14 \
+    libnghttp3-9 \
+    libngtcp2-16 \
+    libngtcp2-crypto-gnutls8 \
+    libsasl2-2 \
+    libssh2-1t64 \
+    libbrotli1 \
+    libpsl5 \
+    libidn2-0 \
+    libtasn1-6 \
+    librtmp1 \
+    libnl-3-200 \
+    libnl-route-3-200 \
+    libibverbs1 \
+    librdmacm1 \
+    libcap2 \
+    libcap-ng0 \
+    libncurses6 \
+    libncursesw6 \
+    libtinfo6 \
+    libpython3.13 \
+    libboost-python1.83.0 \
+    libtcmalloc-minimal4 \
+    libunwind8 \
+    libxxhash0 \
+    libzstd1 \
+    liblz4-1 \
+    liblzma5 \
+    libudev1 \
+    libbz2-1.0 \
+    zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install additional runtime dependencies.  uuid-runtime is required by
+# vstart.sh (calls `uuidgen` to mint each OSD's uuid for `ceph osd new`).
+RUN apt-get update && apt-get install -y \
+    sudo \
+    vim \
+    less \
+    iproute2 \
+    iputils-ping \
+    net-tools \
+    procps \
+    psmisc \
+    xfsprogs \
+    uuid-runtime \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a user for running Ceph.  Use the invoking host user's UID so
+# bind-mounted /ceph/build (host-owned) is writable by cephdev under
+# rootless podman, where host UID maps to subordinate UIDs in the
+# container's user namespace.  Pass HOST_UID via docker-compose build arg.
+ARG HOST_UID=1000
+ARG HOST_GID=1000
+RUN groupadd -g "$HOST_GID" cephdev 2>/dev/null || groupadd -g 1001 cephdev && \
+    useradd -m -s /bin/bash -u "$HOST_UID" -g cephdev cephdev && \
+    echo "cephdev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+WORKDIR /ceph
+USER cephdev
+
+# Set up environment.  The host build is a vstart-style dev tree:
+#   * binaries (rbd, ceph, etc.) under /ceph/build/bin
+#   * shared libs under /ceph/build/lib
+#   * Python modules used by `bin/ceph` (which is a Python wrapper) under
+#     /ceph/src/pybind (pure Python) and
+#     /ceph/build/lib/cython_modules/lib.{2,3} (compiled cython for librados/librbd)
+# Set PYTHONPATH explicitly — without it, `bin/ceph` fails with
+# `ModuleNotFoundError: No module named 'ceph_argparse'`.
+ENV PATH="/ceph/build/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/ceph/build/lib:${LD_LIBRARY_PATH}"
+ENV PYTHONPATH="/ceph/build/lib/cython_modules/lib.3:/ceph/build/lib/cython_modules/lib.2:/ceph/src/pybind:${PYTHONPATH}"
+
+# Provide the .ceph_env shim that test scripts source — older scripts may
+# look for it at /home/cephdev/.ceph_env.  Re-export the same paths so a
+# bare-bash shell into the container sees them as well.
+RUN echo 'export PATH="/ceph/build/bin:$PATH"' > /home/cephdev/.ceph_env && \
+    echo 'export LD_LIBRARY_PATH="/ceph/build/lib:$LD_LIBRARY_PATH"' >> /home/cephdev/.ceph_env && \
+    echo 'export PYTHONPATH="/ceph/build/lib/cython_modules/lib.3:/ceph/build/lib/cython_modules/lib.2:/ceph/src/pybind:$PYTHONPATH"' >> /home/cephdev/.ceph_env
+
+CMD ["/bin/bash"]
