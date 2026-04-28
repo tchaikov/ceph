@@ -7,6 +7,7 @@
 #include "common/errno.h"
 #include "common/Mutex.h"
 #include "common/RWLock.h"
+#include "common/Timer.h"
 #include "common/WorkQueue.h"
 #include "include/Context.h"
 #include "include/err.h"
@@ -633,6 +634,77 @@ void ObjectReadRequest<I>::unlock_after_s3_read() {
   m_s3_lock_acquired = false;
 }
 
+namespace {
+// Skip-writeback peer-writeback wait tunables.  Hard-coded for now; if the
+// values need to change for a workload, exposing them as rbd_* config
+// options is a one-line addition.  The defaults give a worst-case 250 ms
+// extra latency on the loser's first read, which is shorter than the S3
+// fetch they just performed and shorter than the user-visible read RTT
+// against any remote S3.  The peer's write_full of a 4 MB object on local
+// RADOS lands in 10-50 ms; on cloud RADOS, 50-200 ms.
+constexpr uint32_t PEER_WRITEBACK_MAX_POLLS = 5;
+constexpr uint32_t PEER_WRITEBACK_POLL_INTERVAL_MS = 50;
+} // anonymous namespace
+
+template <typename I>
+void ObjectReadRequest<I>::wait_for_peer_writeback() {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+
+  // m_read_data already holds the bytes we'll return to the caller.  This
+  // poll only exists to keep RADOS warm for subsequent in-process reads:
+  // every iteration is a non-mutating aio_stat, costing one RADOS RTT.
+  using klass = ObjectReadRequest<I>;
+  librados::AioCompletion *c = util::create_rados_callback<
+    klass, &klass::handle_peer_writeback_poll>(this);
+
+  m_peer_poll_count++;
+  ldout(cct, 20) << "peer-writeback poll #" << m_peer_poll_count
+                 << " on " << this->m_oid << dendl;
+
+  int r = image_ctx->data_ctx.aio_stat(this->m_oid, c, nullptr, nullptr);
+  ceph_assert(r == 0);
+  c->release();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::handle_peer_writeback_poll(int r) {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+
+  if (r == 0) {
+    // Peer's writeback landed.  Subsequent reads will hit RADOS cache.
+    ldout(cct, 15) << "peer writeback landed after "
+                   << m_peer_poll_count << " poll(s); finishing" << dendl;
+    this->finish(0);
+    return;
+  }
+
+  if (m_peer_poll_count >= PEER_WRITEBACK_MAX_POLLS) {
+    // Wait budget exhausted (~250 ms by default).  Return data to the
+    // caller anyway — the peer is unusually slow, and worst case is the
+    // next read also fetches from S3.  No correctness impact; the in-memory
+    // bytes we hold are valid regardless of whether RADOS has a copy yet.
+    ldout(cct, 10) << "peer writeback didn't land within "
+                   << (PEER_WRITEBACK_POLL_INTERVAL_MS * PEER_WRITEBACK_MAX_POLLS)
+                   << "ms; finishing without waiting further" << dendl;
+    this->finish(0);
+    return;
+  }
+
+  // ENOENT (or any other non-zero r) — schedule the next poll after a short
+  // delay.  Use the ImageCtx-level SafeTimer so we don't block any of the
+  // current callback's threads.  Pattern mirrors CopyupRequest's
+  // retry_read_from_parent timer wiring.
+  SafeTimer *timer;
+  Mutex *timer_lock;
+  ImageCtx::get_timer_instance(cct, &timer, &timer_lock);
+  Mutex::Locker locker(*timer_lock);
+  timer->add_event_after(
+    PEER_WRITEBACK_POLL_INTERVAL_MS / 1000.0,
+    new FunctionContext([this](int) { wait_for_peer_writeback(); }));
+}
+
 template <typename I>
 void ObjectReadRequest<I>::read_from_s3() {
   I *image_ctx = this->m_ictx;
@@ -776,10 +848,14 @@ void ObjectReadRequest<I>::write_back_s3_data_then_finish(
   // lock holder is responsible for the write_full + object_map update; us
   // doing it too would just waste RADOS IOPS.  Note: we never acquired the
   // lock in this case, so unlock_after_s3_read() is a no-op.
+  //
+  // Don't call finish() yet — wait briefly for the peer's writeback to land
+  // in RADOS so subsequent in-process reads of this object hit local cache
+  // instead of refetching.  See wait_for_peer_writeback().
   if (m_skip_writeback) {
     ldout(cct, 10) << "skipping writeback: peer user holds lock, will populate"
                    << dendl;
-    this->finish(0);
+    wait_for_peer_writeback();
     return;
   }
 

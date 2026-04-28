@@ -165,6 +165,14 @@ private:
   // and object_map update — the lock holder is already committed to that
   // work and a duplicate write_full just wastes RADOS IOPS.
   bool m_skip_writeback = false;
+  // On the skip-writeback path (peer user holds the lock and will populate
+  // RADOS), we briefly poll m_oid before returning to the caller so that
+  // subsequent in-process reads of the same object hit local RADOS instead
+  // of refetching from S3.  Without this, a sequential reader (e.g.
+  // rbd bench --io-size 64K --io-total 1M) issues N small reads, each
+  // missing RADOS until the peer's write_full lands and inflating S3 GET
+  // count.  Counter caps the wait at PEER_WRITEBACK_MAX_POLLS attempts.
+  uint32_t m_peer_poll_count = 0;
   std::string m_lock_oid;     // m_oid + S3_FETCH_LOCK_SENTINEL_SUFFIX
   std::string m_lock_cookie;  // "<image_id>_r_<object_no>"
   ceph::bufferlist m_lock_info_bl;  // buffer for async get_lock_info response
@@ -192,6 +200,11 @@ private:
   void handle_write_back_done(int r);
   void update_object_map_for_s3_write_back();
   void unlock_after_s3_read();
+  // Peer-writeback wait, skip-writeback path only.  Polls m_oid up to
+  // PEER_WRITEBACK_MAX_POLLS times at PEER_WRITEBACK_POLL_INTERVAL_MS
+  // intervals, exiting early as soon as the peer's write_full lands.
+  void wait_for_peer_writeback();
+  void handle_peer_writeback_poll(int r);
 };
 
 template <typename ImageCtxT = ImageCtx>
