@@ -65,13 +65,10 @@ S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config,
     m_object_size(object_size),
     m_verify_ssl(cct->_conf.get_val<bool>("rbd_s3_verify_ssl")),
     m_max_download_bps(cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps")) {
-  // Pre-compute host and URI from the S3 URL once at construction.
-  // These are used for every AWS Signature V4 signing request.
-  {
-    const std::string url = m_s3_config.build_url();
-    m_cached_host = extract_host_from_url(url);
-    m_cached_uri  = extract_uri_from_url(url);
-  }
+  // Pre-compute URL, host, and URI once at construction — used on every fetch.
+  m_cached_url  = m_s3_config.build_url();
+  m_cached_host = extract_host_from_url(m_cached_url);
+  m_cached_uri  = extract_uri_from_url(m_cached_url);
 
   // Thread-safe initialization of libcurl (called once per process)
   std::call_once(curl_init_flag, init_curl_once);
@@ -119,6 +116,14 @@ S3ObjectFetcher::~S3ObjectFetcher() {
     m_work_queue.pop_front();
     curl_slist_free_all(ctx->headers);
     curl_easy_cleanup(ctx->curl_handle);
+    // Cancel any waiters coalesced onto this primary as well.
+    if (!ctx->coalesce_key.empty()) {
+      std::lock_guard<std::mutex> lock(m_inflight_mutex);
+      m_inflight.erase(ctx->coalesce_key);
+    }
+    for (auto& [out_bl, on_finish] : ctx->waiters) {
+      on_finish->complete(-ECANCELED);
+    }
     ctx->on_finish->complete(-ECANCELED);
     delete ctx;
   }
@@ -393,11 +398,31 @@ void S3ObjectFetcher::worker_thread_body() {
 }
 
 void S3ObjectFetcher::execute_fetch(FetchContext* ctx) {
+  // Helper: detach this fetch from the in-flight map and return any waiters
+  // that piled on while we were running.  Always called once per execute_fetch
+  // run so the map never grows unbounded.
+  auto take_waiters = [this, ctx]() {
+    std::vector<std::pair<bufferlist*, Context*>> ws;
+    if (!ctx->coalesce_key.empty()) {
+      std::lock_guard<std::mutex> lock(m_inflight_mutex);
+      auto it = m_inflight.find(ctx->coalesce_key);
+      if (it != m_inflight.end() && it->second == ctx) {
+        ws = std::move(ctx->waiters);
+        m_inflight.erase(it);
+      }
+    }
+    return ws;
+  };
+
   // Check for cancellation before issuing any I/O.
   if (ctx->cancel_flag && ctx->cancel_flag->load()) {
     curl_slist_free_all(ctx->headers);
     curl_easy_cleanup(ctx->curl_handle);
+    auto waiters = take_waiters();
     ctx->on_finish->complete(-ECANCELED);
+    for (auto& [out_bl, on_finish] : waiters) {
+      on_finish->complete(-ECANCELED);
+    }
     delete ctx;
     return;
   }
@@ -427,6 +452,17 @@ void S3ObjectFetcher::execute_fetch(FetchContext* ctx) {
   curl_slist_free_all(ctx->headers);
   curl_easy_cleanup(ctx->curl_handle);
 
+  // Fan out: copy the fetched bytes to each waiter's bufferlist (only on
+  // success — failure cases get the error code with empty data).  The
+  // bufferlist copy is cheap because bufferptrs are reference-counted.
+  auto waiters = take_waiters();
+  for (auto& [out_bl, on_finish] : waiters) {
+    if (result == 0) {
+      *out_bl = *ctx->out_bl;
+    }
+    on_finish->complete(result);
+  }
+
   ctx->on_finish->complete(result);
   delete ctx;
 }
@@ -453,18 +489,49 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
   // Clear output buffer
   data->clear();
 
-  // Create fetch context for async operation
+  // In-flight dedup: register the new fetch context atomically with the
+  // dedup-check.  Doing the lookup-then-insert in a single critical section
+  // closes the race where two concurrent callers both see "no entry" and
+  // each issue their own GET.  Curl setup happens AFTER registration —
+  // whichever caller wins the insert is the primary and does the work; the
+  // other(s) attach as waiters.
+  std::string coalesce_key = url + "@" + std::to_string(byte_start) + "-" +
+                             std::to_string(byte_length);
   FetchContext* ctx = new FetchContext();
   ctx->out_bl = data;
   ctx->on_finish = on_finish;
   ctx->cancel_flag = cancel_flag;
+  ctx->coalesce_key = coalesce_key;
 
-  // Setup curl handle
+  {
+    std::lock_guard<std::mutex> lock(m_inflight_mutex);
+    auto [it, inserted] = m_inflight.emplace(coalesce_key, ctx);
+    if (!inserted) {
+      // Coalesce: a concurrent fetch for the same key is already registered.
+      it->second->waiters.emplace_back(data, on_finish);
+      ldout(cct, 15) << "coalesced onto in-flight fetch (key=" << coalesce_key
+                     << ", " << it->second->waiters.size() << " waiters total)" << dendl;
+      delete ctx;
+      return;
+    }
+  }
+
+  // We are the primary — set up curl and enqueue the actual fetch.
   ctx->curl_handle = setup_curl_handle(url, data, byte_start, byte_length,
                                        &ctx->headers);
   if (!ctx->curl_handle) {
     ldout(cct, 1) << "failed to setup curl handle" << dendl;
+    // Detach + complete any waiters that piled on between our insert and now.
+    std::vector<std::pair<bufferlist*, Context*>> waiters;
+    {
+      std::lock_guard<std::mutex> lock(m_inflight_mutex);
+      waiters = std::move(ctx->waiters);
+      m_inflight.erase(coalesce_key);
+    }
     on_finish->complete(-ENOMEM);
+    for (auto& [out_bl, on_finish_w] : waiters) {
+      on_finish_w->complete(-ENOMEM);
+    }
     delete ctx;
     return;
   }
@@ -486,8 +553,7 @@ void S3ObjectFetcher::fetch(uint64_t object_no, uint64_t object_off,
   // Calculate byte offset in S3 object
   uint64_t s3_offset = calculate_s3_offset(object_no, object_off);
 
-  // Use pre-built URL (never changes after construction)
-  const std::string& url = m_s3_config.build_url();
+  const std::string& url = m_cached_url;
 
   ldout(m_cct, 10) << "fetching object_no=" << object_no
                    << " object_off=" << object_off
@@ -502,8 +568,7 @@ int S3ObjectFetcher::fetch_sync(uint64_t object_no, uint64_t object_off,
   // Calculate byte offset in S3 object
   uint64_t s3_offset = calculate_s3_offset(object_no, object_off);
 
-  // Use pre-built URL (never changes after construction)
-  const std::string& url = m_s3_config.build_url();
+  const std::string& url = m_cached_url;
 
   // Perform HTTP Range GET
   return fetch_with_retry(url, out_bl, s3_offset, length);

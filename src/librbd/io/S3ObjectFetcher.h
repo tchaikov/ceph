@@ -16,6 +16,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 // Forward declaration only for curl_slist; CURL is defined via the header above.
@@ -129,9 +130,8 @@ private:
   bool m_verify_ssl = true;
   int64_t m_max_download_bps = 0;
 
-  // Host and URI path extracted from the S3 URL once at construction.
-  // These never change after the fetcher is created, so caching avoids
-  // re-parsing the URL string on every request.
+  // URL, host, and URI path computed once at construction — never change.
+  std::string m_cached_url;
   std::string m_cached_host;
   std::string m_cached_uri;
 
@@ -143,6 +143,15 @@ private:
     // Shared ownership ensures the flag remains valid for the lifetime of the
     // async fetch even if the caller is destroyed before it completes.
     std::shared_ptr<std::atomic<bool>> cancel_flag;
+
+    // In-flight dedup: when non-empty, this fetch is the "primary" for the
+    // given URL+range key, and any concurrent caller asking for the same
+    // bytes attaches as a waiter instead of issuing its own GET.  The
+    // primary is responsible for copying the fetched data into each
+    // waiter's bufferlist and completing their callbacks after the GET
+    // returns (or fails).  Empty == no coalescing (fetch is unique).
+    std::string coalesce_key;
+    std::vector<std::pair<bufferlist*, Context*>> waiters;
   };
 
   // Fixed-size thread pool for async S3 fetches.
@@ -153,6 +162,16 @@ private:
   std::mutex m_work_mutex;
   std::condition_variable m_work_cv;
   bool m_shutdown = false;
+
+  // In-flight fetch coalescing: maps coalesce_key (url@start-end) to the
+  // primary FetchContext.  Concurrent callers asking for the same URL+range
+  // attach to the primary's waiters list instead of issuing a duplicate GET.
+  // This eliminates the "single client sequential read of 4 MB triggers 2
+  // S3 GETs" race (handle_read_from_s3's write-back is async, so the next
+  // 64 KB read inside the same 4 MB object can re-fetch from S3 before the
+  // first write-back lands in RADOS).
+  std::mutex m_inflight_mutex;
+  std::unordered_map<std::string, FetchContext*> m_inflight;
 
   // libcurl share lock/unlock callbacks (called with 'this' as userptr)
   static void share_lock(CURL*, curl_lock_data data, curl_lock_access, void* userptr);

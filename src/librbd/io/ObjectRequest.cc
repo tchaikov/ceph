@@ -521,41 +521,82 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
                              << " from full object (" << full_object_data.length()
                              << " bytes)" << dendl;
 
-  // Write-back FULL object to parent RADOS pool in the background (fire-and-forget)
-  // This populates the cache without blocking the read completion
-  write_back_s3_data(full_object_data);
-
-  this->finish(0);
+  // Write-back the full object to RADOS, then complete the read.  We WAIT
+  // for the write to land before completing the user's read so that any
+  // immediately-subsequent read of the same object hits the local cache
+  // instead of re-fetching from S3.  This eliminates the
+  //   read 1: fetch S3 → fire-and-forget write-back → return
+  //   read 2: parent ENOENT (write-back not landed yet) → fetch S3 again
+  // race that doubles S3 traffic for sequential reads.  The latency cost
+  // is one extra RADOS RTT per fetch (typically a few ms) — well under
+  // the cost of a duplicate S3 GET (typically 50–200 ms over WAN).
+  write_back_s3_data_then_finish(full_object_data);
 }
 
 template <typename I>
-void ObjectReadRequest<I>::write_back_s3_data(bufferlist& full_object_data) {
+void ObjectReadRequest<I>::write_back_s3_data_then_finish(
+    bufferlist& full_object_data) {
   I *image_ctx = this->m_ictx;
   auto cct = image_ctx->cct;
 
+  // Zero-block sparseness: if S3 returned all zeros, skip both the data
+  // write-back and the object_map update so the parent pool stays sparse.
+  // Same trade-off as ObjectBackfillRequest::write_rados — we re-fetch on
+  // the next read rather than persisting a 4 MB object full of zeros.
+  if (full_object_data.is_zero()) {
+    ldout(cct, 10) << "object " << this->m_oid
+                   << " is all-zero from S3, skipping write-back + map update" << dendl;
+    this->finish(0);
+    return;
+  }
+
   ldout(cct, 10) << "writing " << full_object_data.length()
                  << " bytes (entire object) to parent cache object: "
-                 << this->m_oid << " (fire-and-forget)" << dendl;
+                 << this->m_oid << dendl;
 
   // write_full() replaces rather than offsets — correct since we fetched the whole object
   librados::ObjectWriteOperation write_op;
   write_op.write_full(full_object_data);
 
-  auto rados_completion = librados::Rados::aio_create_completion();
+  // Completion: fire object_map update (still fire-and-forget, since the
+  // map is advisory) then complete the user's read.  We chain via a
+  // FunctionContext rather than a member-pointer callback because the
+  // RADOS completion callback signature does not match Context's.
+  using klass = ObjectReadRequest<I>;
+  auto on_writeback_done = util::create_context_callback<
+      klass, &klass::handle_write_back_done>(this);
+
+  auto rados_completion = util::create_rados_callback(on_writeback_done);
 
   int r = image_ctx->data_ctx.aio_operate(this->m_oid, rados_completion, &write_op);
   if (r < 0) {
     ldout(cct, 5) << "warning: failed to submit S3 cache write-back: "
                   << cpp_strerror(r) << dendl;
-  } else {
-    ldout(cct, 10) << "submitted S3 cache write-back for " << this->m_oid << dendl;
-
-    // Update object map to mark the object as EXISTS
-    // This is done synchronously (in-memory) or fire-and-forget (RADOS)
-    // so it doesn't block the read completion
-    update_object_map_for_s3_write_back();
+    rados_completion->release();
+    // Read itself succeeded; surface success to the user even if cache
+    // write-back failed.  The next reader will re-fetch from S3.
+    this->finish(0);
+    return;
   }
   rados_completion->release();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::handle_write_back_done(int r) {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+
+  if (r < 0) {
+    ldout(cct, 5) << "warning: S3 cache write-back failed: "
+                  << cpp_strerror(r) << "; continuing" << dendl;
+  } else {
+    ldout(cct, 10) << "S3 cache write-back persisted for " << this->m_oid << dendl;
+    // Object map update is fire-and-forget — its only purpose is to keep
+    // rbd-du honest, and missing it does not affect read correctness.
+    update_object_map_for_s3_write_back();
+  }
+
+  this->finish(0);
 }
 
 template <typename I>
