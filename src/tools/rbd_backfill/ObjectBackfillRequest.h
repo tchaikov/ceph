@@ -84,7 +84,6 @@ private:
   State m_state;
   int m_ret_val;
   bool m_lock_acquired;  // Track if we hold the distributed lock
-  bool m_finished;       // Prevent double-finish
 
   // Lock management
   std::string m_lock_name;

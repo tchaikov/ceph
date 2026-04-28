@@ -42,7 +42,6 @@ ObjectBackfillRequest::ObjectBackfillRequest(
     m_state(STATE_INIT),
     m_ret_val(0),
     m_lock_acquired(false),
-    m_finished(false),
     m_data_bl(data) {  // Store pre-fetched data
 
   // Generate a unique lock cookie: prefix + request address + wall-clock time.
@@ -52,7 +51,6 @@ ObjectBackfillRequest::ObjectBackfillRequest(
                   stringify(reinterpret_cast<uintptr_t>(this)) + "-" +
                   stringify(ceph_clock_now());
 
-  // Lock name is the object name
   m_lock_name = librbd::S3_FETCH_LOCK_NAME;
   m_lock_tag = librbd::S3_FETCH_LOCK_TAG;  // Must match CopyupRequest's lock tag (librbd/Types.h)
 
@@ -134,6 +132,18 @@ void ObjectBackfillRequest::handle_acquire_lock(int r) {
 void ObjectBackfillRequest::write_rados() {
   dout(15) << dendl;
 
+  // Zero-block sparseness: if the S3 fetch returned all zeros, do not create
+  // a RADOS object for it and do not flag it in the object map.  This keeps
+  // the parent pool sparse, matching the read- and write-triggered fetch
+  // paths.  The next read will re-fetch from S3 (small cost relative to the
+  // RADOS space we save for VM images that are mostly zero on the tail).
+  if (m_data_bl.is_zero()) {
+    dout(10) << "object " << m_object_no << " is all-zero, skipping write_full + map update" << dendl;
+    m_state = STATE_RELEASE_LOCK;
+    release_lock();
+    return;
+  }
+
   Context* ctx = librbd::util::create_context_callback<ObjectBackfillRequest, &ObjectBackfillRequest::handle_write_rados>(this);
 
   librados::ObjectWriteOperation op;
@@ -210,7 +220,7 @@ void ObjectBackfillRequest::handle_update_object_map(int r) {
 
   dout(10) << "object map updated, releasing lock" << dendl;
   m_state = STATE_RELEASE_LOCK;
-  m_ret_val = 0;  // Success
+  m_ret_val = 0;
   release_lock();
 }
 
@@ -266,11 +276,10 @@ void ObjectBackfillRequest::finish(int r) {
 
   {
     Mutex::Locker locker(m_lock);
-    if (m_finished) {
+    if (m_state == STATE_COMPLETE) {
       dout(5) << "already finished, ignoring duplicate finish call" << dendl;
       already_finished = true;
     } else {
-      m_finished = true;
       m_state = STATE_COMPLETE;
       m_ret_val = r;
       need_release_lock = m_lock_acquired;
@@ -302,8 +311,6 @@ void ObjectBackfillRequest::finish(int r) {
   }
 
   m_on_finish->complete(r);
-
-  // Delete self after completion
   delete this;
 }
 
