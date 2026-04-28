@@ -450,6 +450,7 @@ void ObjectReadRequest<I>::handle_lock_for_s3_read(int r) {
   ldout(cct, 15) << "lock result: r=" << r << dendl;
 
   if (r == 0) {
+    ceph_assert(!m_skip_writeback);
     m_s3_lock_acquired = true;
     ldout(cct, 10) << "acquired S3 read lock, re-stat'ing object before fetch" << dendl;
     recheck_oid_after_lock();
@@ -461,6 +462,7 @@ void ObjectReadRequest<I>::handle_lock_for_s3_read(int r) {
     // Skip writeback as a precaution since we don't know the lock state.
     ldout(cct, 5) << "failed to acquire S3 read lock: " << cpp_strerror(r)
                   << ", proceeding with own fetch (skip writeback)" << dendl;
+    ceph_assert(!m_s3_lock_acquired);
     m_skip_writeback = true;
     read_from_s3();
   }
@@ -495,6 +497,7 @@ void ObjectReadRequest<I>::handle_list_lock_holders_for_read(int r) {
   if (r < 0) {
     ldout(cct, 5) << "failed to list lock holders, falling back to own fetch: "
                   << cpp_strerror(r) << dendl;
+    ceph_assert(!m_s3_lock_acquired);
     m_skip_writeback = true;
     read_from_s3();
     return;
@@ -510,6 +513,7 @@ void ObjectReadRequest<I>::handle_list_lock_holders_for_read(int r) {
   if (r < 0) {
     ldout(cct, 5) << "failed to parse lock info, falling back to own fetch: "
                   << cpp_strerror(r) << dendl;
+    ceph_assert(!m_s3_lock_acquired);
     m_skip_writeback = true;
     read_from_s3();
     return;
@@ -545,6 +549,7 @@ void ObjectReadRequest<I>::handle_list_lock_holders_for_read(int r) {
   // changing the resulting bytes — RBD parents are immutable raw exports.
   ldout(cct, 10) << "lock held by another user request, fetching own copy + "
                  << "skipping writeback (peer will populate)" << dendl;
+  ceph_assert(!m_s3_lock_acquired);
   m_skip_writeback = true;
   read_from_s3();
 }
@@ -614,6 +619,12 @@ void ObjectReadRequest<I>::unlock_after_s3_read() {
   if (!m_s3_lock_acquired) {
     return;
   }
+  // Invariant: m_s3_lock_acquired and m_skip_writeback are mutually
+  // exclusive.  If both were set we'd unlock a lock the request never
+  // actually holds — m_lock_cookie is populated during the lock attempt
+  // even on the loser path, so the cls op would silently break the real
+  // holder's lease.  Crash here rather than corrupt the holder's state.
+  ceph_assert(!m_skip_writeback);
   I *image_ctx = this->m_ictx;
   auto cct = image_ctx->cct;
   ldout(cct, 15) << "unlocking " << m_lock_oid << dendl;
@@ -793,6 +804,47 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
     }
 
     lderr(image_ctx->cct) << "failed to fetch from S3: " << cpp_strerror(r) << dendl;
+
+    // Skip-writeback path: the peer foreground user holds the s3_fetch_lock
+    // and is committed to populating m_oid in RADOS via its own write_full.
+    // Our own S3 fetch failed (network blip, throttling, transient 5xx, etc.)
+    // but the peer may have completed its write_full while we were failing.
+    // Attempt one RADOS read before propagating the original S3 error.
+    //
+    // Safety / boundedness:
+    //   * we never acquired the s3_fetch_lock on this path
+    //     (m_s3_lock_acquired is false), so we deliberately do NOT call
+    //     unlock_after_s3_read() — that would assert / break the peer's
+    //     lock if cookies happen to match;
+    //   * handle_skip_writeback_fallback is a leaf: it ALWAYS calls
+    //     this->finish() and never dispatches further work — no
+    //     re-entry into read_object()/should_read_from_s3()/
+    //     read_from_s3_with_lock(), so there is zero risk of a recursive
+    //     S3 fetch loop;
+    //   * cost is exactly one extra RADOS RTT in the failure case.
+    if (m_skip_writeback) {
+      ldout(image_ctx->cct, 10)
+          << "skip-writeback S3 fetch failed; attempting one RADOS fallback "
+          << "read of " << this->m_oid << " before propagating error" << dendl;
+      m_skip_writeback_fallback_err = r;
+
+      m_read_data->clear();
+      librados::ObjectReadOperation op;
+      op.read(this->m_object_off, this->m_object_len, m_read_data, nullptr);
+
+      using klass = ObjectReadRequest<I>;
+      librados::AioCompletion *rados_completion =
+          util::create_rados_callback<
+              klass, &klass::handle_skip_writeback_fallback>(this);
+      int flags = image_ctx->get_read_flags(this->m_snap_id);
+      int rr = image_ctx->data_ctx.aio_operate(
+          this->m_oid, rados_completion, &op, flags, nullptr,
+          (this->m_trace.valid() ? this->m_trace.get_info() : nullptr));
+      ceph_assert(rr == 0);
+      rados_completion->release();
+      return;
+    }
+
     unlock_after_s3_read();
     this->finish(r);
     return;
@@ -835,6 +887,35 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
   // is one extra RADOS RTT per fetch (typically a few ms) — well under
   // the cost of a duplicate S3 GET (typically 50–200 ms over WAN).
   write_back_s3_data_then_finish(full_object_data);
+}
+
+template <typename I>
+void ObjectReadRequest<I>::handle_skip_writeback_fallback(int r) {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+
+  if (r >= 0) {
+    // The peer's write_full landed in RADOS while our own S3 fetch was
+    // failing.  m_read_data now holds the requested range from local
+    // cache — return success and bury the original S3 error.
+    ldout(cct, 10)
+        << "skip-writeback fallback: RADOS read served " << r
+        << " bytes from " << this->m_oid << " (peer writeback landed); "
+        << "ignoring original S3 error "
+        << cpp_strerror(m_skip_writeback_fallback_err) << dendl;
+    this->finish(0);
+    return;
+  }
+
+  // RADOS also missed (typically -ENOENT — peer's write_full hadn't
+  // landed yet, or itself failed).  Surface the original S3 error to
+  // the caller; the RADOS error is just diagnostic.
+  ldout(cct, 5)
+      << "skip-writeback fallback: RADOS read of " << this->m_oid
+      << " failed with " << cpp_strerror(r)
+      << "; propagating original S3 error "
+      << cpp_strerror(m_skip_writeback_fallback_err) << dendl;
+  this->finish(m_skip_writeback_fallback_err);
 }
 
 template <typename I>

@@ -164,7 +164,15 @@ private:
   // copy and return data to the caller, but skip the local RADOS write_full
   // and object_map update — the lock holder is already committed to that
   // work and a duplicate write_full just wastes RADOS IOPS.
+  // Mutually exclusive with m_s3_lock_acquired — see unlock_after_s3_read
+  // for the assert.
   bool m_skip_writeback = false;
+  // On the skip-writeback path only: if our own S3 fetch fails with a
+  // non-sparse error, we save the original S3 error here and attempt a
+  // single RADOS fallback read of m_oid (the peer lock holder may have
+  // committed its write_full while our fetch was failing).  Propagated
+  // back to the caller only if the RADOS fallback also misses.
+  int m_skip_writeback_fallback_err = 0;
   // On the skip-writeback path (peer user holds the lock and will populate
   // RADOS), we briefly poll m_oid before returning to the caller so that
   // subsequent in-process reads of the same object hit local RADOS instead
@@ -196,6 +204,10 @@ private:
   void handle_recheck_oid_after_lock(int r);
   void read_from_s3();
   void handle_read_from_s3(int r);
+  // Skip-writeback path only: single RADOS fallback read attempted when our
+  // own S3 fetch failed with a non-sparse error.  Bounded — leaf handler
+  // that always finishes; never re-enters the state machine or S3.
+  void handle_skip_writeback_fallback(int r);
   void write_back_s3_data_then_finish(bufferlist& full_object_data);
   void handle_write_back_done(int r);
   void update_object_map_for_s3_write_back();
