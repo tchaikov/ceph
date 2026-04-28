@@ -46,7 +46,14 @@ ImageBackfiller::~ImageBackfiller() {
   dout(10) << dendl;
 
   if (m_image_ctx) {
-    m_image_ctx->state->close();
+    // librbd::ImageState<I>::close() takes ownership of the ImageCtx and
+    // deletes it via `delete m_image_ctx` after the close completes (see
+    // src/librbd/ImageState.cc:279).  Release the unique_ptr first so it
+    // doesn't run a second `delete` on the now-freed ImageCtx — the second
+    // delete races against any heap-reuser, eventually segfaulting in
+    // perf_stop() when cct gets zeroed by an unrelated allocator op.
+    librbd::ImageCtx* ictx = m_image_ctx.release();
+    ictx->state->close();
   }
 }
 
@@ -406,7 +413,6 @@ void ImageBackfiller::handle_object_complete(int r) {
   if (r < 0) {
     dout(10) << "object backfill failed: " << cpp_strerror(r) << dendl;
     m_failed_objects++;
-    m_ret_val = r;
   } else {
     dout(20) << "object backfill succeeded" << dendl;
     m_completed_objects++;
