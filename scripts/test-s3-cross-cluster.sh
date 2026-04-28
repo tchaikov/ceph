@@ -207,59 +207,52 @@ run_s3_cross_cluster() {
     # scenario with all read/write/flatten combinations.  Here we validate just the
     # basic clone-standalone + S3 read path.
 
-    local minio_port=19200
-    local minio_data="/tmp/minio-cross-$$"
-    local minio_pid=""
+    # Run MinIO as a sidecar container on the same docker/podman network as the
+    # ceph-cluster1/2 containers so they can reach it directly via container
+    # IP.  Originally MinIO ran on the host, but rootless podman with pasta
+    # uses --no-map-gw, so the bridge gateway IP from the container's view is
+    # NOT mapped to host services — every connection to host:19200 from inside
+    # a container goes ECONNREFUSED.  Container-to-container on the same
+    # network works without any port mapping.
+    local minio_name="minio-cross-$$"
+    local minio_ip="172.20.0.30"
+    local minio_port=9000
+    local minio_data="/tmp/${minio_name}-data"
     local s3_bucket="cross-cluster-test"
-    local s3_endpoint="http://127.0.0.1:${minio_port}"
+    local container_s3="http://${minio_ip}:${minio_port}"
 
-    # Kill any leftover MinIO listening on our chosen port — earlier failed
-    # runs may have left a `minio server --address 0.0.0.0:19200` running on
-    # the host (cleanup() doesn't always reach the kill if the test bailed
-    # before recording minio_pid).
-    if ss -tlnp 2>/dev/null | grep -qE ":${minio_port} "; then
-        log_warn "Port $minio_port already in use; killing leftover MinIO"
-        pkill -f "minio.*:${minio_port}" 2>/dev/null || true
+    # Pre-place the parent data in MinIO's data dir so we don't need any
+    # host->container upload path (the host can't reach the container in
+    # rootless podman either, for the same pasta reason).  MinIO with the
+    # default fs backend treats /data/<bucket>/<object> as the S3 object
+    # store, which means we can stage the file on disk and avoid mc entirely.
+    mkdir -p "${minio_data}/${s3_bucket}"
+    dd if=/dev/urandom of="${minio_data}/${s3_bucket}/cross-parent-raw" \
+        bs=1M count=20 status=none
+
+    docker rm -f "$minio_name" 2>/dev/null || true
+    docker run -d --name "$minio_name" --rm \
+        --network ceph-nautilus_ceph-net \
+        --ip "$minio_ip" \
+        -v "${minio_data}:/data" \
+        -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+        minio/minio server /data --address "0.0.0.0:${minio_port}" >/dev/null
+
+    # Wait for MinIO to start serving (poll its health endpoint via cluster2)
+    for i in $(seq 1 30); do
+        if docker exec ceph-cluster2 bash -c \
+            "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+            break
+        fi
         sleep 1
-    fi
-
-    # Start MinIO on the host
-    mkdir -p "$minio_data"
-    MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
-        "$MINIO_BIN/minio" server "$minio_data" \
-        --address "0.0.0.0:${minio_port}" \
-        --console-address "0.0.0.0:$((minio_port + 1))" \
-        > /tmp/minio-cross-cluster.log 2>&1 &
-    minio_pid=$!
-    sleep 3
-
-    if ! kill -0 $minio_pid 2>/dev/null; then
-        log_error "MinIO failed to start for cross-cluster test"
-        cat /tmp/minio-cross-cluster.log
+    done
+    if ! docker exec ceph-cluster2 bash -c \
+        "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+        log_error "MinIO sidecar didn't become reachable from cluster2"
+        docker logs "$minio_name" 2>&1 | tail
         return 1
     fi
-
-    "$MINIO_BIN/mc" alias set cross "$s3_endpoint" minioadmin minioadmin > /dev/null 2>&1
-    "$MINIO_BIN/mc" mb "cross/$s3_bucket" > /dev/null 2>&1 || true
-
-    # Create and upload parent data (20 MB)
-    dd if=/dev/urandom bs=1M count=20 status=none | \
-        "$MINIO_BIN/mc" pipe "cross/$s3_bucket/cross-parent-raw" > /dev/null 2>&1
-    log_success "Uploaded 20MB parent image to S3"
-
-    # Determine host IP as seen from containers.  docker-compose creates a
-    # network named "ceph-nautilus_ceph-net"; its gateway is the host's
-    # interface on that bridge.  We don't use `docker network inspect bridge`
-    # here because podman has no "bridge" network (only docker does), and the
-    # default gateway 172.17.0.1 is the docker0 bridge — unroutable on a
-    # podman-only host where MinIO is reached via the ceph-net gateway.
-    # Parsing JSON works on both docker and podman.
-    HOST_IP=$(docker network inspect ceph-nautilus_ceph-net 2>/dev/null \
-        | python3 -c "import sys,json; n=json.load(sys.stdin)[0]; \
-              s=n.get('subnets') or [c for c in n.get('IPAM',{}).get('Config',[])]; \
-              g=s[0].get('gateway') or s[0].get('Gateway'); print(g)" 2>/dev/null \
-        || echo "172.20.0.1")
-    local container_s3="http://${HOST_IP}:${minio_port}"
+    log_success "MinIO sidecar at ${container_s3} ready (20MB parent staged)"
 
     # Setup parent pool + image on cluster1 with S3 config pointing to host MinIO
     ceph_on cluster1 "osd pool create xcluster_pool 32" 2>&1 || true
@@ -360,8 +353,8 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
     ceph_on cluster2 "osd pool delete xcluster_pool xcluster_pool --yes-i-really-really-mean-it" 2>/dev/null || true
     ceph_on cluster2 "osd pool delete xchild_pool   xchild_pool   --yes-i-really-really-mean-it" 2>/dev/null || true
 
-    kill $minio_pid 2>/dev/null || true
-    rm -rf "$minio_data" /tmp/minio-cross-cluster.log
+    docker rm -f "$minio_name" 2>/dev/null || true
+    rm -rf "$minio_data"
 
     log_success "=== S3-Backed Cross-Cluster Test PASSED ==="
 }
