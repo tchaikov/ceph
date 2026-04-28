@@ -62,8 +62,26 @@ setup_containers() {
     log_step "Setting up Docker containers"
 
     cd "$CEPH_ROOT"
-    docker pull debian:stable
+    # Skip the unconditional `docker pull debian:stable` — registry mirrors
+    # configured in ~/.config/containers/registries.conf may transiently 404
+    # on the manifest.  If the previous build's image is cached, skip the
+    # base pull entirely.
+    if ! docker images --format '{{.Repository}}' 2>/dev/null \
+            | grep -qE '^(docker.io/library/)?debian$'; then
+        docker pull debian:stable || true
+    fi
     DOCKER_BUILDKIT=0 docker-compose up -d --build
+
+    # Rootless podman: cephdev inside container (uid 1000) must be able to
+    # write to /ceph/build (bind-mounted from host).  Without remapping, the
+    # host user's UID maps to container root, leaving cephdev unable to
+    # touch the build dir.  podman unshare chown -R 1000:1000 delegates
+    # ownership to the subordinate UID that container's cephdev resolves to.
+    # cleanup() restores ownership to 0:0 (== host user) at the end.
+    if command -v podman &>/dev/null; then
+        log_info "Delegating /ceph/build ownership to container's cephdev"
+        podman unshare chown -R 1000:1000 "$CEPH_ROOT/build" 2>/dev/null || true
+    fi
 
     log_info "Waiting for containers..."
     sleep 5
@@ -93,6 +111,13 @@ cleanup() {
     log_info "Tearing down containers..."
     cd "$CEPH_ROOT"
     docker-compose down 2>/dev/null || true
+
+    # Restore host ownership of /ceph/build (was delegated to subordinate
+    # UID by setup_containers).  Without this the host user can't edit
+    # source files after a test run.
+    if command -v podman &>/dev/null; then
+        podman unshare chown -R 0:0 "$CEPH_ROOT/build" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
 
@@ -188,6 +213,16 @@ run_s3_cross_cluster() {
     local s3_bucket="cross-cluster-test"
     local s3_endpoint="http://127.0.0.1:${minio_port}"
 
+    # Kill any leftover MinIO listening on our chosen port — earlier failed
+    # runs may have left a `minio server --address 0.0.0.0:19200` running on
+    # the host (cleanup() doesn't always reach the kill if the test bailed
+    # before recording minio_pid).
+    if ss -tlnp 2>/dev/null | grep -qE ":${minio_port} "; then
+        log_warn "Port $minio_port already in use; killing leftover MinIO"
+        pkill -f "minio.*:${minio_port}" 2>/dev/null || true
+        sleep 1
+    fi
+
     # Start MinIO on the host
     mkdir -p "$minio_data"
     MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
@@ -212,8 +247,18 @@ run_s3_cross_cluster() {
         "$MINIO_BIN/mc" pipe "cross/$s3_bucket/cross-parent-raw" > /dev/null 2>&1
     log_success "Uploaded 20MB parent image to S3"
 
-    # Determine host IP as seen from containers (bridge network gateway)
-    HOST_IP=$(docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || echo "172.17.0.1")
+    # Determine host IP as seen from containers.  docker-compose creates a
+    # network named "ceph-nautilus_ceph-net"; its gateway is the host's
+    # interface on that bridge.  We don't use `docker network inspect bridge`
+    # here because podman has no "bridge" network (only docker does), and the
+    # default gateway 172.17.0.1 is the docker0 bridge — unroutable on a
+    # podman-only host where MinIO is reached via the ceph-net gateway.
+    # Parsing JSON works on both docker and podman.
+    HOST_IP=$(docker network inspect ceph-nautilus_ceph-net 2>/dev/null \
+        | python3 -c "import sys,json; n=json.load(sys.stdin)[0]; \
+              s=n.get('subnets') or [c for c in n.get('IPAM',{}).get('Config',[])]; \
+              g=s[0].get('gateway') or s[0].get('Gateway'); print(g)" 2>/dev/null \
+        || echo "172.20.0.1")
     local container_s3="http://${HOST_IP}:${minio_port}"
 
     # Setup parent pool + image on cluster1 with S3 config pointing to host MinIO
