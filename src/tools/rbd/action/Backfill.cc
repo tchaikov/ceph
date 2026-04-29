@@ -104,9 +104,9 @@ int execute_schedule(const po::variables_map &vm,
     return r;
   }
 
-  std::cout << "Backfill scheduled for " << pool_name << "/"
-            << (namespace_name.empty() ? "" : namespace_name + "/")
-            << image_name << std::endl;
+  std::cout << "Backfill scheduled for "
+            << rbd::backfill::format_image_path(pool_name, namespace_name, image_name)
+            << std::endl;
   std::cout << "The rbd-backfill daemon will automatically start backfilling this image." << std::endl;
 
   return 0;
@@ -300,9 +300,8 @@ int execute_status(const po::variables_map &vm,
 
   if (formatter.get()) {
     formatter->open_object_section("backfill_status");
-    formatter->dump_string("image", pool_name + "/" +
-                          (namespace_name.empty() ? "" : namespace_name + "/") +
-                          image_name);
+    formatter->dump_string("image",
+                           rbd::backfill::format_image_path(pool_name, namespace_name, image_name));
     if (scheduled) {
       formatter->dump_string("scheduled", scheduled_value);
     }
@@ -310,9 +309,9 @@ int execute_status(const po::variables_map &vm,
     formatter->close_section();
     formatter->flush(std::cout);
   } else {
-    std::cout << "Image: " << pool_name << "/"
-              << (namespace_name.empty() ? "" : namespace_name + "/")
-              << image_name << std::endl;
+    std::cout << "Image: "
+              << rbd::backfill::format_image_path(pool_name, namespace_name, image_name)
+              << std::endl;
     if (scheduled) {
       std::cout << "Backfill scheduled: " << scheduled_value << std::endl;
     }
@@ -364,9 +363,9 @@ int execute_cancel(const po::variables_map &vm,
     return r;
   }
 
-  std::cout << "Backfill canceled for " << pool_name << "/"
-            << (namespace_name.empty() ? "" : namespace_name + "/")
-            << image_name << std::endl;
+  std::cout << "Backfill canceled for "
+            << rbd::backfill::format_image_path(pool_name, namespace_name, image_name)
+            << std::endl;
 
   return 0;
 }

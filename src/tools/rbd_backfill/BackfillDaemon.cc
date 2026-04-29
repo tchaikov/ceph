@@ -309,8 +309,8 @@ int BackfillDaemon::discover_scheduled_images(std::vector<ImageSpec>* new_specs)
       std::vector<librbd::image_spec_t> images;
       r = rbd.list2(ioctx, &images);
       if (r < 0) {
-        dout(10) << "failed to list images in pool " << pool_name
-                 << (ns.empty() ? "" : "/" + ns)
+        dout(10) << "failed to list images in pool "
+                 << (ns.empty() ? pool_name : pool_name + "/" + ns)
                  << ": " << cpp_strerror(r) << dendl;
         continue;
       }
@@ -358,9 +358,8 @@ int BackfillDaemon::discover_scheduled_images(std::vector<ImageSpec>* new_specs)
 
         if (scheduled_value == BACKFILL_SCHED_IN_PROGRESS) {
           // Another daemon instance already claimed this image — skip it.
-          dout(10) << "image " << pool_name
-                   << (ns.empty() ? "" : "/" + ns)
-                   << "/" << p.image_spec->name
+          dout(10) << "image "
+                   << format_image_path(pool_name, ns, p.image_spec->name)
                    << " is already claimed by another daemon instance, skipping" << dendl;
           continue;
         }
@@ -375,18 +374,17 @@ int BackfillDaemon::discover_scheduled_images(std::vector<ImageSpec>* new_specs)
         librbd::Image image;
         r = rbd.open(ioctx, image, p.image_spec->name.c_str());
         if (r < 0) {
-          dout(10) << "failed to open image " << pool_name
-                   << (ns.empty() ? "" : "/" + ns)
-                   << "/" << p.image_spec->name << ": " << cpp_strerror(r) << dendl;
+          dout(10) << "failed to open image "
+                   << format_image_path(pool_name, ns, p.image_spec->name)
+                   << ": " << cpp_strerror(r) << dendl;
           continue;
         }
 
         int claim_r = image.metadata_set(BACKFILL_SCHEDULED_KEY, BACKFILL_SCHED_IN_PROGRESS);
         image.close();
         if (claim_r < 0) {
-          dout(5) << "failed to claim image " << pool_name
-                  << (ns.empty() ? "" : "/" + ns)
-                  << "/" << p.image_spec->name
+          dout(5) << "failed to claim image "
+                  << format_image_path(pool_name, ns, p.image_spec->name)
                   << " for backfill: " << cpp_strerror(claim_r)
                   << " — skipping to avoid duplicate backfill" << dendl;
           continue;
@@ -407,9 +405,8 @@ int BackfillDaemon::discover_scheduled_images(std::vector<ImageSpec>* new_specs)
 
         new_specs->push_back(spec);
 
-        dout(10) << "claimed and discovered scheduled image: " << pool_name
-                 << (ns.empty() ? "" : "/" + ns)
-                 << "/" << p.image_spec->name
+        dout(10) << "claimed and discovered scheduled image: "
+                 << format_image_path(pool_name, ns, p.image_spec->name)
                  << " (pool_id=" << pool_id << " image_id=" << spec.image_id
                  << ")" << dendl;
       }

@@ -25,6 +25,19 @@ static constexpr const char* BACKFILL_STATUS_SCHEDULED = "scheduled";
 static constexpr const char* BACKFILL_STATUS_COMPLETE  = "complete";
 static constexpr const char* BACKFILL_STATUS_FAILED    = "failed";
 
+// Render a `pool[/ns]/image` path consistently across BackfillDaemon and the
+// rbd backfill CLI.  Both files were open-coding two slightly different
+// `(ns.empty() ? "" : ...)` ternaries that always rendered the same string;
+// this is the canonical format.
+inline std::string format_image_path(const std::string& pool,
+                                     const std::string& ns,
+                                     const std::string& image) {
+  if (ns.empty()) {
+    return pool + "/" + image;
+  }
+  return pool + "/" + ns + "/" + image;
+}
+
 struct ImageSpec {
   std::string pool_name;
   std::string namespace_name;
