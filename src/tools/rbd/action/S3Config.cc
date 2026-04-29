@@ -156,8 +156,8 @@ int execute_set(const po::variables_map &vm,
   return 0;
 }
 
-void get_get_arguments(po::options_description *positional,
-                       po::options_description *options) {
+void get_image_spec_only_arguments(po::options_description *positional,
+                                   po::options_description *options) {
   at::add_image_spec_options(positional, options, at::ARGUMENT_MODIFIER_NONE);
 }
 
@@ -222,11 +222,6 @@ int execute_get(const po::variables_map &vm,
   return 0;
 }
 
-void get_clear_arguments(po::options_description *positional,
-                         po::options_description *options) {
-  at::add_image_spec_options(positional, options, at::ARGUMENT_MODIFIER_NONE);
-}
-
 int execute_clear(const po::variables_map &vm,
                   const std::vector<std::string> &ceph_global_init_args) {
   size_t arg_index = 0;
@@ -283,12 +278,12 @@ Shell::Action action_set(
 Shell::Action action_get(
   {"s3-config", "get"}, {},
   "Get S3 configuration for an image.",
-  "", &get_get_arguments, &execute_get);
+  "", &get_image_spec_only_arguments, &execute_get);
 
 Shell::Action action_clear(
   {"s3-config", "clear"}, {},
   "Clear S3 configuration for an image.",
-  "", &get_clear_arguments, &execute_clear);
+  "", &get_image_spec_only_arguments, &execute_clear);
 
 } // namespace s3_config
 } // namespace action
