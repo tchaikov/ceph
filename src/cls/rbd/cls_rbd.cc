@@ -207,6 +207,21 @@ static int write_key(cls_method_context_t hctx, const string &key, const T &t,
   return 0;
 }
 
+// Read the snapshot record for `snap_id` into `*snap`, also setting
+// `*snapshot_key` so callers can reuse the key for a later write.  Returns 0
+// with `*snap` left default-constructed when snap_id == CEPH_NOSNAP — that's
+// the standalone-clone case, where there is no snapshot record to read.
+// Used by child_attach / child_detach / children_list, which all share this
+// "look up the snap unless we're operating at HEAD" preamble.
+static int maybe_read_snap(cls_method_context_t hctx, uint64_t snap_id,
+                           string *snapshot_key, cls_rbd_snap *snap) {
+  if (snap_id == CEPH_NOSNAP) {
+    return 0;
+  }
+  key_from_snap_id(snap_id, snapshot_key);
+  return read_key(hctx, *snapshot_key, snap);
+}
+
 static int remove_key(cls_method_context_t hctx, const string &key) {
   int r = cls_cxx_map_remove_key(hctx, key);
   if (r < 0 && r != -ENOENT) {
@@ -3975,20 +3990,15 @@ int child_attach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   cls_rbd_snap snap;
   std::string snapshot_key;
-  int r;
-
-  if (!is_standalone_clone) {
-    key_from_snap_id(snap_id, &snapshot_key);
-    r = read_key(hctx, snapshot_key, &snap);
-    if (r < 0) {
-      return r;
-    }
-
-    if (cls::rbd::get_snap_namespace_type(snap.snapshot_namespace) ==
-          cls::rbd::SNAPSHOT_NAMESPACE_TYPE_TRASH) {
-      // cannot attach to a deleted snapshot
-      return -ENOENT;
-    }
+  int r = maybe_read_snap(hctx, snap_id, &snapshot_key, &snap);
+  if (r < 0) {
+    return r;
+  }
+  if (!is_standalone_clone &&
+      cls::rbd::get_snap_namespace_type(snap.snapshot_namespace) ==
+        cls::rbd::SNAPSHOT_NAMESPACE_TYPE_TRASH) {
+    // cannot attach to a deleted snapshot
+    return -ENOENT;
   }
 
   auto children_key = image::snap_children_key_from_snap_id(snap_id);
@@ -4056,14 +4066,9 @@ int child_detach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   cls_rbd_snap snap;
   std::string snapshot_key;
-  int r;
-
-  if (!is_standalone_clone) {
-    key_from_snap_id(snap_id, &snapshot_key);
-    r = read_key(hctx, snapshot_key, &snap);
-    if (r < 0) {
-      return r;
-    }
+  int r = maybe_read_snap(hctx, snap_id, &snapshot_key, &snap);
+  if (r < 0) {
+    return r;
   }
 
   auto children_key = image::snap_children_key_from_snap_id(snap_id);
@@ -4158,21 +4163,16 @@ int children_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 
   CLS_LOG(20, "children_list snap_id=%" PRIu64, snap_id);
 
-  bool is_standalone_clone = (snap_id == CEPH_NOSNAP);
-
-  if (!is_standalone_clone) {
-    cls_rbd_snap snap;
-    std::string snapshot_key;
-    key_from_snap_id(snap_id, &snapshot_key);
-    int r = read_key(hctx, snapshot_key, &snap);
-    if (r < 0) {
-      return r;
-    }
+  cls_rbd_snap snap;
+  std::string snapshot_key;
+  int r = maybe_read_snap(hctx, snap_id, &snapshot_key, &snap);
+  if (r < 0) {
+    return r;
   }
 
   auto children_key = image::snap_children_key_from_snap_id(snap_id);
   cls::rbd::ChildImageSpecs child_images;
-  int r = read_key(hctx, children_key, &child_images);
+  r = read_key(hctx, children_key, &child_images);
   if (r == -ENOENT) {
     return r;
   } else if (r < 0) {
