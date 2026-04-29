@@ -157,7 +157,13 @@ private:
   bufferlist m_out_bl;
   uint64_t m_size;
   int m_r_saved = 0;
-  bool m_is_standalone_clone = false;
+
+  // Standalone clone == no parent snapshot was specified.  Derived rather
+  // than stored: m_parent_snap_name and m_parent_snap_id are constructor
+  // inputs and never mutate.
+  bool is_standalone_clone() const {
+    return m_parent_snap_name.empty() && m_parent_snap_id == CEPH_NOSNAP;
+  }
 
   void validate_options();
 
