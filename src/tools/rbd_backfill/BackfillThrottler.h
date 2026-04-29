@@ -27,11 +27,6 @@ public:
   void start_op(uint64_t obj_no, Context *on_start);
   void finish_op(uint64_t obj_no);
 
-  void set_max_concurrent(uint32_t max_concurrent);
-  uint32_t get_max_concurrent() const;
-
-  void get_status(uint32_t *inflight, uint32_t *queued) const;
-
   // Wait for all inflight operations to complete
   void wait_for_ops();
 
@@ -41,7 +36,7 @@ private:
   CephContext *m_cct;
   ContextWQ *m_work_queue;
 
-  mutable Mutex m_lock;
+  Mutex m_lock;
   Cond m_cond;  // Condition variable for waiting on operations
   uint32_t m_max_concurrent;
 

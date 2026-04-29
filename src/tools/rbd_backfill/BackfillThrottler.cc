@@ -95,33 +95,6 @@ void BackfillThrottler::start_next_op() {
   m_work_queue->queue(queued.on_start, 0);
 }
 
-void BackfillThrottler::set_max_concurrent(uint32_t max_concurrent) {
-  dout(10) << "max_concurrent=" << max_concurrent << dendl;
-
-  Mutex::Locker locker(m_lock);
-  m_max_concurrent = max_concurrent;
-
-  // Start queued ops if we have capacity now
-  while (m_inflight_count < m_max_concurrent && !m_queued_ops.empty()) {
-    start_next_op();
-  }
-}
-
-uint32_t BackfillThrottler::get_max_concurrent() const {
-  Mutex::Locker locker(m_lock);
-  return m_max_concurrent;
-}
-
-void BackfillThrottler::get_status(uint32_t *inflight, uint32_t *queued) const {
-  Mutex::Locker locker(m_lock);
-  if (inflight != nullptr) {
-    *inflight = m_inflight_count;
-  }
-  if (queued != nullptr) {
-    *queued = m_queued_ops.size();
-  }
-}
-
 void BackfillThrottler::wait_for_ops() {
   dout(10) << dendl;
 
