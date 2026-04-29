@@ -141,29 +141,24 @@ struct S3Config {
     // region and prefix are also optional
   }
 
-  /// Build full S3 URL for the image object (cached; URL never changes after config load).
-  const std::string& build_url() const {
-    if (m_cached_url.empty()) {
-      std::string url = endpoint;
-      if (url.empty() || url.back() != '/') {
+  /// Build full S3 URL for the image object.  S3ObjectFetcher caches the
+  /// result in its constructor; other callers each invoke this once.
+  std::string build_url() const {
+    std::string url = endpoint;
+    if (url.empty() || url.back() != '/') {
+      url += '/';
+    }
+    url += bucket;
+    url += '/';
+    if (!prefix.empty()) {
+      url += prefix;
+      if (url.back() != '/') {
         url += '/';
       }
-      url += bucket;
-      url += '/';
-      if (!prefix.empty()) {
-        url += prefix;
-        if (url.back() != '/') {
-          url += '/';
-        }
-      }
-      url += image_name;
-      m_cached_url = std::move(url);
     }
-    return m_cached_url;
+    url += image_name;
+    return url;
   }
-
-private:
-  mutable std::string m_cached_url;
 };
 
 /// Full information about an image's parent.

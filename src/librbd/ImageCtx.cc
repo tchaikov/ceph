@@ -909,12 +909,6 @@ public:
         !s3_config.bucket.empty() && !s3_config.endpoint.empty() &&
         !s3_config.image_name.empty() && !s3_config.image_format.empty()) {
       s3_config.enabled = true;
-      
-      // Pre-warm the mutable URL cache here, while still holding md_lock
-      // (single-threaded context).  Subsequent concurrent calls from I/O
-      // threads read the already-populated cache and skip the write path,
-      // eliminating the data race on m_cached_url.
-      s3_config.build_url();
       ldout(cct, 10) << __func__ << ": S3 config loaded: endpoint=" << s3_config.endpoint
                      << ", bucket=" << s3_config.bucket
                      << ", image_name=" << s3_config.image_name
