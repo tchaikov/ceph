@@ -88,7 +88,7 @@ cleanup() {
         "$BUILD_DIR/bin/ceph" --conf "$CEPH_CONF" osd pool delete \
             "$POOL" "$POOL" --yes-i-really-really-mean-it 2>/dev/null || true
     fi
-    rm -rf "$MINIO_DATA_DIR" "$MINIO_TRACE_LOG" "$PERF_ASOK_DIR"
+    rm -rf "$MINIO_DATA_DIR" "$MINIO_TRACE_LOG"
 }
 trap cleanup EXIT
 
@@ -161,7 +161,6 @@ perf_test_cold_read_baseline() {
 
     setup_fresh_image "$PERF_FIXTURE_PATTERN_100MB" "perf-pattern-100mb.raw"
     reset_trace
-    perf_asok_clear
 
     local rados_before
     rados_before=$(perf_rados_snapshot "$CEPH_CONF" "$POOL")
