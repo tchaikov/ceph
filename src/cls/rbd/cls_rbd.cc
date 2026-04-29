@@ -4108,17 +4108,14 @@ int child_detach(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
     }
   }
 
-  // Check if we should remove the CLONE_PARENT op feature
-  bool should_check_clone_feature = false;
-  if (is_standalone_clone) {
-    // For standalone clones, check if this was the last child at HEAD
-    should_check_clone_feature = child_images.empty();
-  } else {
-    // For snapshot-based clones, check if this snapshot has no more children
-    should_check_clone_feature = (snap.child_count == 0);
-  }
+  // Check if we should remove the CLONE_PARENT op feature.  Standalone clones
+  // attach to HEAD, so "is this the last child?" maps to child_images.empty();
+  // snapshot-based clones bookkeep the count on the snap record itself.
+  const bool last_child_gone = is_standalone_clone
+                                 ? child_images.empty()
+                                 : (snap.child_count == 0);
 
-  if (should_check_clone_feature) {
+  if (last_child_gone) {
     auto clone_in_use_lambda = [snap_id](const cls_rbd_snap& snap_meta) {
       if (snap_meta.id != snap_id && snap_meta.child_count > 0) {
         return -EEXIST;
