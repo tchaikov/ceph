@@ -114,18 +114,7 @@ S3ObjectFetcher::~S3ObjectFetcher() {
   while (!m_work_queue.empty()) {
     FetchContext* ctx = m_work_queue.front();
     m_work_queue.pop_front();
-    curl_slist_free_all(ctx->headers);
-    curl_easy_cleanup(ctx->curl_handle);
-    // Cancel any waiters coalesced onto this primary as well.
-    {
-      std::lock_guard<std::mutex> lock(m_inflight_mutex);
-      m_inflight.erase(ctx->coalesce_key);
-    }
-    for (auto& [out_bl, on_finish] : ctx->waiters) {
-      on_finish->complete(-ECANCELED);
-    }
-    ctx->on_finish->complete(-ECANCELED);
-    delete ctx;
+    complete_and_destroy(ctx, -ECANCELED);
   }
 
   if (m_sync_handle) {
@@ -398,30 +387,9 @@ void S3ObjectFetcher::worker_thread_body() {
 }
 
 void S3ObjectFetcher::execute_fetch(FetchContext* ctx) {
-  // Helper: detach this fetch from the in-flight map and return any waiters
-  // that piled on while we were running.  Always called once per execute_fetch
-  // run so the map never grows unbounded.
-  auto take_waiters = [this, ctx]() {
-    std::vector<std::pair<bufferlist*, Context*>> ws;
-    std::lock_guard<std::mutex> lock(m_inflight_mutex);
-    auto it = m_inflight.find(ctx->coalesce_key);
-    if (it != m_inflight.end() && it->second == ctx) {
-      ws = std::move(ctx->waiters);
-      m_inflight.erase(it);
-    }
-    return ws;
-  };
-
   // Check for cancellation before issuing any I/O.
   if (ctx->cancel_flag && ctx->cancel_flag->load()) {
-    curl_slist_free_all(ctx->headers);
-    curl_easy_cleanup(ctx->curl_handle);
-    auto waiters = take_waiters();
-    ctx->on_finish->complete(-ECANCELED);
-    for (auto& [out_bl, on_finish] : waiters) {
-      on_finish->complete(-ECANCELED);
-    }
-    delete ctx;
+    complete_and_destroy(ctx, -ECANCELED);
     return;
   }
 
@@ -447,21 +415,36 @@ void S3ObjectFetcher::execute_fetch(FetchContext* ctx) {
     }
   }
 
+  complete_and_destroy(ctx, result);
+}
+
+// Free curl resources, detach from the in-flight map, then complete the
+// primary callback first, followed by all coalesced waiters (copying the
+// fetched bytes into each waiter's bufferlist on success).  Always
+// deletes ctx.  curl_slist_free_all and curl_easy_cleanup are both safe
+// to call on null handles, so the helper covers both the post-success
+// path and the early-failure paths where setup_curl_handle hasn't run.
+void S3ObjectFetcher::complete_and_destroy(FetchContext* ctx, int result) {
   curl_slist_free_all(ctx->headers);
   curl_easy_cleanup(ctx->curl_handle);
 
-  // Fan out: copy the fetched bytes to each waiter's bufferlist (only on
-  // success — failure cases get the error code with empty data).  The
-  // bufferlist copy is cheap because bufferptrs are reference-counted.
-  auto waiters = take_waiters();
+  std::vector<std::pair<bufferlist*, Context*>> waiters;
+  {
+    std::lock_guard<std::mutex> lock(m_inflight_mutex);
+    auto it = m_inflight.find(ctx->coalesce_key);
+    if (it != m_inflight.end() && it->second == ctx) {
+      waiters = std::move(ctx->waiters);
+      m_inflight.erase(it);
+    }
+  }
+
+  ctx->on_finish->complete(result);
   for (auto& [out_bl, on_finish] : waiters) {
     if (result == 0) {
       *out_bl = *ctx->out_bl;
     }
     on_finish->complete(result);
   }
-
-  ctx->on_finish->complete(result);
   delete ctx;
 }
 
@@ -519,18 +502,7 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
                                        &ctx->headers);
   if (!ctx->curl_handle) {
     ldout(cct, 1) << "failed to setup curl handle" << dendl;
-    // Detach + complete any waiters that piled on between our insert and now.
-    std::vector<std::pair<bufferlist*, Context*>> waiters;
-    {
-      std::lock_guard<std::mutex> lock(m_inflight_mutex);
-      waiters = std::move(ctx->waiters);
-      m_inflight.erase(coalesce_key);
-    }
-    on_finish->complete(-ENOMEM);
-    for (auto& [out_bl, on_finish_w] : waiters) {
-      on_finish_w->complete(-ENOMEM);
-    }
-    delete ctx;
+    complete_and_destroy(ctx, -ENOMEM);
     return;
   }
 

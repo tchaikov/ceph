@@ -215,6 +215,12 @@ private:
 
   // Execute a single fetch: performs the HTTP GET and invokes on_finish.
   void execute_fetch(FetchContext* ctx);
+
+  // Free curl resources, detach from the in-flight map, and complete the
+  // primary callback followed by all coalesced waiters with the given result.
+  // On success (result == 0) the fetched bytes are copied into each waiter's
+  // bufferlist before its callback fires.  Always deletes ctx.
+  void complete_and_destroy(FetchContext* ctx, int result);
 };
 
 } // namespace io
