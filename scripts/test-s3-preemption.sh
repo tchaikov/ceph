@@ -223,7 +223,6 @@ log_step "7. Verify data integrity: child unwritten areas contain parent S3 data
 # Each client only wrote 4 KB at offset 0. The rest of the 4 MB parent object
 # was copied verbatim from S3 during COW. We verify the last 4 KB of the first
 # object in each child matches the corresponding bytes in the S3 source.
-PARENT_BLOCK_SIZE=$(( 4 * 1024 * 1024 ))   # 4 MB = default RBD object size
 CHECK_OFFSET=$(( PARENT_BLOCK_SIZE - 4096 )) # last 4 KB of first object
 CHECK_LEN=4096
 

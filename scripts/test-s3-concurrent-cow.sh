@@ -192,7 +192,6 @@ log_step "6. Verify data integrity: parent object 0 matches S3 source"
 # 4 CopyupRequests raced on parent object 0. One won the sentinel lock, fetched
 # from S3, and wrote the parent RADOS object; the others saw it populated and
 # re-used it. Verify the written parent content equals the original S3 bytes.
-PARENT_BLOCK_SIZE=$(( 4 * 1024 * 1024 ))   # 4 MB = default RBD object size
 
 PARENT_BLOCK_PREFIX=$(get_block_prefix "$CEPH_CONF" "$POOL" "cow-parent")
 if [ -z "$PARENT_BLOCK_PREFIX" ]; then

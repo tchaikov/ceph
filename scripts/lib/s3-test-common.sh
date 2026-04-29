@@ -21,6 +21,10 @@ WORKSPACE="${WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 MINIO_BIN="${MINIO_BIN:-${HOME}/dev/minio/bin}"
 BUILD_DIR="${BUILD_DIR:-${WORKSPACE}/build}"
 CEPH_CONF="${CEPH_CONF:-${BUILD_DIR}/ceph.conf}"
+# Default RBD object size assumed by all test fixtures (4 MiB).  Tests that
+# exercise object-boundary semantics use this directly so a future change
+# to the default order updates one place.
+PARENT_BLOCK_SIZE=$(( 4 * 1024 * 1024 ))
 
 # MinIO management
 start_minio() {

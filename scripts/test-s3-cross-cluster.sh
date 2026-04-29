@@ -523,7 +523,7 @@ run_s3_cross_cluster_concurrent() {
     local NUM_CONCURRENT=4
     local TIMEOUT_SECS=120
     local parent_size_mb=20
-    local parent_block_size=$(( 4 * 1024 * 1024 ))
+    local parent_block_size=$PARENT_BLOCK_SIZE
 
     # Sidecar MinIO container on ceph-net.  Same rationale as
     # run_s3_cross_cluster: rootless podman with pasta uses --no-map-gw,

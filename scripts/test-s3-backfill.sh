@@ -710,7 +710,7 @@ test_parent_du_after_child_writeback() {
     fi
 
     # The write-back writes a full 4 MiB object regardless of write size
-    local expected_used=$(( 4 * 1024 * 1024 ))
+    local expected_used=$PARENT_BLOCK_SIZE
     local final_used
     final_used=$(get_image_used_size "$CEPH_CONF" "$parent_img")
     if [ "$final_used" -ne "$expected_used" ]; then
