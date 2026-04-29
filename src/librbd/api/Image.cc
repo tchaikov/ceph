@@ -446,14 +446,16 @@ int Image<I>::list_descendants(
   // convention (e.g. both have a pool called "ebs_ceph_ssd").
   std::set<std::pair<int64_t, std::string>> cross_cluster_ids;
   const std::string& local_cluster = cct->_conf->cluster;
+  auto is_remote_child = [&local_cluster](const auto& child) {
+    return !child.cluster_name.empty() && child.cluster_name != local_cluster;
+  };
 
   for (auto& child_image : child_images) {
     images->push_back({
       child_image.pool_id, child_image.pool_name, child_image.pool_namespace,
       child_image.image_id, "", false});
 
-    if (!child_image.cluster_name.empty() &&
-        child_image.cluster_name != local_cluster) {
+    if (is_remote_child(child_image)) {
       // Remote child — cannot be opened from this cluster's IoCtx.
       cross_cluster_ids.insert({child_image.pool_id, child_image.image_id});
       continue;
