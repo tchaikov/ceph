@@ -171,10 +171,31 @@ if [ $INTEGRITY_FAIL -ne 0 ]; then
     exit 1
 fi
 
-if [ $SKIPPED -gt 0 ] && [ $WROTE_BACK -gt 0 ]; then
-    log_success "Read-path skip-writeback dedup is firing"
+# Hard assertions on the dedup behavior itself (NOT just data correctness):
+#  1. WROTE_BACK + RECHECK_HIT must be exactly 1.  With proper dedup, exactly
+#     one client populates the parent oid (either by writing it after S3 fetch
+#     or by short-circuiting after stat-after-lock found a peer-populated
+#     copy).  WROTE_BACK > 1 means losers wrote duplicates — the skip-writeback
+#     feature is broken.
+#  2. If LOCK_BUSY > 0 (race triggered), SKIPPED must be > 0.  Nonzero
+#     LOCK_BUSY with SKIPPED=0 means the losers fell through instead of
+#     taking the skip-writeback path.
+if [ $WROTE_BACK -gt 1 ]; then
+    log_fail "Expected WROTE_BACK <= 1 (single writeback per parent object); got $WROTE_BACK"
+    log_fail "  Read-path skip-writeback dedup is broken: multiple losers wrote duplicates"
+    exit 1
+fi
+if [ $LOCK_BUSY -gt 0 ] && [ $SKIPPED -eq 0 ]; then
+    log_fail "Race triggered ($LOCK_BUSY EBUSY-user events) but SKIPPED=0"
+    log_fail "  Losers are not using the skip-writeback path"
+    exit 1
+fi
+if [ $SKIPPED -gt 0 ]; then
+    log_success "Read-path skip-writeback dedup is firing: $WROTE_BACK wrote, $SKIPPED skipped"
 elif [ $RECHECK_HIT -gt 0 ]; then
     log_success "stat-after-lock short-circuit fired (peer beat us to writeback)"
-else
-    log_warn "No skip or short-circuit observed — race may not have triggered"
+elif [ $LOCK_BUSY -eq 0 ]; then
+    log_warn "Race didn't trigger this run — clients may have serialized."
+    log_warn "  Data integrity verified ($INTEGRITY_FAIL/$NUM_CLIENTS mismatches);"
+    log_warn "  re-run for full dedup-path confidence."
 fi

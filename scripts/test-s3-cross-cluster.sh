@@ -337,14 +337,26 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
         "./bin/rados --conf /tmp/cluster1/ceph.conf -p xcluster_pool ls 2>/dev/null \
          | grep -c \"^${parent_prefix}\\.\"" || echo "0")
     log_info "Parent has $parent_obj_count RADOS data object(s) (prefix: $parent_prefix)"
-    if [ "$parent_obj_count" -lt 1 ]; then
-        log_fail "Bug #3 regression: parent has 0 cached objects after cross-cluster flatten"
-        log_error "  Expected: >= 1 (S3 data was fetched and should be cached on parent's pool)"
+    # The parent is 20 MB / 4 MB = 5 objects.  Flatten on the child reads
+    # every parent object via S3 → ObjectReadRequest::read_from_s3 →
+    # write_back_s3_data_then_finish, which in turn fires the parent
+    # writeback (via CopyupRequest::fire_parent_s3_writeback for COW or
+    # the read-side write_full directly).  After flatten completes, all 5
+    # parent oids should exist in cluster1's pool.  >= 5 catches the full
+    # regression; >= 1 only catches the bug in its most extreme form
+    # (zero writebacks fired).  Use the strict bound so a partial regression
+    # — e.g., the type-check regressing for some objects but not others —
+    # also fails the test.
+    local expected_obj_count=5  # 20 MB / 4 MB = 5 objects
+    if [ "$parent_obj_count" -lt "$expected_obj_count" ]; then
+        log_fail "Bug #3 regression: parent has $parent_obj_count cached objects after flatten"
+        log_error "  Expected: >= $expected_obj_count (full flatten populates all parent oids on cluster1)"
         log_error "  Got:      $parent_obj_count"
-        log_error "  This means fire_parent_s3_writeback early-returned for REMOTE_STANDALONE."
+        log_error "  fire_parent_s3_writeback may have early-returned for REMOTE_STANDALONE,"
+        log_error "  or the read-side write_full skipped the writeback for some objects."
         return 1
     fi
-    log_success "Parent has $parent_obj_count cached object(s) — write-back to remote parent works"
+    log_success "Parent has $parent_obj_count cached object(s) (>= $expected_obj_count expected) — write-back to remote parent works"
 
     # Cleanup
     rbd_on  cluster2 "rm xchild_pool/xcluster-child" 2>/dev/null || true

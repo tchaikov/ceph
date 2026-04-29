@@ -148,9 +148,31 @@ log_info "skipped write-back (peer):      $SKIPPING"
 log_info "RADOS pool wr_ops delta:        $WR_DELTA"
 echo
 
-# Sanity assertion: skip count should be (clients-with-EBUSY) per object.
-if [ $SKIPPING -gt 0 ] && [ $FIRING -gt 0 ]; then
-    log_success "Skip-writeback dedup is firing"
-else
-    log_warn "No skip-writeback observed — race may not have triggered (client startup serialization?)"
+# Hard assertions:
+#  1. FIRING must be exactly 1 — only the lock holder writes the parent oid.
+#     If the skip-writeback feature is broken, every contended client falls
+#     through to its own write_full and FIRING climbs to NUM_CLIENTS.
+#     With --io-pattern seq + small total, all 4 children COW the same
+#     parent object 0, so a properly working dedup yields FIRING=1
+#     regardless of whether the race triggered or the clients serialized.
+#  2. If we observed any race (LOCK_BUSY > 0), SKIPPING must be > 0 too.
+#     A nonzero LOCK_BUSY without any SKIPPING means losers fell through
+#     instead of using the skip-writeback path — the feature is silently
+#     bypassed.
+if [ $FIRING -ne 1 ]; then
+    log_fail "Expected FIRING=1 (single writeback per parent object); got $FIRING"
+    log_fail "  Skip-writeback dedup is broken: lock holder is no longer the sole writer"
+    exit 1
+fi
+if [ $LOCK_BUSY -gt 0 ] && [ $SKIPPING -eq 0 ]; then
+    log_fail "Race triggered ($LOCK_BUSY EBUSY-user events) but SKIPPING=0"
+    log_fail "  Losers are not using the skip-writeback path"
+    exit 1
+fi
+if [ $SKIPPING -gt 0 ]; then
+    log_success "Skip-writeback dedup is firing: $FIRING wrote, $SKIPPING skipped"
+elif [ $LOCK_BUSY -eq 0 ]; then
+    log_warn "Race didn't trigger this run — clients may have serialized."
+    log_warn "  FIRING=1 still observed (cache hit on subsequent clients)."
+    log_warn "  Re-run for confidence; not a failure since no race occurred."
 fi

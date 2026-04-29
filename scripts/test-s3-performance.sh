@@ -569,6 +569,19 @@ perf_test_vm_boot_scaling() {
         local scale_pct=$(( t4 * 100 / t1 ))
         perf_record "$name" n4_to_n1_pct "$scale_pct" ratio
         log_info "$name: N=4 wall time is ${scale_pct}% of N=1"
+
+        # User-reported regression threshold: "VM startup time doubled" when
+        # 4 VMs cloned from the same S3-backed parent boot concurrently.
+        # 200% n4/n1 is exactly the scenario the user reported as broken.
+        # Within-process dedup brought baseline to 142% pre-cls_lock; with
+        # cross-process cls_lock + skip-writeback + peer-writeback poll we
+        # measure ~98%.  Anything beyond 200% is the bug returning.
+        if [ "$scale_pct" -gt 200 ]; then
+            log_fail "$name: regression — N=4 took ${scale_pct}% of N=1 wall time"
+            log_fail "  expected < 200% (the user's 'VM startup time doubled' threshold)"
+            log_fail "  cross-process dedup or wait-for-peer-writeback is broken"
+            return 1
+        fi
     fi
 
     log_success "$name: scaling test complete"
