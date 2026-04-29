@@ -73,22 +73,19 @@ int execute(const po::variables_map &vm,
   opts.set(RBD_IMAGE_OPTION_FORMAT, static_cast<uint64_t>(2));
   opts.set(RBD_IMAGE_OPTION_CLONE_FORMAT, static_cast<uint64_t>(2));
 
-  // Check if this is a remote cluster clone
-  bool is_remote = vm.count("remote-cluster-conf");
-  std::string remote_cluster_conf;
-  std::string remote_keyring;
-  std::string remote_client_name = "client.admin";
-
-  if (is_remote) {
-    remote_cluster_conf = vm["remote-cluster-conf"].as<std::string>();
-
+  // For cross-cluster clones, propagate the remote-cluster options through
+  // c_opts so librbd::clone_standalone takes the remote path internally.
+  // --remote-client-name carries default_value("client.admin") so vm always
+  // has it once we know the user passed --remote-cluster-conf.
+  if (vm.count("remote-cluster-conf")) {
+    opts.set(RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF,
+             vm["remote-cluster-conf"].as<std::string>());
     if (vm.count("remote-keyring")) {
-      remote_keyring = vm["remote-keyring"].as<std::string>();
+      opts.set(RBD_IMAGE_OPTION_REMOTE_KEYRING,
+               vm["remote-keyring"].as<std::string>());
     }
-
-    if (vm.count("remote-client-name")) {
-      remote_client_name = vm["remote-client-name"].as<std::string>();
-    }
+    opts.set(RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME,
+             vm["remote-client-name"].as<std::string>());
   }
 
   librados::Rados rados;
@@ -102,14 +99,6 @@ int execute(const po::variables_map &vm,
   r = utils::init_io_ctx(rados, dst_pool_name, dst_namespace_name, &dst_io_ctx);
   if (r < 0) {
     return r;
-  }
-
-  if (is_remote) {
-    opts.set(RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF, remote_cluster_conf);
-    if (!remote_keyring.empty()) {
-      opts.set(RBD_IMAGE_OPTION_REMOTE_KEYRING, remote_keyring);
-    }
-    opts.set(RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME, remote_client_name);
   }
 
   librbd::RBD rbd;
