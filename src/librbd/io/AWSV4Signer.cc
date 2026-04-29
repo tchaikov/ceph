@@ -3,14 +3,8 @@
 
 #include "librbd/io/AWSV4Signer.h"
 #include "common/ceph_crypto.h"
-#include "common/dout.h"
-#include "include/stringify.h"
 #include <boost/algorithm/string.hpp>
 #include <sstream>
-
-#define dout_subsys ceph_subsys_rbd
-#undef dout_prefix
-#define dout_prefix *_dout << "librbd::io::AWSV4Signer: " << __func__ << ": "
 
 namespace librbd {
 namespace io {
