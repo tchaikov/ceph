@@ -113,11 +113,6 @@ void ObjectBackfillRequest::handle_acquire_lock(int r) {
     return;
   }
 
-  {
-    Mutex::Locker locker(m_lock);
-    m_lock_acquired = true;
-  }
-
   dout(10) << "lock acquired for object " << m_object_no << dendl;
 
   write_rados();
@@ -250,54 +245,27 @@ void ObjectBackfillRequest::handle_release_lock(int r) {
     dout(10) << "lock released" << dendl;
   }
 
-  {
-    Mutex::Locker locker(m_lock);
-    m_lock_acquired = false;
-  }
-
   finish(m_ret_val);
 }
 
+// Caller invariant: every code path that reaches finish() has either
+// (a) never acquired the cls_lock (handle_acquire_lock's EBUSY / error
+// branches call finish() before m_lock_acquired is set), or (b) released
+// it through release_lock() / handle_release_lock() before getting here.
+// The state machine has no other entry, so finish() does not need a
+// fallback unlock — m_finished is the sole contract a duplicate caller
+// must respect.
 void ObjectBackfillRequest::finish(int r) {
   dout(10) << "r=" << r << dendl;
-
-  bool need_release_lock = false;
-  bool already_finished = false;
 
   {
     Mutex::Locker locker(m_lock);
     if (m_finished) {
       dout(5) << "already finished, ignoring duplicate finish call" << dendl;
-      already_finished = true;
-    } else {
-      m_finished = true;
-      m_ret_val = r;
-      need_release_lock = m_lock_acquired;
+      return;
     }
-  }
-
-  if (already_finished) {
-    return;
-  }
-
-  // If we still hold the lock, release it before completing
-  if (need_release_lock) {
-    dout(10) << "releasing lock from finish()" << dendl;
-
-    // Release lock synchronously to ensure it's released before we complete
-    librados::ObjectWriteOperation op;
-    rados::cls::lock::unlock(&op, m_lock_name, m_lock_cookie);
-
-    int unlock_r = m_parent_ioctx.operate(m_lock_oid, &op);
-    if (unlock_r < 0) {
-      dout(5) << "failed to release lock in finish(): " << cpp_strerror(unlock_r) << dendl;
-      // Continue anyway - lock will timeout
-    }
-
-    {
-      Mutex::Locker locker(m_lock);
-      m_lock_acquired = false;
-    }
+    m_finished = true;
+    m_ret_val = r;
   }
 
   m_on_finish->complete(r);

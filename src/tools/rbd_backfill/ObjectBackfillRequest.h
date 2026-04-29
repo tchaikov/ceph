@@ -75,7 +75,6 @@ private:
   // both the write_rados handler and an unwind path racing it) are ignored.
   bool m_finished = false;
   int m_ret_val = 0;
-  bool m_lock_acquired = false;  // Track if we hold the distributed lock
 
   // Lock management
   std::string m_lock_name;
