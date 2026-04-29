@@ -339,26 +339,21 @@ void CopyupRequest<I>::update_object_maps() {
   bool copy_on_read = m_pending_requests.empty();
   uint8_t head_object_map_state = OBJECT_EXISTS;
 
-  bool is_standalone_parent = false;
+  bool is_standalone_parent;
   {
     RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
-    if (m_image_ctx->parent_md.parent_type == PARENT_TYPE_STANDALONE ||
-        m_image_ctx->parent_md.parent_type == PARENT_TYPE_REMOTE_STANDALONE) {
-      is_standalone_parent = true;
-      // Keep head_object_map_state = OBJECT_EXISTS (not OBJECT_EXISTS_CLEAN):
-      // the FAST_DIFF path below would otherwise mark this as OBJECT_EXISTS_CLEAN,
-      // implying it matches the snapshot chain — not valid for S3-fetched data.
-      head_object_map_state = OBJECT_EXISTS;
-    }
+    is_standalone_parent =
+      (m_image_ctx->parent_md.parent_type == PARENT_TYPE_STANDALONE ||
+       m_image_ctx->parent_md.parent_type == PARENT_TYPE_REMOTE_STANDALONE);
   }
 
-  if (!is_standalone_parent) {
-    if (copy_on_read && !m_snap_ids.empty() &&
-        m_image_ctx->test_features(RBD_FEATURE_FAST_DIFF,
-                                   m_image_ctx->snap_lock)) {
-      // HEAD is non-dirty since data is tied to first snapshot
-      head_object_map_state = OBJECT_EXISTS_CLEAN;
-    }
+  // FAST_DIFF can mark HEAD as OBJECT_EXISTS_CLEAN (data tied to first snap),
+  // but only for snapshot-based clones — S3-fetched data does not match any
+  // snapshot chain, so leave it at OBJECT_EXISTS for standalone parents.
+  if (!is_standalone_parent && copy_on_read && !m_snap_ids.empty() &&
+      m_image_ctx->test_features(RBD_FEATURE_FAST_DIFF,
+                                 m_image_ctx->snap_lock)) {
+    head_object_map_state = OBJECT_EXISTS_CLEAN;
   }
 
   auto r_it = m_pending_requests.rbegin();
