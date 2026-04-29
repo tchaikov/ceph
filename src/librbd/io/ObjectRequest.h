@@ -218,6 +218,11 @@ private:
   void handle_recheck_oid_after_lock(int r);
   void read_from_s3();
   void handle_read_from_s3(int r);
+  // Lock-coordination soft-fail dispatch: any path that gives up on holding
+  // the cls_lock (busy from a peer user request, list/parse/break errors,
+  // etc.) fetches its own S3 copy with writeback skipped so the holder
+  // populates RADOS exactly once.  Asserts the lock was never acquired.
+  void fetch_without_lock_skip_writeback();
   // Skip-writeback path only: single RADOS fallback read attempted when our
   // own S3 fetch failed with a non-sparse error.  Bounded — leaf handler
   // that always finishes; never re-enters the state machine or S3.

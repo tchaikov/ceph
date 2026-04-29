@@ -470,9 +470,7 @@ void ObjectReadRequest<I>::handle_lock_for_s3_read(int r) {
     // Skip writeback as a precaution since we don't know the lock state.
     ldout(cct, 5) << "failed to acquire S3 read lock: " << cpp_strerror(r)
                   << ", proceeding with own fetch (skip writeback)" << dendl;
-    ceph_assert(!m_s3_lock_acquired);
-    m_skip_writeback = true;
-    read_from_s3();
+    fetch_without_lock_skip_writeback();
   }
 }
 
@@ -506,9 +504,7 @@ void ObjectReadRequest<I>::handle_list_lock_holders_for_read(int r) {
     // Match CopyupRequest::handle_list_lock_holders: same event, same level.
     ldout(cct, 10) << "failed to list lock holders, falling back to own fetch: "
                    << cpp_strerror(r) << dendl;
-    ceph_assert(!m_s3_lock_acquired);
-    m_skip_writeback = true;
-    read_from_s3();
+    fetch_without_lock_skip_writeback();
     return;
   }
 
@@ -522,9 +518,7 @@ void ObjectReadRequest<I>::handle_list_lock_holders_for_read(int r) {
   if (r < 0) {
     ldout(cct, 10) << "failed to parse lock info, falling back to own fetch: "
                    << cpp_strerror(r) << dendl;
-    ceph_assert(!m_s3_lock_acquired);
-    m_skip_writeback = true;
-    read_from_s3();
+    fetch_without_lock_skip_writeback();
     return;
   }
 
@@ -558,6 +552,11 @@ void ObjectReadRequest<I>::handle_list_lock_holders_for_read(int r) {
   // changing the resulting bytes — RBD parents are immutable raw exports.
   ldout(cct, 10) << "lock held by another user request, fetching own copy + "
                  << "skipping writeback (peer will populate)" << dendl;
+  fetch_without_lock_skip_writeback();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::fetch_without_lock_skip_writeback() {
   ceph_assert(!m_s3_lock_acquired);
   m_skip_writeback = true;
   read_from_s3();
