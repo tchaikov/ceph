@@ -172,10 +172,9 @@ std::string S3ObjectFetcher::extract_uri_from_url(const std::string& url) {
   return url.substr(path_start);
 }
 
-void S3ObjectFetcher::add_auth_headers(CURL* curl_handle,
-                                        struct curl_slist** headers,
-                                        uint64_t byte_start,
-                                        uint64_t byte_length) {
+void S3ObjectFetcher::add_auth_headers(struct curl_slist** headers,
+                                       uint64_t byte_start,
+                                       uint64_t byte_length) {
   ldout(m_cct, 15) << "signing request: host=" << m_cached_host
                    << ", uri=" << m_cached_uri << dendl;
 
@@ -213,7 +212,7 @@ void S3ObjectFetcher::apply_curl_options(CURL* handle,
                                           uint64_t byte_length,
                                           struct curl_slist** out_headers) {
   *out_headers = nullptr;
-  add_auth_headers(handle, out_headers, byte_start, byte_length);
+  add_auth_headers(out_headers, byte_start, byte_length);
   if (*out_headers) {
     curl_easy_setopt(handle, CURLOPT_HTTPHEADER, *out_headers);
   }

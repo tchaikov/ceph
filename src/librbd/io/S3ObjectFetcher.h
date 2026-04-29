@@ -196,10 +196,11 @@ private:
                           uint64_t byte_start, uint64_t byte_length,
                           struct curl_slist** out_headers);
 
-  // Add AWS Signature V4 authentication headers to curl request.
-  // Uses m_cached_host and m_cached_uri (computed at construction) for signing.
-  void add_auth_headers(CURL* curl_handle, struct curl_slist** headers,
-                       uint64_t byte_start, uint64_t byte_length);
+  // Add AWS Signature V4 authentication headers to a curl request's
+  // header list.  Uses m_cached_host and m_cached_uri (computed at
+  // construction) for signing.
+  void add_auth_headers(struct curl_slist** headers,
+                        uint64_t byte_start, uint64_t byte_length);
 
   // Extract host from URL (including port if present)
   static std::string extract_host_from_url(const std::string& url);
