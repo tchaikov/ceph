@@ -1831,7 +1831,6 @@ int parent_attach(cls_method_context_t hctx, bufferlist *in, bufferlist *out) {
   uint64_t parent_overlap;
   bool reattach = false;
 
-  // Optional fields for remote parent support
   uint8_t parent_type_raw = CLS_RBD_PARENT_TYPE_SNAPSHOT;
   std::string remote_cluster_name;
   std::vector<std::string> remote_mon_hosts;
@@ -1892,7 +1891,6 @@ int parent_attach(cls_method_context_t hctx, bufferlist *in, bufferlist *out) {
     return -EINVAL;
   }
 
-  // Construct cls_rbd_parent with all fields
   cls_rbd_parent parent(parent_image_spec, parent_overlap,
                         static_cast<cls_rbd_parent_type>(parent_type_raw));
   parent.remote_cluster_name = remote_cluster_name;

@@ -71,7 +71,6 @@ private:
   std::atomic<uint64_t> m_completed_objects{0};
   std::atomic<uint64_t> m_failed_objects{0};
 
-  int m_ret_val = 0;
 };
 
 } // namespace backfill

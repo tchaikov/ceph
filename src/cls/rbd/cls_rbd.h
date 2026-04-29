@@ -74,8 +74,6 @@ struct cls_rbd_parent {
     uint8_t version = 1;
     if ((features & CEPH_FEATURE_SERVER_NAUTILUS) != 0ULL) {
       // break backwards compatability when using nautilus or later OSDs
-      // version 3 adds parent_type field
-      // version 4 adds remote cluster fields (including pool_name)
       version = 4;
     }
 
