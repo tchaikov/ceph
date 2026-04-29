@@ -1855,33 +1855,33 @@ int parent_attach(cls_method_context_t hctx, bufferlist *in, bufferlist *out) {
     return -EINVAL;
   }
 
-  // Validate remote metadata field sizes to prevent resource exhaustion
-  if (!remote_cluster_name.empty()) {
-    if (remote_cluster_name.size() > 256) {
-      CLS_LOG(1, "cls_rbd::parent_attach: remote_cluster_name too large: %zu bytes",
-              remote_cluster_name.size());
+  // Validate remote metadata field sizes to prevent resource exhaustion.
+  // The decode block above unconditionally reads all four fields whenever
+  // the iterator has bytes left, so the size limits MUST be enforced
+  // unconditionally too — gating them on remote_cluster_name.empty() lets a
+  // client submit empty cluster_name + a multi-MiB remote_keyring or unbounded
+  // remote_mon_hosts and bypass every ceiling, an OSD-side DoS vector.
+  if (remote_cluster_name.size() > 256) {
+    CLS_LOG(1, "cls_rbd::parent_attach: remote_cluster_name too large: %zu bytes",
+            remote_cluster_name.size());
+    return -EINVAL;
+  }
+  if (remote_mon_hosts.size() > 64) {
+    CLS_LOG(1, "cls_rbd::parent_attach: too many remote monitors: %zu",
+            remote_mon_hosts.size());
+    return -EINVAL;
+  }
+  for (const auto& host : remote_mon_hosts) {
+    if (host.size() > 256) {
+      CLS_LOG(1, "cls_rbd::parent_attach: remote monitor address too long: %zu bytes",
+              host.size());
       return -EINVAL;
     }
-
-    if (remote_mon_hosts.size() > 64) {
-      CLS_LOG(1, "cls_rbd::parent_attach: too many remote monitors: %zu",
-              remote_mon_hosts.size());
-      return -EINVAL;
-    }
-
-    for (const auto& host : remote_mon_hosts) {
-      if (host.size() > 256) {
-        CLS_LOG(1, "cls_rbd::parent_attach: remote monitor address too long: %zu bytes",
-                host.size());
-        return -EINVAL;
-      }
-    }
-
-    if (remote_keyring.size() > 4096) {
-      CLS_LOG(1, "cls_rbd::parent_attach: remote_keyring too large: %zu bytes",
-              remote_keyring.size());
-      return -EINVAL;
-    }
+  }
+  if (remote_keyring.size() > 4096) {
+    CLS_LOG(1, "cls_rbd::parent_attach: remote_keyring too large: %zu bytes",
+            remote_keyring.size());
+    return -EINVAL;
   }
 
   // Validate parent_type enum value
