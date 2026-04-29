@@ -444,6 +444,24 @@ void RefreshRequest<I>::send_v2_get_parent() {
   aio_comp->release();
 }
 
+// Infer the parent's type from snap_id when the OSD didn't return one
+// (legacy reply, or modern reply with parent_type_raw == 0).  HEAD-style
+// parents (snap_id == CEPH_NOSNAP) are standalone clones; everything
+// else is a snapshot clone.  source_tag distinguishes the call sites in
+// the log so an operator can tell which path inferred.
+static ParentImageType infer_parent_type(uint64_t snap_id,
+                                         CephContext *cct,
+                                         const char *source_tag) {
+  if (snap_id == CEPH_NOSNAP) {
+    ldout(cct, 15) << "parent is standalone clone (snap_id=NOSNAP, "
+                   << source_tag << ")" << dendl;
+    return PARENT_TYPE_STANDALONE;
+  }
+  ldout(cct, 15) << "parent is snapshot-based clone (" << source_tag << ")"
+                 << dendl;
+  return PARENT_TYPE_SNAPSHOT;
+}
+
 template <typename I>
 Context *RefreshRequest<I>::handle_v2_get_parent(int *result) {
   // NOTE: remove support when Mimic is EOLed
@@ -484,13 +502,10 @@ Context *RefreshRequest<I>::handle_v2_get_parent(int *result) {
         // Newer OSD returned parent type - convert from OSD enum to librbd enum
         m_parent_md.parent_type = static_cast<ParentImageType>(parent_type_raw);
         ldout(cct, 15) << "parent type from OSD: " << (int)parent_type_raw << dendl;
-      } else if (m_parent_md.spec.snap_id == CEPH_NOSNAP) {
-        // Older OSD - infer from snap_id (same logic as before)
-        m_parent_md.parent_type = PARENT_TYPE_STANDALONE;
-        ldout(cct, 15) << "parent is standalone clone (snap_id=NOSNAP, inferred)" << dendl;
       } else {
-        m_parent_md.parent_type = PARENT_TYPE_SNAPSHOT;
-        ldout(cct, 15) << "parent is snapshot-based clone (inferred)" << dendl;
+        // Older OSD didn't include parent_type — infer from snap_id.
+        m_parent_md.parent_type = infer_parent_type(
+          m_parent_md.spec.snap_id, cct, "inferred");
       }
     }
   } else if (*result == 0) {
@@ -498,14 +513,9 @@ Context *RefreshRequest<I>::handle_v2_get_parent(int *result) {
                                             &m_parent_md.overlap);
     m_head_parent_overlap = true;
 
-    // Legacy parent API - infer parent type from snap_id
-    if (m_parent_md.spec.snap_id == CEPH_NOSNAP) {
-      m_parent_md.parent_type = PARENT_TYPE_STANDALONE;
-      ldout(cct, 15) << "parent is standalone clone (snap_id=NOSNAP, legacy)" << dendl;
-    } else {
-      m_parent_md.parent_type = PARENT_TYPE_SNAPSHOT;
-      ldout(cct, 15) << "parent is snapshot-based clone (legacy)" << dendl;
-    }
+    // Legacy parent API has no parent_type — infer from snap_id.
+    m_parent_md.parent_type = infer_parent_type(
+      m_parent_md.spec.snap_id, cct, "legacy");
   }
 
   if (*result == -EOPNOTSUPP && !m_legacy_parent) {
