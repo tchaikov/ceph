@@ -44,8 +44,10 @@ fi
 
 # Build Ceph in cluster2 (can reuse build from cluster1 due to shared volume)
 echo "=== Checking build in cluster2 ==="
-if ! exec_in_cluster cluster2 test -f /ceph/build/bin/ceph &>/dev/null; then
+if exec_in_cluster cluster2 test -f /ceph/build/bin/ceph &>/dev/null; then
     echo "Build already available in cluster2 (shared volume)"
+else
+    echo "WARNING: cluster2 cannot see the build — shared volume not configured?"
 fi
 
 echo ""
