@@ -46,16 +46,6 @@ public:
   void send();
 
 private:
-  enum State {
-    STATE_INIT,
-    STATE_ACQUIRE_LOCK,
-    STATE_WRITE_RADOS,
-    STATE_UPDATE_OBJECT_MAP,
-    STATE_RELEASE_LOCK,
-    STATE_COMPLETE,
-    STATE_ERROR
-  };
-
   // State machine transitions
   void acquire_lock();
   void handle_acquire_lock(int r);
@@ -81,9 +71,11 @@ private:
   Context* m_on_finish;
 
   mutable Mutex m_lock;
-  State m_state;
-  int m_ret_val;
-  bool m_lock_acquired;  // Track if we hold the distributed lock
+  // True once finish() has run; second/third invocations of finish() (e.g.
+  // both the write_rados handler and an unwind path racing it) are ignored.
+  bool m_finished = false;
+  int m_ret_val = 0;
+  bool m_lock_acquired = false;  // Track if we hold the distributed lock
 
   // Lock management
   std::string m_lock_name;

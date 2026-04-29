@@ -39,9 +39,6 @@ ObjectBackfillRequest::ObjectBackfillRequest(
     m_cct(cct),
     m_on_finish(on_finish),
     m_lock("ObjectBackfillRequest::m_lock"),
-    m_state(STATE_INIT),
-    m_ret_val(0),
-    m_lock_acquired(false),
     m_data_bl(data) {  // Store pre-fetched data
 
   // Generate a unique lock cookie: prefix + request address + wall-clock time.
@@ -67,7 +64,6 @@ ObjectBackfillRequest::~ObjectBackfillRequest() {
 void ObjectBackfillRequest::send() {
   dout(10) << "object_no=" << m_object_no << " oid=" << m_parent_oid << dendl;
 
-  m_state = STATE_ACQUIRE_LOCK;
   acquire_lock();
 }
 
@@ -124,7 +120,6 @@ void ObjectBackfillRequest::handle_acquire_lock(int r) {
 
   dout(10) << "lock acquired for object " << m_object_no << dendl;
 
-  m_state = STATE_WRITE_RADOS;
   write_rados();
 }
 
@@ -139,7 +134,6 @@ void ObjectBackfillRequest::write_rados() {
   // RADOS space we save for VM images that are mostly zero on the tail).
   if (m_data_bl.is_zero()) {
     dout(10) << "object " << m_object_no << " is all-zero, skipping write_full + map update" << dendl;
-    m_state = STATE_RELEASE_LOCK;
     release_lock();
     return;
   }
@@ -163,13 +157,11 @@ void ObjectBackfillRequest::handle_write_rados(int r) {
   if (r < 0) {
     derr << "RADOS write failed: " << cpp_strerror(r) << dendl;
     m_ret_val = r;
-    m_state = STATE_RELEASE_LOCK;
     release_lock();
     return;
   }
 
   dout(10) << "RADOS write complete, updating object map" << dendl;
-  m_state = STATE_UPDATE_OBJECT_MAP;
   update_object_map();
 }
 
@@ -213,13 +205,11 @@ void ObjectBackfillRequest::handle_update_object_map(int r) {
   if (r < 0) {
     derr << "object map update failed: " << cpp_strerror(r) << dendl;
     m_ret_val = r;
-    m_state = STATE_RELEASE_LOCK;
     release_lock();
     return;
   }
 
   dout(10) << "object map updated, releasing lock" << dendl;
-  m_state = STATE_RELEASE_LOCK;
   m_ret_val = 0;
   release_lock();
 }
@@ -276,11 +266,11 @@ void ObjectBackfillRequest::finish(int r) {
 
   {
     Mutex::Locker locker(m_lock);
-    if (m_state == STATE_COMPLETE) {
+    if (m_finished) {
       dout(5) << "already finished, ignoring duplicate finish call" << dendl;
       already_finished = true;
     } else {
-      m_state = STATE_COMPLETE;
+      m_finished = true;
       m_ret_val = r;
       need_release_lock = m_lock_acquired;
     }
