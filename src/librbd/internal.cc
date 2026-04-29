@@ -1077,13 +1077,15 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     // A non-empty REMOTE_CLUSTER_CONF selects the cross-cluster path.  The
     // option triple is consumed (read, then unset) so the surviving c_opts
     // describes the *child* image only — the same shape the local path uses.
-    std::string remote_cluster_conf, remote_keyring, remote_client_name;
-    c_opts.get(RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF, &remote_cluster_conf);
-    c_opts.get(RBD_IMAGE_OPTION_REMOTE_KEYRING,      &remote_keyring);
-    c_opts.get(RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME,  &remote_client_name);
-    c_opts.unset(RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF);
-    c_opts.unset(RBD_IMAGE_OPTION_REMOTE_KEYRING);
-    c_opts.unset(RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME);
+    auto consume = [&](int optname) {
+      std::string val;
+      c_opts.get(optname, &val);
+      c_opts.unset(optname);
+      return val;
+    };
+    const std::string remote_cluster_conf = consume(RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF);
+    const std::string remote_keyring      = consume(RBD_IMAGE_OPTION_REMOTE_KEYRING);
+    const std::string remote_client_name  = consume(RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME);
     const bool is_remote = !remote_cluster_conf.empty();
 
     std::string parent_id;
