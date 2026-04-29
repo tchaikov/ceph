@@ -19,20 +19,16 @@ AWSV4Signer::AWSV4Signer(const Credentials& credentials)
   }
 }
 
-static std::string format_time(time_t t, const char* fmt, size_t buf_size) {
+std::string AWSV4Signer::get_iso8601_timestamp(time_t t) {
   if (t == 0) {
     t = time(nullptr);
   }
   struct tm tm_buf;
   gmtime_r(&t, &tm_buf);
-  std::string result(buf_size, '\0');
-  size_t len = strftime(&result[0], buf_size, fmt, &tm_buf);
-  result.resize(len);
-  return result;
-}
-
-std::string AWSV4Signer::get_iso8601_timestamp(time_t t) {
-  return format_time(t, "%Y%m%dT%H%M%SZ", 20);
+  // 16 bytes "YYYYMMDDTHHMMSSZ" + NUL = 17; round up to 20 for safety.
+  char buf[20];
+  size_t len = strftime(buf, sizeof(buf), "%Y%m%dT%H%M%SZ", &tm_buf);
+  return std::string(buf, len);
 }
 
 namespace {
