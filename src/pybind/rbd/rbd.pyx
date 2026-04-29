@@ -1043,6 +1043,26 @@ cdef class Completion(object):
             self.persisted = False
 
 
+cdef _set_clone_image_options(rbd_image_options_t opts,
+                              features, order, stripe_unit, stripe_count,
+                              data_pool):
+    """Apply the optional shape parameters shared by clone() and
+    clone_standalone() to a freshly-created rbd_image_options_t."""
+    if features is not None:
+        rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_FEATURES, features)
+    if order is not None:
+        rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_ORDER, order)
+    if stripe_unit is not None:
+        rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_STRIPE_UNIT,
+                                     stripe_unit)
+    if stripe_count is not None:
+        rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_STRIPE_COUNT,
+                                     stripe_count)
+    if data_pool is not None:
+        rbd_image_options_set_string(opts, RBD_IMAGE_OPTION_DATA_POOL,
+                                     data_pool)
+
+
 class RBD(object):
     """
     This class wraps librbd CRUD functions.
@@ -1187,21 +1207,8 @@ class RBD(object):
 
         rbd_image_options_create(&opts)
         try:
-            if features is not None:
-                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_FEATURES,
-                                             features)
-            if order is not None:
-                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_ORDER,
-                                             order)
-            if stripe_unit is not None:
-                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_STRIPE_UNIT,
-                                             stripe_unit)
-            if stripe_count is not None:
-                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_STRIPE_COUNT,
-                                             stripe_count)
-            if data_pool is not None:
-                rbd_image_options_set_string(opts, RBD_IMAGE_OPTION_DATA_POOL,
-                                             data_pool)
+            _set_clone_image_options(opts, features, order, stripe_unit,
+                                     stripe_count, data_pool)
             with nogil:
                 ret = rbd_clone3(_p_ioctx, _p_name, _p_snapname,
                                  _c_ioctx, _c_name, opts)
@@ -1252,21 +1259,8 @@ class RBD(object):
 
         rbd_image_options_create(&opts)
         try:
-            if features is not None:
-                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_FEATURES,
-                                             features)
-            if order is not None:
-                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_ORDER,
-                                             order)
-            if stripe_unit is not None:
-                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_STRIPE_UNIT,
-                                             stripe_unit)
-            if stripe_count is not None:
-                rbd_image_options_set_uint64(opts, RBD_IMAGE_OPTION_STRIPE_COUNT,
-                                             stripe_count)
-            if data_pool is not None:
-                rbd_image_options_set_string(opts, RBD_IMAGE_OPTION_DATA_POOL,
-                                             data_pool)
+            _set_clone_image_options(opts, features, order, stripe_unit,
+                                     stripe_count, data_pool)
             with nogil:
                 ret = rbd_clone_standalone(_p_ioctx, _p_name,
                                            _c_ioctx, _c_name, opts)
