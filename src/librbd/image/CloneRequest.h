@@ -20,6 +20,8 @@ namespace image {
 template <typename ImageCtxT = ImageCtx>
 class CloneRequest {
 public:
+  // remote_parent_spec defaults to empty for snapshot- and local-standalone
+  // clones; non-empty selects the cross-cluster path.
   static CloneRequest *create(ConfigProxy& config, IoCtx& parent_io_ctx,
                               const std::string& parent_image_id,
                               const std::string& parent_snap_name,
@@ -28,29 +30,13 @@ public:
                               const std::string &c_id, ImageOptions c_options,
 			      const std::string &non_primary_global_image_id,
 			      const std::string &primary_mirror_uuid,
-			      ContextWQ *op_work_queue, Context *on_finish) {
+			      ContextWQ *op_work_queue, Context *on_finish,
+                              const RemoteParentSpec& remote_parent_spec = {}) {
     return new CloneRequest(config, parent_io_ctx, parent_image_id,
                             parent_snap_name, parent_snap_id, c_ioctx, c_name,
                             c_id, c_options, non_primary_global_image_id,
-                            primary_mirror_uuid, op_work_queue, on_finish);
-  }
-
-  // Factory method for remote standalone clone
-  static CloneRequest *create(ConfigProxy& config, IoCtx& parent_io_ctx,
-                              const std::string& parent_image_id,
-                              const std::string& parent_snap_name,
-                              uint64_t parent_snap_id,
-                              IoCtx &c_ioctx, const std::string &c_name,
-                              const std::string &c_id, ImageOptions c_options,
-			      const std::string &non_primary_global_image_id,
-			      const std::string &primary_mirror_uuid,
-                              const RemoteParentSpec& remote_parent_spec,
-			      ContextWQ *op_work_queue, Context *on_finish) {
-    return new CloneRequest(config, parent_io_ctx, parent_image_id,
-                            parent_snap_name, parent_snap_id, c_ioctx, c_name,
-                            c_id, c_options, non_primary_global_image_id,
-                            primary_mirror_uuid, remote_parent_spec,
-                            op_work_queue, on_finish);
+                            primary_mirror_uuid, op_work_queue, on_finish,
+                            remote_parent_spec);
   }
 
   CloneRequest(ConfigProxy& config, IoCtx& parent_io_ctx,
@@ -61,19 +47,8 @@ public:
                const std::string &c_id, ImageOptions c_options,
                const std::string &non_primary_global_image_id,
                const std::string &primary_mirror_uuid,
-               ContextWQ *op_work_queue, Context *on_finish);
-
-  // Constructor for remote standalone clone
-  CloneRequest(ConfigProxy& config, IoCtx& parent_io_ctx,
-               const std::string& parent_image_id,
-               const std::string& parent_snap_name,
-               uint64_t parent_snap_id,
-               IoCtx &c_ioctx, const std::string &c_name,
-               const std::string &c_id, ImageOptions c_options,
-               const std::string &non_primary_global_image_id,
-               const std::string &primary_mirror_uuid,
-               const RemoteParentSpec& remote_parent_spec,
-               ContextWQ *op_work_queue, Context *on_finish);
+               ContextWQ *op_work_queue, Context *on_finish,
+               const RemoteParentSpec& remote_parent_spec = {});
 
   void send();
 

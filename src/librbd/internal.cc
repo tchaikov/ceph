@@ -1138,7 +1138,7 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     auto *req = image::CloneRequest<>::create(
       config, p_ioctx, parent_id, "", CEPH_NOSNAP, c_ioctx, c_name,
       clone_id, c_opts, non_primary_global_image_id, primary_mirror_uuid,
-      remote_parent_spec, op_work_queue, &cond);
+      op_work_queue, &cond, remote_parent_spec);
     req->send();
 
     r = cond.wait();
