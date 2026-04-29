@@ -145,19 +145,11 @@ struct cls_rbd_parent {
     if (head_overlap) {
       f->dump_unsigned("head_overlap", *head_overlap);
     }
-    std::string type_str;
+    const char *type_str = "unknown";
     switch (parent_type) {
-      case CLS_RBD_PARENT_TYPE_SNAPSHOT:
-        type_str = "snapshot";
-        break;
-      case CLS_RBD_PARENT_TYPE_STANDALONE:
-        type_str = "standalone";
-        break;
-      case CLS_RBD_PARENT_TYPE_REMOTE_STANDALONE:
-        type_str = "remote_standalone";
-        break;
-      default:
-        type_str = "unknown";
+      case CLS_RBD_PARENT_TYPE_SNAPSHOT:          type_str = "snapshot"; break;
+      case CLS_RBD_PARENT_TYPE_STANDALONE:        type_str = "standalone"; break;
+      case CLS_RBD_PARENT_TYPE_REMOTE_STANDALONE: type_str = "remote_standalone"; break;
     }
     f->dump_string("parent_type", type_str);
     if (!pool_name.empty()) {
