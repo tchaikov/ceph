@@ -20,39 +20,23 @@ namespace image {
 template <typename ImageCtxT = ImageCtx>
 class AttachParentRequest {
 public:
+  // remote_parent_spec defaults to empty for snapshot- and local-standalone
+  // attaches; non-empty selects the cross-cluster path.
   static AttachParentRequest* create(ImageCtxT& image_ctx,
                                      const cls::rbd::ParentImageSpec& pspec,
                                      uint64_t parent_overlap,
                                      bool reattach,
-                                     Context* on_finish) {
+                                     Context* on_finish,
+                                     const RemoteParentSpec& remote_parent_spec = {}) {
     return new AttachParentRequest(image_ctx, pspec, parent_overlap, reattach,
-                                   on_finish);
-  }
-
-  static AttachParentRequest* create(ImageCtxT& image_ctx,
-                                     const cls::rbd::ParentImageSpec& pspec,
-                                     uint64_t parent_overlap,
-                                     bool reattach,
-                                     const RemoteParentSpec& remote_parent_spec,
-                                     Context* on_finish) {
-    return new AttachParentRequest(image_ctx, pspec, parent_overlap, reattach,
-                                   remote_parent_spec, on_finish);
+                                   on_finish, remote_parent_spec);
   }
 
   AttachParentRequest(ImageCtxT& image_ctx,
                       const cls::rbd::ParentImageSpec& pspec,
                       uint64_t parent_overlap, bool reattach,
-                      Context* on_finish)
-    : m_image_ctx(image_ctx), m_parent_image_spec(pspec),
-      m_parent_overlap(parent_overlap), m_reattach(reattach),
-      m_on_finish(on_finish) {
-  }
-
-  AttachParentRequest(ImageCtxT& image_ctx,
-                      const cls::rbd::ParentImageSpec& pspec,
-                      uint64_t parent_overlap, bool reattach,
-                      const RemoteParentSpec& remote_parent_spec,
-                      Context* on_finish)
+                      Context* on_finish,
+                      const RemoteParentSpec& remote_parent_spec = {})
     : m_image_ctx(image_ctx), m_parent_image_spec(pspec),
       m_parent_overlap(parent_overlap), m_reattach(reattach),
       m_remote_parent_spec(remote_parent_spec), m_on_finish(on_finish) {

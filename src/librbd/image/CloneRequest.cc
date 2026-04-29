@@ -419,16 +419,12 @@ void CloneRequest<I>::attach_parent() {
   auto ctx = create_context_callback<
     CloneRequest<I>, &CloneRequest<I>::handle_attach_parent>(this);
 
-  AttachParentRequest<I>* req;
   if (!m_remote_parent_spec.empty()) {
     ldout(m_cct, 10) << "attaching remote parent from cluster: "
                      << m_remote_parent_spec.cluster_name << dendl;
-    req = AttachParentRequest<I>::create(
-      *m_imctx, m_pspec, m_size, false, m_remote_parent_spec, ctx);
-  } else {
-    req = AttachParentRequest<I>::create(
-      *m_imctx, m_pspec, m_size, false, ctx);
   }
+  auto* req = AttachParentRequest<I>::create(
+    *m_imctx, m_pspec, m_size, false, ctx, m_remote_parent_spec);
   req->send();
 }
 
