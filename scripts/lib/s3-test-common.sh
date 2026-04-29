@@ -539,6 +539,50 @@ verify_checksum() {
 # Test result tracking
 # ---------------------------------------------------------------------------
 
+# Parse the standard --conf flag shared by most s3 tests.  Sets CEPH_CONF.
+# Usage: parse_common_args "$@"
+parse_common_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --conf) CEPH_CONF="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+}
+
+# Wait up to <timeout_s> for all listed pids; SIGTERMs any that overrun.
+# Echoes the count of timed-out pids so the caller can fail the test.
+# Usage: failures=$(wait_pids_with_timeout <timeout_s> <pid1> <pid2> ...)
+wait_pids_with_timeout() {
+    local timeout=$1; shift
+    local deadline=$(( $(date +%s) + timeout ))
+    local failed=0 pid
+    for pid in "$@"; do
+        while kill -0 "$pid" 2>/dev/null; do
+            if [ $(date +%s) -ge $deadline ]; then
+                kill "$pid" 2>/dev/null || true
+                failed=$((failed + 1))
+                break
+            fi
+            sleep 0.5
+        done
+        wait "$pid" 2>/dev/null || true
+    done
+    echo "$failed"
+}
+
+# Echo the integer used_size (bytes) reported by `rbd du --format json`,
+# or 0 if the field is missing (e.g. rbd is too old or image is unknown).
+# Usage: bytes=$(get_image_used_size <conf> <pool>/<image>)
+get_image_used_size() {
+    local conf=$1
+    local img=$2
+    local v
+    v=$("$BUILD_DIR/bin/rbd" --conf "$conf" du "$img" --format json 2>/dev/null \
+        | grep -o '"used_size":[0-9]*' | head -1 | cut -d: -f2)
+    echo "${v:-0}"
+}
+
 declare -A TEST_RESULTS
 declare -A TEST_TIMES
 

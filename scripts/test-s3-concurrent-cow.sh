@@ -48,12 +48,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --conf) CEPH_CONF="$2"; shift 2 ;;
-        *) shift ;;
-    esac
-done
+parse_common_args "$@"
 
 echo
 log_info "=== Test: Concurrent COW Load (${NUM_CLIENTS} clients, ${COW_TIMEOUT_SECS}s timeout) ==="

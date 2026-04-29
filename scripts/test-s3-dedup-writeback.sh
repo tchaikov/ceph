@@ -46,12 +46,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --conf) CEPH_CONF="$2"; shift 2 ;;
-        *) shift ;;
-    esac
-done
+parse_common_args "$@"
 
 echo
 log_info "=== S3 dedup write-back measurement ($NUM_CLIENTS clients, $PARENT_SIZE_MB MB parent) ==="
@@ -101,23 +96,9 @@ for i in $(seq 1 $NUM_CLIENTS); do
 done
 
 log_info "Waiting up to ${COW_TIMEOUT_SECS}s for all clients..."
-DEADLINE=$(( $(date +%s) + COW_TIMEOUT_SECS ))
-WAIT_FAIL=0
-for pid in "${BENCH_PIDS[@]}"; do
-    while kill -0 "$pid" 2>/dev/null; do
-        if [ $(date +%s) -ge $DEADLINE ]; then
-            WAIT_FAIL=$((WAIT_FAIL+1))
-            kill "$pid" 2>/dev/null || true
-            break
-        fi
-        sleep 0.5
-    done
-    wait "$pid" 2>/dev/null || true
-done
-
-if [ $WAIT_FAIL -gt 0 ]; then
+WAIT_FAIL=$(wait_pids_with_timeout "$COW_TIMEOUT_SECS" "${BENCH_PIDS[@]}")
+if [ "$WAIT_FAIL" -gt 0 ]; then
     log_error "$WAIT_FAIL clients timed out"
-    for p in "${BENCH_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
     exit 1
 fi
 

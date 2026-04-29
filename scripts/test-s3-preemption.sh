@@ -63,12 +63,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --conf) CEPH_CONF="$2"; shift 2 ;;
-        *) shift ;;
-    esac
-done
+parse_common_args "$@"
 
 log_info "=== Client I/O Preemption Test (${NUM_CLIENTS} clients vs backfill daemon) ==="
 echo

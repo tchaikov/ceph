@@ -50,12 +50,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --conf) CEPH_CONF="$2"; shift 2 ;;
-        *) shift ;;
-    esac
-done
+parse_common_args "$@"
 
 log_info "=== S3-Backed Standalone Clone — Backfill Tests ==="
 echo
@@ -668,9 +663,7 @@ test_parent_du_after_backfill() {
 
     # Before backfill: freshly created image has no RADOS objects → used_size=0
     local used_before
-    used_before=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" du "$img" --format json 2>/dev/null \
-        | grep -o '"used_size":[0-9]*' | head -1 | cut -d: -f2)
-    used_before=${used_before:-0}
+    used_before=$(get_image_used_size "$CEPH_CONF" "$img")
     if [ "$used_before" -ne 0 ]; then
         log_fail "parent used_size before backfill should be 0, got: $used_before"
         rm -f "$raw_file" "$blog"
@@ -695,9 +688,7 @@ test_parent_du_after_backfill() {
     # After backfill: every object is written → used_size must equal provisioned_size
     local provisioned=$(( size_mb * 1024 * 1024 ))
     local used_after
-    used_after=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" du "$img" --format json 2>/dev/null \
-        | grep -o '"used_size":[0-9]*' | head -1 | cut -d: -f2)
-    used_after=${used_after:-0}
+    used_after=$(get_image_used_size "$CEPH_CONF" "$img")
     if [ "$used_after" -ne "$provisioned" ]; then
         log_fail "parent used_size after backfill: expected ${provisioned}B, got ${used_after}B"
         rm -f "$raw_file" "$blog"
@@ -746,9 +737,7 @@ test_parent_du_after_child_writeback() {
     local done=0
     for i in $(seq 1 15); do
         local used
-        used=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" du "$parent_img" --format json 2>/dev/null \
-            | grep -o '"used_size":[0-9]*' | head -1 | cut -d: -f2)
-        used=${used:-0}
+        used=$(get_image_used_size "$CEPH_CONF" "$parent_img")
         if [ "$used" -gt 0 ]; then
             done=1
             log_success "parent used_size after child write-back: ${used}B (after ${i}s)"
@@ -768,9 +757,7 @@ test_parent_du_after_child_writeback() {
     # The write-back writes a full 4 MiB object regardless of write size
     local expected_used=$(( 4 * 1024 * 1024 ))
     local final_used
-    final_used=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" du "$parent_img" --format json 2>/dev/null \
-        | grep -o '"used_size":[0-9]*' | head -1 | cut -d: -f2)
-    final_used=${final_used:-0}
+    final_used=$(get_image_used_size "$CEPH_CONF" "$parent_img")
     if [ "$final_used" -ne "$expected_used" ]; then
         log_fail "parent used_size: expected ${expected_used}B (1×4MiB), got ${final_used}B"
         rm -f "$raw_file"
