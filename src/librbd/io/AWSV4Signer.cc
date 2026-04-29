@@ -163,14 +163,17 @@ std::string AWSV4Signer::create_string_to_sign(
 
 std::array<unsigned char, 32> AWSV4Signer::calculate_signing_key(
     const std::string& date_string, std::string& out_scope) {
-  // The signing key and scope are stable for a full calendar day.  Cache both
-  // per-thread so repeated requests within the same day skip the four
-  // HMAC-SHA256 derivation steps and the scope string allocation.
+  // The signing key and scope are stable for a full calendar day per set of
+  // credentials.  Cache both per-thread to skip the four HMAC-SHA256 derivation
+  // steps on repeated requests.  Include the secret key in the cache check so
+  // that two Signer instances with different credentials on the same thread
+  // each get the correct signing key.
   thread_local std::string tl_cached_date;
+  thread_local std::string tl_cached_secret;
   thread_local std::array<unsigned char, 32> tl_cached_key;
   thread_local std::string tl_cached_scope;
 
-  if (date_string == tl_cached_date) {
+  if (date_string == tl_cached_date && m_credentials.secret_key == tl_cached_secret) {
     out_scope = tl_cached_scope;
     return tl_cached_key;
   }
@@ -184,8 +187,9 @@ std::array<unsigned char, 32> AWSV4Signer::calculate_signing_key(
   auto k_service = hmac_sha256(k_region,  m_credentials.service);
   auto k_signing = hmac_sha256(k_service, "aws4_request");
 
-  tl_cached_date  = date_string;
-  tl_cached_key   = k_signing;
+  tl_cached_date   = date_string;
+  tl_cached_secret = m_credentials.secret_key;
+  tl_cached_key    = k_signing;
   tl_cached_scope = date_string + "/" + m_credentials.region + "/" +
                     m_credentials.service + "/aws4_request";
   out_scope = tl_cached_scope;
