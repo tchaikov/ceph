@@ -126,14 +126,6 @@ void parent_attach(librados::ObjectWriteOperation* op,
                    const std::string& remote_cluster_name,
                    const std::vector<std::string>& remote_mon_hosts,
                    const std::string& remote_keyring);
-int parent_attach(librados::IoCtx *ioctx, const std::string &oid,
-                  const cls::rbd::ParentImageSpec& parent_image_spec,
-                  uint64_t parent_overlap, bool reattach,
-                  cls_rbd_parent_type parent_type,
-                  const std::string& remote_cluster_name,
-                  const std::vector<std::string>& remote_mon_hosts,
-                  const std::string& remote_keyring);
-
 void parent_detach(librados::ObjectWriteOperation* op);
 int parent_detach(librados::IoCtx *ioctx, const std::string &oid);
 
