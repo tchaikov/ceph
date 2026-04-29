@@ -185,8 +185,10 @@ void BackfillDaemon::shutdown() {
     Mutex::Locker locker(m_lock);
     to_stop.reserve(m_image_backfillers.size());
     for (auto& pair : m_image_backfillers) {
-      dout(10) << "stopping backfiller for " << pair.first.pool_name
-               << "/" << pair.first.image_name << dendl;
+      dout(10) << "stopping backfiller for "
+               << format_image_path(pair.first.pool_name,
+                                    pair.first.namespace_name,
+                                    pair.first.image_name) << dendl;
       to_stop.push_back(std::move(pair.second));
     }
     m_image_backfillers.clear();
@@ -426,8 +428,9 @@ int BackfillDaemon::start_image_backfillers(const std::vector<ImageSpec>& specs)
   dout(10) << "starting " << specs.size() << " backfiller(s)" << dendl;
 
   for (const auto& spec : specs) {
-    dout(10) << "starting backfiller for " << spec.pool_name
-             << "/" << spec.image_name << dendl;
+    dout(10) << "starting backfiller for "
+             << format_image_path(spec.pool_name, spec.namespace_name,
+                                  spec.image_name) << dendl;
 
     Context *on_finish = new FunctionContext([this, spec](int r) {
       handle_image_complete(spec, r);
@@ -444,8 +447,10 @@ int BackfillDaemon::start_image_backfillers(const std::vector<ImageSpec>& specs)
 
     int r = backfiller->init();
     if (r < 0) {
-      derr << "failed to initialize backfiller for " << spec.pool_name
-           << "/" << spec.image_name << ": " << cpp_strerror(r) << dendl;
+      derr << "failed to initialize backfiller for "
+           << format_image_path(spec.pool_name, spec.namespace_name,
+                                spec.image_name)
+           << ": " << cpp_strerror(r) << dendl;
       delete on_finish;
       return r;
     }
@@ -456,8 +461,9 @@ int BackfillDaemon::start_image_backfillers(const std::vector<ImageSpec>& specs)
       m_image_backfillers[spec] = std::move(backfiller);
     }
 
-    dout(5) << "started backfiller for " << spec.pool_name
-            << "/" << spec.image_name << dendl;
+    dout(5) << "started backfiller for "
+            << format_image_path(spec.pool_name, spec.namespace_name,
+                                 spec.image_name) << dendl;
   }
 
   return 0;
@@ -531,7 +537,9 @@ void BackfillDaemon::rescan_tick() {
 }
 
 void BackfillDaemon::handle_image_complete(const ImageSpec& spec, int r) {
-  dout(10) << "spec=" << spec.pool_name << "/" << spec.image_name
+  dout(10) << "spec="
+           << format_image_path(spec.pool_name, spec.namespace_name,
+                                spec.image_name)
            << " r=" << r << dendl;
 
   Mutex::Locker locker(m_lock);
@@ -542,8 +550,10 @@ void BackfillDaemon::handle_image_complete(const ImageSpec& spec, int r) {
     return;
   }
 
-  dout(5) << "image backfill complete: " << spec.pool_name
-          << "/" << spec.image_name << " r=" << r << dendl;
+  dout(5) << "image backfill complete: "
+          << format_image_path(spec.pool_name, spec.namespace_name,
+                               spec.image_name)
+          << " r=" << r << dendl;
 
   m_image_backfillers.erase(it);
 

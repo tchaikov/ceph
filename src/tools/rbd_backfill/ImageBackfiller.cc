@@ -78,12 +78,10 @@ int ImageBackfiller::init() {
 
   r = m_image_ctx->state->open(0);
   if (r < 0) {
-    std::string full_name = m_spec.pool_name;
-    if (!m_spec.namespace_name.empty()) {
-      full_name += "/" + m_spec.namespace_name;
-    }
-    full_name += "/" + m_spec.image_name;
-    derr << "failed to open image " << full_name << ": " << cpp_strerror(r) << dendl;
+    derr << "failed to open image "
+         << format_image_path(m_spec.pool_name, m_spec.namespace_name,
+                              m_spec.image_name)
+         << ": " << cpp_strerror(r) << dendl;
     m_image_ctx.reset();
     return r;
   }
