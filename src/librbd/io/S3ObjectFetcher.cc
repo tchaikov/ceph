@@ -117,7 +117,7 @@ S3ObjectFetcher::~S3ObjectFetcher() {
     curl_slist_free_all(ctx->headers);
     curl_easy_cleanup(ctx->curl_handle);
     // Cancel any waiters coalesced onto this primary as well.
-    if (!ctx->coalesce_key.empty()) {
+    {
       std::lock_guard<std::mutex> lock(m_inflight_mutex);
       m_inflight.erase(ctx->coalesce_key);
     }
@@ -403,13 +403,11 @@ void S3ObjectFetcher::execute_fetch(FetchContext* ctx) {
   // run so the map never grows unbounded.
   auto take_waiters = [this, ctx]() {
     std::vector<std::pair<bufferlist*, Context*>> ws;
-    if (!ctx->coalesce_key.empty()) {
-      std::lock_guard<std::mutex> lock(m_inflight_mutex);
-      auto it = m_inflight.find(ctx->coalesce_key);
-      if (it != m_inflight.end() && it->second == ctx) {
-        ws = std::move(ctx->waiters);
-        m_inflight.erase(it);
-      }
+    std::lock_guard<std::mutex> lock(m_inflight_mutex);
+    auto it = m_inflight.find(ctx->coalesce_key);
+    if (it != m_inflight.end() && it->second == ctx) {
+      ws = std::move(ctx->waiters);
+      m_inflight.erase(it);
     }
     return ws;
   };
