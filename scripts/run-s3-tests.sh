@@ -13,9 +13,15 @@
 #   2. failure-scenarios — bad creds, S3 down, 404, sparse, invalid config
 #   3. e2e-matrix        — 3 cache scenarios × read/write/flatten (+ cross mode)
 #   4. backfill          — daemon lifecycle, data integrity, object naming, regressions
-#   5. concurrent-cow    — 4 clients, COW throttle test
-#   6. preemption        — daemon vs client lock contention
-#   7. cross-cluster     — Docker dual-cluster (requires docker)
+#                          (covers user issue #2: daemon rescan picks up later schedules)
+#   5. zero-object       — issue #1 strict regression: zero data must be skipped
+#                          consistently across daemon, read-path, and write-path
+#   6. concurrent-cow    — 4 clients, COW throttle test
+#   7. preemption        — daemon vs client lock contention
+#   8. dedup-writeback   — issue #4 strict regression: cross-process write dedup
+#                          (1 wrote, N-1 skipped invariant)
+#   9. dedup-read        — issue #4 strict regression: cross-process read dedup
+#  10. cross-cluster     — Docker dual-cluster (covers user issues #3 + #5)
 #   perf                 — Performance benchmarks (independent; not in --full)
 
 set -e
@@ -84,6 +90,11 @@ run_cow()        { run_suite "concurrent-cow"     "test-s3-concurrent-cow.sh"; }
 run_preemption() { run_suite "preemption"         "test-s3-preemption.sh"; }
 run_cross()      { run_suite "cross-cluster"      "test-s3-cross-cluster.sh"; }
 run_perf()       { run_suite "performance"        "test-s3-performance.sh"; }
+# Strict regression tests — single-test slices of perf/dedup that assert the
+# specific invariants from the user-reported bug list.
+run_zero()       { run_suite "zero-object"        "test-s3-performance.sh" "--test" "perf_test_zero_object_unified"; }
+run_dedup_wr()   { run_suite "dedup-writeback"    "test-s3-dedup-writeback.sh"; }
+run_dedup_rd()   { run_suite "dedup-read"         "test-s3-dedup-read.sh"; }
 
 # ── Mode dispatch ─────────────────────────────────────────────────────────────
 echo
@@ -100,10 +111,13 @@ case $MODE in
         run_edge
         run_failure
         run_matrix
-        run_backfill
+        run_backfill       # issue #2 (daemon rescan)
+        run_zero           # issue #1 (zero-data consistency)
         run_cow
         run_preemption
-        run_cross
+        run_dedup_wr       # issue #4 (cross-process write dedup)
+        run_dedup_rd       # issue #4 (cross-process read dedup)
+        run_cross          # issues #3 + #5
         ;;
     perf)
         run_perf
@@ -114,13 +128,16 @@ case $MODE in
             failure)     run_failure ;;
             matrix)      run_matrix ;;
             backfill)    run_backfill ;;
+            zero)        run_zero ;;
             cow)         run_cow ;;
             preemption)  run_preemption ;;
+            dedup-wr)    run_dedup_wr ;;
+            dedup-rd)    run_dedup_rd ;;
             cross)       run_cross ;;
             perf)        run_perf ;;
             *)
                 log_error "Unknown suite: '$SUITE'"
-                log_error "Valid suites: edge | failure | matrix | backfill | cow | preemption | cross | perf"
+                log_error "Valid suites: edge | failure | matrix | backfill | zero | cow | preemption | dedup-wr | dedup-rd | cross | perf"
                 exit 1
                 ;;
         esac
