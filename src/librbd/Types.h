@@ -101,6 +101,11 @@ static constexpr const char* S3_META_KEY_IMAGE_FMT  = "s3.image_format";
 static constexpr const char* S3_META_KEY_TIMEOUT_MS = "s3.timeout_ms";
 static constexpr const char* S3_META_KEY_MAX_RETRIES= "s3.max_retries";
 
+/// Values for S3 metadata keys
+static constexpr const char* S3_META_ENABLED_VALUE     = "true";
+static constexpr const char* S3_IMAGE_FORMAT_RAW       = "raw";
+static constexpr const char* S3_IMAGE_FORMAT_QCOW2     = "qcow2";
+
 /// S3 configuration for S3-backed parent images
 // Distributed-lock constants for the S3 fetch path.
 // Used by both CopyupRequest (I/O path) and ObjectBackfillRequest (backfill

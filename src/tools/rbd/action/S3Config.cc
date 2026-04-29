@@ -39,7 +39,7 @@ void get_set_arguments(po::options_description *positional,
      "S3 key prefix (optional)")
     ("s3-image-name", po::value<std::string>(),
      "name of the image object in S3 bucket")
-    ("s3-image-format", po::value<std::string>()->default_value("raw"),
+    ("s3-image-format", po::value<std::string>()->default_value(librbd::S3_IMAGE_FORMAT_RAW),
      "image format: raw or qcow2 (default: raw)")
     ("s3-timeout-ms", po::value<uint32_t>()->default_value(30000),
      "S3 request timeout in milliseconds (default: 30000)")
@@ -97,7 +97,8 @@ int execute_set(const po::variables_map &vm,
   uint32_t s3_max_retries = vm["s3-max-retries"].as<uint32_t>();
 
   // Validate image format
-  if (s3_image_format != "raw" && s3_image_format != "qcow2") {
+  if (s3_image_format != librbd::S3_IMAGE_FORMAT_RAW &&
+      s3_image_format != librbd::S3_IMAGE_FORMAT_QCOW2) {
     std::cerr << "rbd: --s3-image-format must be 'raw' or 'qcow2'" << std::endl;
     return -EINVAL;
   }
@@ -113,7 +114,7 @@ int execute_set(const po::variables_map &vm,
 
   // Set S3 configuration metadata
   std::map<std::string, std::string> metadata = {
-    {librbd::S3_META_KEY_ENABLED,    "true"},
+    {librbd::S3_META_KEY_ENABLED,    librbd::S3_META_ENABLED_VALUE},
     {librbd::S3_META_KEY_BUCKET,     s3_bucket},
     {librbd::S3_META_KEY_ENDPOINT,   s3_endpoint},
     {librbd::S3_META_KEY_REGION,     s3_region},
@@ -198,7 +199,7 @@ int execute_get(const po::variables_map &vm,
     return 0;
   }
   std::string enabled = it->second.to_str();
-  if (enabled != "true" && enabled != "1") {
+  if (enabled != librbd::S3_META_ENABLED_VALUE && enabled != "1") {
     std::cout << "S3 configuration is not set for image " << image_name << std::endl;
     return 0;
   }
