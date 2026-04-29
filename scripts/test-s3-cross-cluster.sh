@@ -382,36 +382,48 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
 run_s3_cross_cluster_rbd_children() {
     log_step "=== Test: rbd children on cross-cluster S3-backed parent (bug #5) ==="
 
-    local minio_port=19400
-    local minio_data="/tmp/minio-rbdchildren-$$"
     local s3_bucket="rbdchildren-test"
-    local s3_endpoint="http://127.0.0.1:${minio_port}"
     # Use the SAME pool name on both clusters so we hit the pool_name-collision
     # case that the bug requires.
     local shared_pool="ebs_ceph_ssd"
     local child_pool="ebs_ceph_ssd"
 
-    # Start dedicated MinIO
-    mkdir -p "$minio_data"
-    MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
-        "$MINIO_BIN/minio" server "$minio_data" \
-        --address "0.0.0.0:${minio_port}" \
-        --console-address "0.0.0.0:$((minio_port + 1))" \
-        > /tmp/minio-rbdchildren.log 2>&1 &
-    local minio_pid=$!
-    sleep 3
-    if ! kill -0 $minio_pid 2>/dev/null; then
-        log_error "MinIO failed to start"; cat /tmp/minio-rbdchildren.log
+    # Sidecar MinIO container (rootless-podman-safe; see run_s3_cross_cluster
+    # for the full rationale).  rbd children is a metadata-only operation
+    # and doesn't actually fetch from S3, but the parent-image creation step
+    # still requires a reachable S3 endpoint to satisfy s3-config validation.
+    local minio_name="minio-rbdchildren-$$"
+    local minio_ip="172.20.0.32"   # different from the other two sidecars
+    local minio_port=9000
+    local minio_data="/tmp/${minio_name}-data"
+    local container_s3="http://${minio_ip}:${minio_port}"
+
+    mkdir -p "${minio_data}/${s3_bucket}"
+    dd if=/dev/urandom bs=1M count=4 status=none \
+        of="${minio_data}/${s3_bucket}/rbdchildren-parent-raw"
+
+    docker rm -f "$minio_name" 2>/dev/null || true
+    docker run -d --name "$minio_name" --rm \
+        --network ceph-nautilus_ceph-net \
+        --ip "$minio_ip" \
+        -v "${minio_data}:/data" \
+        -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+        minio/minio server /data --address "0.0.0.0:${minio_port}" >/dev/null
+
+    for i in $(seq 1 30); do
+        if docker exec ceph-cluster2 bash -c \
+            "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    if ! docker exec ceph-cluster2 bash -c \
+        "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+        log_error "MinIO sidecar didn't become reachable from cluster2"
+        docker logs "$minio_name" 2>&1 | tail
         return 1
     fi
-
-    "$MINIO_BIN/mc" alias set rbdchildren "$s3_endpoint" minioadmin minioadmin > /dev/null 2>&1
-    "$MINIO_BIN/mc" mb "rbdchildren/$s3_bucket" > /dev/null 2>&1 || true
-    dd if=/dev/urandom bs=1M count=4 status=none | \
-        "$MINIO_BIN/mc" pipe "rbdchildren/$s3_bucket/rbdchildren-parent-raw" > /dev/null 2>&1
-    local HOST_IP
-    HOST_IP=$(docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || echo "172.17.0.1")
-    local container_s3="http://${HOST_IP}:${minio_port}"
+    log_success "MinIO sidecar at ${container_s3} ready (4MB parent staged)"
 
     # Create shared-name pools on both clusters
     ceph_on cluster1 "osd pool create $shared_pool 32" 2>&1 || true
@@ -494,8 +506,8 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
     ceph_on cluster1 "osd pool delete $shared_pool $shared_pool --yes-i-really-really-mean-it" 2>/dev/null || true
     ceph_on cluster2 "osd pool delete $shared_pool $shared_pool --yes-i-really-really-mean-it" 2>/dev/null || true
     ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
-    kill $minio_pid 2>/dev/null || true
-    rm -rf "$minio_data" /tmp/minio-rbdchildren.log
+    docker rm -f "$minio_name" 2>/dev/null || true
+    rm -rf "$minio_data"
 
     log_success "=== rbd children Cross-Cluster Test PASSED ==="
 }
@@ -512,42 +524,51 @@ run_s3_cross_cluster_concurrent() {
 
     local NUM_CONCURRENT=4
     local TIMEOUT_SECS=120
-    local minio_port=19300
-    local minio_data="/tmp/minio-xconcur-$$"
-    local s3_bucket="xconcur-test"
-    local s3_endpoint="http://127.0.0.1:${minio_port}"
-    local parent_raw="/tmp/xconcur-parent-$$.raw"
     local parent_size_mb=20
     local parent_block_size=$(( 4 * 1024 * 1024 ))
 
-    # Start a dedicated MinIO instance
-    mkdir -p "$minio_data"
-    MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
-        "$MINIO_BIN/minio" server "$minio_data" \
-        --address "0.0.0.0:${minio_port}" \
-        --console-address "0.0.0.0:$((minio_port + 1))" \
-        > /tmp/minio-xconcur.log 2>&1 &
-    local minio_pid=$!
-    sleep 3
+    # Sidecar MinIO container on ceph-net.  Same rationale as
+    # run_s3_cross_cluster: rootless podman with pasta uses --no-map-gw,
+    # so host-bound services aren't reachable from inside the container —
+    # the only way the cluster1/cluster2 containers can talk to S3 is via
+    # another container on the same docker/podman network.
+    local minio_name="minio-xconcur-$$"
+    local minio_ip="172.20.0.31"   # different from run_s3_cross_cluster's .30
+    local minio_port=9000
+    local minio_data="/tmp/${minio_name}-data"
+    local s3_bucket="xconcur-test"
+    local container_s3="http://${minio_ip}:${minio_port}"
+    local parent_raw="${minio_data}/${s3_bucket}/xconcur-parent-raw"
 
-    if ! kill -0 $minio_pid 2>/dev/null; then
-        log_error "MinIO failed to start for concurrent cross-cluster test"
-        cat /tmp/minio-xconcur.log
+    # Pre-stage the parent file in MinIO's fs backend so we don't need a
+    # host->container upload path (pasta blocks that too).  MinIO with the
+    # default fs backend treats /data/<bucket>/<object> as the S3 object
+    # store.
+    mkdir -p "${minio_data}/${s3_bucket}"
+    dd if=/dev/urandom bs=1M count=$parent_size_mb of="$parent_raw" status=none
+
+    docker rm -f "$minio_name" 2>/dev/null || true
+    docker run -d --name "$minio_name" --rm \
+        --network ceph-nautilus_ceph-net \
+        --ip "$minio_ip" \
+        -v "${minio_data}:/data" \
+        -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+        minio/minio server /data --address "0.0.0.0:${minio_port}" >/dev/null
+
+    for i in $(seq 1 30); do
+        if docker exec ceph-cluster2 bash -c \
+            "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    if ! docker exec ceph-cluster2 bash -c \
+        "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+        log_error "MinIO sidecar didn't become reachable from cluster2"
+        docker logs "$minio_name" 2>&1 | tail
         return 1
     fi
-
-    "$MINIO_BIN/mc" alias set xconcur "$s3_endpoint" minioadmin minioadmin > /dev/null 2>&1
-    "$MINIO_BIN/mc" mb "xconcur/$s3_bucket" > /dev/null 2>&1 || true
-
-    # Upload random parent data
-    dd if=/dev/urandom bs=1M count=$parent_size_mb of="$parent_raw" status=none
-    "$MINIO_BIN/mc" cp "$parent_raw" "xconcur/$s3_bucket/xconcur-parent-raw" > /dev/null
-    log_success "Uploaded ${parent_size_mb}MB parent image to S3"
-
-    # Determine host IP as seen from containers
-    local HOST_IP
-    HOST_IP=$(docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || echo "172.17.0.1")
-    local container_s3="http://${HOST_IP}:${minio_port}"
+    log_success "MinIO sidecar at ${container_s3} ready (${parent_size_mb}MB parent staged)"
 
     # Setup parent on cluster1
     ceph_on cluster1 "osd pool create xconcur_pool 32" 2>&1 || true
@@ -563,8 +584,14 @@ run_s3_cross_cluster_concurrent() {
         --s3-secret-key minioadmin"
     log_success "S3-backed parent created on cluster1"
 
-    # Setup child pool on cluster2 and configure cluster1 access
+    # Setup child pool on cluster2 and configure cluster1 access.
+    # We also need xconcur_pool to exist on cluster2: clone-standalone
+    # validates that the parent pool name resolves on the local cluster
+    # before consulting --remote-cluster-conf.  Same setup pattern as
+    # run_s3_cross_cluster.
+    ceph_on cluster2 "osd pool create xconcur_pool       32" 2>&1 || true
     ceph_on cluster2 "osd pool create xconcur_child_pool 32" 2>&1 || true
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init xconcur_pool"
     exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init xconcur_child_pool"
 
     local mon_addr key
@@ -654,8 +681,8 @@ chmod 600 /home/cephdev/.ceph/xconcur1.keyring"
 
     if [ $FAILED -gt 0 ]; then
         log_error "$FAILED/$NUM_CONCURRENT cross-cluster clients timed out"
-        kill $minio_pid 2>/dev/null || true
-        rm -rf "$minio_data" "$parent_raw" /tmp/xconcur-bench-*-$$.log /tmp/minio-xconcur.log
+        docker rm -f "$minio_name" 2>/dev/null || true
+        rm -rf "$minio_data" /tmp/xconcur-bench-*-$$.log
         return 1
     fi
 
@@ -696,11 +723,12 @@ chmod 600 /home/cephdev/.ceph/xconcur1.keyring"
         rbd_on cluster2 "rm xconcur_child_pool/xconcur-child-$i" 2>/dev/null || true
     done
     rbd_on  cluster1 "rm xconcur_pool/xconcur-parent" 2>/dev/null || true
-    ceph_on cluster1 "osd pool delete xconcur_pool xconcur_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster1 "osd pool delete xconcur_pool       xconcur_pool       --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete xconcur_pool       xconcur_pool       --yes-i-really-really-mean-it" 2>/dev/null || true
     ceph_on cluster2 "osd pool delete xconcur_child_pool xconcur_child_pool --yes-i-really-really-mean-it" 2>/dev/null || true
 
-    kill $minio_pid 2>/dev/null || true
-    rm -rf "$minio_data" "$parent_raw" /tmp/xconcur-bench-*-$$.log /tmp/minio-xconcur.log
+    docker rm -f "$minio_name" 2>/dev/null || true
+    rm -rf "$minio_data" /tmp/xconcur-bench-*-$$.log
 
     if [ $FAILED -gt 0 ]; then
         log_error "=== S3-Backed Cross-Cluster Concurrent COW Test FAILED ==="
