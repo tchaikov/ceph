@@ -1125,10 +1125,10 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
 
   // Release the sentinel lock.  The data will be written back to the parent
   // RADOS object (and the parent's in-memory + on-disk object map updated)
-  // by update_parent_object_map_after_copyup once the child copyup completes.
-  // Doing it after — not before — the child copyup ensures we go through the
-  // correct handle_write_parent_after_copyup callback chain that updates both
-  // the in-memory ObjectMap and the on-disk RADOS cls record under parent_lock.
+  // by fire_parent_s3_writeback once the child copyup completes via
+  // handle_copyup.  Doing it after — not before — the child copyup ensures
+  // both the in-memory ObjectMap and the on-disk RADOS cls record are updated
+  // under parent_lock through the same callback chain.
   unlock_parent_object();
 
   // Transfer S3 data into the copyup buffer (move avoids copying 4MB).

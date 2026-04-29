@@ -120,10 +120,10 @@ private:
   // S3 back-fill members
   bool m_s3_lock_acquired = false;
   // Set to true only when m_copyup_data was populated from a live S3 fetch
-  // (handle_s3_fetch).  When false (data came from do_read_from_parent which
-  // reads only m_image_extents), update_parent_object_map_after_copyup must
-  // NOT write back to the parent — writing m_copyup_data (partial extents)
-  // via write_full would truncate the already-correct 4MB parent RADOS object
+  // (handle_s3_fetch).  When false (data came from read_from_parent which
+  // reads only m_image_extents), fire_parent_s3_writeback must NOT write
+  // back to the parent — writing m_copyup_data (partial extents) via
+  // write_full would truncate the already-correct 4MB parent RADOS object
   // to just the size of the write extents (e.g. 4KB).
   bool m_data_is_from_s3 = false;
   // Set when this request raced another user holding the lock and chose to
