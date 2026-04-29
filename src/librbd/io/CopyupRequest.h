@@ -144,7 +144,10 @@ private:
   // which is a member here, so both must outlive the in-flight fetch.
   std::shared_ptr<S3ObjectFetcher> m_s3_fetcher;
 
-  void read_from_parent();
+  // skip_s3_check==true bypasses the should_fetch_from_s3() branch — used
+  // by handle_check_parent_object_exists() when the stat already determined
+  // that we should do a normal RADOS read (object exists, or stat failed).
+  void read_from_parent(bool skip_s3_check = false);
   void handle_read_from_parent(int r);
 
   void deep_copy();
@@ -173,7 +176,6 @@ private:
   void check_parent_object_exists(std::string parent_oid,
                                    librados::IoCtx parent_ioctx);
   void handle_check_parent_object_exists(int r);
-  void do_read_from_parent();
   void fetch_from_s3_with_lock();
   void handle_lock_parent_object(int r);
   void try_preempt_backfill_lock();

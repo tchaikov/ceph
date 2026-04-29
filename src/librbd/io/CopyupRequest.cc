@@ -151,7 +151,7 @@ void CopyupRequest<I>::send() {
 }
 
 template <typename I>
-void CopyupRequest<I>::read_from_parent() {
+void CopyupRequest<I>::read_from_parent(bool skip_s3_check) {
   auto cct = m_image_ctx->cct;
 
   RWLock::RLocker snap_locker(m_image_ctx->snap_lock);
@@ -173,12 +173,14 @@ void CopyupRequest<I>::read_from_parent() {
   // For standalone clones with S3 back-fill enabled, check if parent object
   // exists in RADOS before reading. If it doesn't exist, fetch from S3 directly.
   // This avoids the sparse-read conversion that would prevent S3 back-fill.
+  // skip_s3_check==true means handle_check_parent_object_exists already ran
+  // the stat and decided that a normal RADOS read is the right next step.
   //
   // NOTE: we extract parent_oid and parent_ioctx HERE while holding parent_lock,
   // then release the lock before the async stat.  check_parent_object_exists()
   // must NOT re-acquire parent_lock: RWLock is non-recursive and will deadlock if
   // a writer is waiting (PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP).
-  if (should_fetch_from_s3()) {
+  if (!skip_s3_check && should_fetch_from_s3()) {
     ldout(cct, 15) << "S3 back-fill enabled, checking parent object existence" << dendl;
     std::string parent_oid = m_image_ctx->parent->get_object_name(m_object_no);
     librados::IoCtx parent_ioctx = m_image_ctx->parent->data_ctx;
@@ -729,47 +731,19 @@ void CopyupRequest<I>::handle_check_parent_object_exists(int r) {
     // Object doesn't exist in RADOS, fetch from S3
     ldout(cct, 15) << "parent object not in RADOS, fetching from S3" << dendl;
     fetch_from_s3_with_lock();
-  } else if (r < 0) {
-    // Stat failed for a reason other than ENOENT.  This is unexpected
-    // (e.g., permissions error, RADOS connectivity issue) — log at error
-    // level so operators can diagnose, then fall back to a normal read.
-    lderr(cct) << "parent object stat failed: " << cpp_strerror(r)
-               << ", falling back to normal read" << dendl;
-    do_read_from_parent();
   } else {
-    // Object exists in RADOS, do normal read
-    ldout(cct, 15) << "parent object exists in RADOS, reading normally" << dendl;
-    do_read_from_parent();
+    if (r < 0) {
+      // Stat failed for a reason other than ENOENT.  Unexpected
+      // (e.g. permissions, RADOS connectivity); log at error level for
+      // operator diagnosis, then fall back to a normal read.
+      lderr(cct) << "parent object stat failed: " << cpp_strerror(r)
+                 << ", falling back to normal read" << dendl;
+    } else {
+      ldout(cct, 15) << "parent object exists in RADOS, reading normally" << dendl;
+    }
+    // skip_s3_check==true: stat already decided this is a normal RADOS read.
+    read_from_parent(/*skip_s3_check=*/true);
   }
-}
-
-template <typename I>
-void CopyupRequest<I>::do_read_from_parent() {
-  auto cct = m_image_ctx->cct;
-  RWLock::RLocker snap_locker(m_image_ctx->snap_lock);
-  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
-
-  if (m_image_ctx->parent == nullptr) {
-    ldout(cct, 5) << "parent detached" << dendl;
-    m_image_ctx->op_work_queue->queue(
-      util::create_context_callback<
-        CopyupRequest<I>, &CopyupRequest<I>::handle_read_from_parent>(this),
-      -ENOENT);
-    return;
-  }
-
-  auto comp = AioCompletion::create_and_start<
-    CopyupRequest<I>,
-    &CopyupRequest<I>::handle_read_from_parent>(
-      this, util::get_image_ctx(m_image_ctx->parent), AIO_TYPE_READ);
-
-  ldout(cct, 20) << "oid=" << m_oid << ", "
-                 << "completion=" << comp << ", "
-                 << "extents=" << m_image_extents
-                 << dendl;
-  ImageRequest<I>::aio_read(m_image_ctx->parent, comp,
-                            std::move(m_image_extents),
-                            ReadResult{&m_copyup_data}, 0, m_trace);
 }
 
 template <typename I>
