@@ -35,10 +35,6 @@ std::string AWSV4Signer::get_iso8601_timestamp(time_t t) {
   return format_time(t, "%Y%m%dT%H%M%SZ", 20);
 }
 
-std::string AWSV4Signer::get_date_string(time_t t) {
-  return format_time(t, "%Y%m%d", 10);
-}
-
 std::string AWSV4Signer::sha256_hex(const std::string& data) {
   unsigned char hash[CEPH_CRYPTO_SHA256_DIGESTSIZE];
 

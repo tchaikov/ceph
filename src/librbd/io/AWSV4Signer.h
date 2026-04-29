@@ -75,11 +75,6 @@ public:
   static std::string get_iso8601_timestamp(time_t t = 0);
 
   /**
-   * Get date string in YYYYMMDD format.
-   */
-  static std::string get_date_string(time_t t = 0);
-
-  /**
    * Constant for unsigned payload (used for GET requests).
    */
   static const std::string UNSIGNED_PAYLOAD;
