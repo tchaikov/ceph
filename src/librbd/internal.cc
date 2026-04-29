@@ -295,62 +295,35 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     UINT64,
   };
 
-  const std::map<int, image_option_type_t> IMAGE_OPTIONS_TYPE_MAPPING = {
-    {RBD_IMAGE_OPTION_FORMAT, UINT64},
-    {RBD_IMAGE_OPTION_FEATURES, UINT64},
-    {RBD_IMAGE_OPTION_ORDER, UINT64},
-    {RBD_IMAGE_OPTION_STRIPE_UNIT, UINT64},
-    {RBD_IMAGE_OPTION_STRIPE_COUNT, UINT64},
-    {RBD_IMAGE_OPTION_JOURNAL_ORDER, UINT64},
-    {RBD_IMAGE_OPTION_JOURNAL_SPLAY_WIDTH, UINT64},
-    {RBD_IMAGE_OPTION_JOURNAL_POOL, STR},
-    {RBD_IMAGE_OPTION_FEATURES_SET, UINT64},
-    {RBD_IMAGE_OPTION_FEATURES_CLEAR, UINT64},
-    {RBD_IMAGE_OPTION_DATA_POOL, STR},
-    {RBD_IMAGE_OPTION_FLATTEN, UINT64},
-    {RBD_IMAGE_OPTION_CLONE_FORMAT, UINT64},
-    {RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF, STR},
-    {RBD_IMAGE_OPTION_REMOTE_KEYRING, STR},
-    {RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME, STR},
+  // The single source of truth for image-options metadata.  Adding a new
+  // RBD_IMAGE_OPTION_* requires exactly one entry here; the type lookups,
+  // the name lookups, and the operator<< printer all read from this map.
+  const std::map<int, std::pair<image_option_type_t, const char*>>
+      IMAGE_OPTIONS_TYPE_MAPPING = {
+    {RBD_IMAGE_OPTION_FORMAT,                {UINT64, "format"}},
+    {RBD_IMAGE_OPTION_FEATURES,              {UINT64, "features"}},
+    {RBD_IMAGE_OPTION_ORDER,                 {UINT64, "order"}},
+    {RBD_IMAGE_OPTION_STRIPE_UNIT,           {UINT64, "stripe_unit"}},
+    {RBD_IMAGE_OPTION_STRIPE_COUNT,          {UINT64, "stripe_count"}},
+    {RBD_IMAGE_OPTION_JOURNAL_ORDER,         {UINT64, "journal_order"}},
+    {RBD_IMAGE_OPTION_JOURNAL_SPLAY_WIDTH,   {UINT64, "journal_splay_width"}},
+    {RBD_IMAGE_OPTION_JOURNAL_POOL,          {STR,    "journal_pool"}},
+    {RBD_IMAGE_OPTION_FEATURES_SET,          {UINT64, "features_set"}},
+    {RBD_IMAGE_OPTION_FEATURES_CLEAR,        {UINT64, "features_clear"}},
+    {RBD_IMAGE_OPTION_DATA_POOL,             {STR,    "data_pool"}},
+    {RBD_IMAGE_OPTION_FLATTEN,               {UINT64, "flatten"}},
+    {RBD_IMAGE_OPTION_CLONE_FORMAT,          {UINT64, "clone_format"}},
+    {RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF,   {STR,    "remote_cluster_conf"}},
+    {RBD_IMAGE_OPTION_REMOTE_KEYRING,        {STR,    "remote_keyring"}},
+    {RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME,    {STR,    "remote_client_name"}},
   };
 
   std::string image_option_name(int optname) {
-    switch (optname) {
-    case RBD_IMAGE_OPTION_FORMAT:
-      return "format";
-    case RBD_IMAGE_OPTION_FEATURES:
-      return "features";
-    case RBD_IMAGE_OPTION_ORDER:
-      return "order";
-    case RBD_IMAGE_OPTION_STRIPE_UNIT:
-      return "stripe_unit";
-    case RBD_IMAGE_OPTION_STRIPE_COUNT:
-      return "stripe_count";
-    case RBD_IMAGE_OPTION_JOURNAL_ORDER:
-      return "journal_order";
-    case RBD_IMAGE_OPTION_JOURNAL_SPLAY_WIDTH:
-      return "journal_splay_width";
-    case RBD_IMAGE_OPTION_JOURNAL_POOL:
-      return "journal_pool";
-    case RBD_IMAGE_OPTION_FEATURES_SET:
-      return "features_set";
-    case RBD_IMAGE_OPTION_FEATURES_CLEAR:
-      return "features_clear";
-    case RBD_IMAGE_OPTION_DATA_POOL:
-      return "data_pool";
-    case RBD_IMAGE_OPTION_FLATTEN:
-      return "flatten";
-    case RBD_IMAGE_OPTION_CLONE_FORMAT:
-      return "clone_format";
-    case RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF:
-      return "remote_cluster_conf";
-    case RBD_IMAGE_OPTION_REMOTE_KEYRING:
-      return "remote_keyring";
-    case RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME:
-      return "remote_client_name";
-    default:
+    auto it = IMAGE_OPTIONS_TYPE_MAPPING.find(optname);
+    if (it == IMAGE_OPTIONS_TYPE_MAPPING.end()) {
       return "unknown (" + stringify(optname) + ")";
     }
+    return it->second.second;
   }
 
   void image_options_create(rbd_image_options_t* opts)
@@ -379,7 +352,7 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     std::string str_val;
     uint64_t uint64_val;
     for (auto &i : IMAGE_OPTIONS_TYPE_MAPPING) {
-      switch (i.second) {
+      switch (i.second.first) {
       case STR:
 	if (orig.get(i.first, &str_val) == 0) {
 	  image_options_set(*opts, i.first, str_val);
@@ -406,10 +379,10 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
   {
     image_options_ref* opts_ = static_cast<image_options_ref*>(opts);
 
-    std::map<int, image_option_type_t>::const_iterator i =
+    auto i =
       IMAGE_OPTIONS_TYPE_MAPPING.find(optname);
 
-    if (i == IMAGE_OPTIONS_TYPE_MAPPING.end() || i->second != STR) {
+    if (i == IMAGE_OPTIONS_TYPE_MAPPING.end() || i->second.first != STR) {
       return -EINVAL;
     }
 
@@ -421,10 +394,10 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
   {
     image_options_ref* opts_ = static_cast<image_options_ref*>(opts);
 
-    std::map<int, image_option_type_t>::const_iterator i =
+    auto i =
       IMAGE_OPTIONS_TYPE_MAPPING.find(optname);
 
-    if (i == IMAGE_OPTIONS_TYPE_MAPPING.end() || i->second != UINT64) {
+    if (i == IMAGE_OPTIONS_TYPE_MAPPING.end() || i->second.first != UINT64) {
       return -EINVAL;
     }
 
@@ -437,10 +410,10 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
   {
     image_options_ref* opts_ = static_cast<image_options_ref*>(opts);
 
-    std::map<int, image_option_type_t>::const_iterator i =
+    auto i =
       IMAGE_OPTIONS_TYPE_MAPPING.find(optname);
 
-    if (i == IMAGE_OPTIONS_TYPE_MAPPING.end() || i->second != STR) {
+    if (i == IMAGE_OPTIONS_TYPE_MAPPING.end() || i->second.first != STR) {
       return -EINVAL;
     }
 
@@ -458,10 +431,10 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
   {
     image_options_ref* opts_ = static_cast<image_options_ref*>(opts);
 
-    std::map<int, image_option_type_t>::const_iterator i =
+    auto i =
       IMAGE_OPTIONS_TYPE_MAPPING.find(optname);
 
-    if (i == IMAGE_OPTIONS_TYPE_MAPPING.end() || i->second != UINT64) {
+    if (i == IMAGE_OPTIONS_TYPE_MAPPING.end() || i->second.first != UINT64) {
       return -EINVAL;
     }
 
@@ -492,7 +465,7 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
   {
     image_options_ref* opts_ = static_cast<image_options_ref*>(opts);
 
-    std::map<int, image_option_type_t>::const_iterator i =
+    auto i =
       IMAGE_OPTIONS_TYPE_MAPPING.find(optname);
 
     if (i == IMAGE_OPTIONS_TYPE_MAPPING.end()) {
@@ -2224,13 +2197,13 @@ std::ostream &operator<<(std::ostream &os, const librbd::ImageOptions &opts) {
 
   const char *delimiter = "";
   for (auto &i : librbd::IMAGE_OPTIONS_TYPE_MAPPING) {
-    if (i.second == librbd::STR) {
+    if (i.second.first == librbd::STR) {
       std::string val;
       if (opts.get(i.first, &val) == 0) {
         os << delimiter << librbd::image_option_name(i.first) << "=" << val;
         delimiter = ", ";
       }
-    } else if (i.second == librbd::UINT64) {
+    } else if (i.second.first == librbd::UINT64) {
       uint64_t val;
       if (opts.get(i.first, &val) == 0) {
         os << delimiter << librbd::image_option_name(i.first) << "=" << val;
