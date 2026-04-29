@@ -364,25 +364,6 @@ verify_parent_removed() {
     fi
 }
 
-verify_s3_independence() {
-    local pool=$1
-    local image=$2
-    local conf=${3:-$CEPH_CONF}
-
-    log_info "Verifying $pool/$image is independent of S3..."
-
-    # Try to export without S3 (assumes MinIO is stopped)
-    local export_file="/tmp/verify-independent-${image}-$$.raw"
-    if "$BUILD_DIR/bin/rbd" --conf "$conf" export "$pool/$image" "$export_file" 2>&1 | grep -v "Exporting"; then
-        log_success "Image is independent of S3!"
-        rm -f "$export_file"
-        return 0
-    else
-        log_fail "Image still depends on S3!"
-        return 1
-    fi
-}
-
 # ---------------------------------------------------------------------------
 # Backfill daemon helpers
 # ---------------------------------------------------------------------------
