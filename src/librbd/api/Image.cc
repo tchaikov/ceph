@@ -479,6 +479,16 @@ int Image<I>::list_descendants(
   // batch lookups by pool + namespace
   std::sort(images->begin(), images->end(), compare_by_pool);
 
+  // Mark a descendant image as a cross-cluster (remote) child.  Centralised
+  // so the display convention ("<id> (remote)") and the trash flag stay in
+  // sync across the three sites that need it.
+  auto mark_remote = [&](decltype(*images->begin())& image, const char* reason) {
+    ldout(cct, 10) << reason << ": pool_name=" << image.pool_name
+                   << ", image_id=" << image.image_id << dendl;
+    image.image_name = image.image_id + " (remote)";
+    image.trash = false;
+  };
+
   int64_t child_pool_id = -1;
   librados::IoCtx child_io_ctx;
   std::map<std::string, std::pair<std::string, bool>> child_image_id_to_info;
@@ -486,10 +496,7 @@ int Image<I>::list_descendants(
     if (cross_cluster_ids.count({image.pool_id, image.image_id})) {
       // Recorded as cross-cluster at attach time; mark and skip the local
       // pool lookup entirely.
-      ldout(cct, 10) << "cross-cluster child: pool_name=" << image.pool_name
-                     << ", image_id=" << image.image_id << dendl;
-      image.image_name = image.image_id + " (remote)";
-      image.trash = false;
+      mark_remote(image, "cross-cluster child");
       continue;
     }
     if (child_pool_id == -1 || child_pool_id != image.pool_id ||
@@ -500,10 +507,7 @@ int Image<I>::list_descendants(
         // Pool doesn't exist locally - this is a cross-cluster child
         // If pool_name is already set, keep it and mark image_name as remote
         if (!image.pool_name.empty()) {
-          ldout(cct, 10) << "cross-cluster child: pool_name=" << image.pool_name
-                        << ", image_id=" << image.image_id << dendl;
-          image.image_name = image.image_id + " (remote)";
-          image.trash = false;
+          mark_remote(image, "cross-cluster child");
         } else {
           image.pool_name = "";
           image.image_name = "";
@@ -549,13 +553,9 @@ int Image<I>::list_descendants(
       // Check if this is a cross-cluster child (pool_name was pre-populated)
       if (!image.pool_name.empty() &&
           image.pool_name != child_io_ctx.get_pool_name()) {
-        // Pool names don't match - this is definitely a cross-cluster child
-        // The pool_id collision is just a coincidence
-        ldout(cct, 10) << "cross-cluster child (pool_id collision): "
-                       << "pool_name=" << image.pool_name
-                       << ", image_id=" << image.image_id << dendl;
-        image.image_name = image.image_id + " (remote)";
-        image.trash = false;
+        // Pool names don't match - this is definitely a cross-cluster child;
+        // the pool_id collision is just a coincidence.
+        mark_remote(image, "cross-cluster child (pool_id collision)");
         continue;
       }
 
