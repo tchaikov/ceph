@@ -177,13 +177,13 @@ void ObjectBackfillRequest::update_object_map() {
   dout(15) << dendl;
 
   // Update the parent image's object map via direct RADOS operation.
-  // We use cls_rbd directly rather than the in-memory ObjectMap because
-  // the backfill daemon does not hold the image's exclusive lock.
+  // build_update_op exists for callers like us that don't hold the image's
+  // ExclusiveLock and therefore can't use the in-memory ObjectMap path.
   std::string object_map_name = librbd::ObjectMap<>::object_map_name(
     m_image_id, CEPH_NOSNAP);
 
   librados::ObjectWriteOperation map_op;
-  librbd::cls_client::object_map_update(
+  librbd::ObjectMap<>::build_update_op(
     &map_op, m_object_no, m_object_no + 1,
     OBJECT_EXISTS, boost::optional<uint8_t>());
 
