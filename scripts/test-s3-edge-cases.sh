@@ -219,7 +219,7 @@ with open('/tmp/edge-ranged-get-test.raw', 'wb') as f:
 print(f"Created {num_blocks}-block test image")
 PYEOF
     image_file="/tmp/edge-ranged-get-test.raw"
-    "$MINIO_BIN/mc" cp "$image_file" "local/$S3_BUCKET/ranged-get-test.raw" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 "$image_file" "$S3_BUCKET" "ranged-get-test.raw"
 
     local url="http://127.0.0.1:$MINIO_PORT/$S3_BUCKET/ranged-get-test.raw"
 

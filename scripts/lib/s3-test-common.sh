@@ -96,11 +96,12 @@ upload_to_s3() {
     local file=$1
     local bucket=$2
     local key=$3
-    local port=${4:-9000}
 
     log_info "Uploading $file to s3://$bucket/$key"
-    "$MINIO_BIN/mc" cp "$file" "local/$bucket/$key" 2>&1 | grep -v "^mc:"
-    log_success "Upload complete"
+    # `|| true` defends against the rare case where `mc cp` produces no
+    # output other than the "mc:" progress line (e.g. very small files);
+    # in that case grep -v returns 1 and would trip `set -e`.
+    "$MINIO_BIN/mc" cp "$file" "local/$bucket/$key" 2>&1 | grep -v "^mc:" || true
 }
 
 # Ceph cluster helpers

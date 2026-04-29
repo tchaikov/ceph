@@ -115,7 +115,7 @@ setup_fresh_image() {
     size_mb=$(( $(stat -c%s "$fixture" 2>/dev/null || stat -f%z "$fixture") / 1024 / 1024 ))
 
     # Upload fixture to S3 (replace if exists)
-    "$MINIO_BIN/mc" cp "$fixture" "local/$S3_BUCKET/$s3_name" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 "$fixture" "$S3_BUCKET" "$s3_name"
 
     # Create RBD parent referencing that S3 object
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$POOL/$PERF_PARENT" \

@@ -57,7 +57,7 @@ test_s3_invalid_credentials() {
 
     # Create parent with valid credentials
     dd if=/dev/urandom of=/tmp/failure-test-parent.raw bs=1M count=$IMAGE_SIZE_MB 2>/dev/null
-    "$MINIO_BIN/mc" cp /tmp/failure-test-parent.raw "local/$S3_BUCKET/parent-auth-test.raw" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 /tmp/failure-test-parent.raw "$S3_BUCKET" "parent-auth-test.raw"
 
     # Create parent image
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$POOL_NAME/parent-test" --size ${IMAGE_SIZE_MB}M
@@ -102,7 +102,7 @@ test_s3_service_unavailable() {
 
     # Create parent with valid S3 backend
     dd if=/dev/urandom of=/tmp/failure-test-parent2.raw bs=1M count=$IMAGE_SIZE_MB 2>/dev/null
-    "$MINIO_BIN/mc" cp /tmp/failure-test-parent2.raw "local/$S3_BUCKET/parent-unavail-test.raw" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 /tmp/failure-test-parent2.raw "$S3_BUCKET" "parent-unavail-test.raw"
 
     create_s3_parent "$POOL_NAME" "parent-test" "parent-unavail-test.raw" "$IMAGE_SIZE_MB" "$S3_ENDPOINT" "$S3_BUCKET"
     create_standalone_clone "$POOL_NAME" "parent-test" "child-test"
@@ -188,8 +188,7 @@ test_sparse_image() {
     dd if=/dev/zero of=/tmp/failure-test-sparse.raw bs=1M seek=1 count=18 2>/dev/null
     dd if=/dev/urandom of=/tmp/failure-test-sparse.raw bs=1M seek=19 count=1 conv=notrunc 2>/dev/null
 
-    "$MINIO_BIN/mc" cp /tmp/failure-test-sparse.raw "local/$S3_BUCKET/parent-sparse.raw" \
-        2>&1 | grep -v "^mc:" || true
+    upload_to_s3 /tmp/failure-test-sparse.raw "$S3_BUCKET" "parent-sparse.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/parent-test" 2>/dev/null || true
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$POOL_NAME/parent-test" \
@@ -271,7 +270,7 @@ test_malformed_secret_key() {
 
     # Create parent with valid S3 backend
     dd if=/dev/urandom of=/tmp/failure-test-parent-key.raw bs=1M count=$IMAGE_SIZE_MB 2>/dev/null
-    "$MINIO_BIN/mc" cp /tmp/failure-test-parent-key.raw "local/$S3_BUCKET/parent-key-test.raw" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 /tmp/failure-test-parent-key.raw "$S3_BUCKET" "parent-key-test.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$POOL_NAME/parent-test" --size ${IMAGE_SIZE_MB}M
 

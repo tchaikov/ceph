@@ -78,7 +78,7 @@ test_backfill_lifecycle() {
 
     # Create and upload a test image
     create_test_image_with_pattern $size_mb "$raw_file"
-    "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/lifecycle.raw" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 "$raw_file" "$S3_BUCKET" "lifecycle.raw"
 
     # Create the parent image with S3 config
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
@@ -126,7 +126,7 @@ test_backfill_data_integrity() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
 
     create_test_image_with_pattern $size_mb "$raw_file"
-    "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/integrity.raw" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 "$raw_file" "$S3_BUCKET" "integrity.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
     set_s3_config "$img" "integrity.raw"
@@ -172,7 +172,7 @@ test_backfill_object_naming() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
 
     create_test_image_with_pattern $size_mb "$raw_file"
-    "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/naming.raw" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 "$raw_file" "$S3_BUCKET" "naming.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
     set_s3_config "$img" "naming.raw"
@@ -252,7 +252,7 @@ test_backfill_cache_hit() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent_img" 2>/dev/null || true
 
     create_test_image_with_pattern $size_mb "$raw_file"
-    "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/cache-hit.raw" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 "$raw_file" "$S3_BUCKET" "cache-hit.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$parent_img" --size ${size_mb}M
     set_s3_config "$parent_img" "cache-hit.raw"
@@ -325,7 +325,7 @@ test_backfill_restart_recovery() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
 
     create_test_image_with_pattern $size_mb "$raw_file"
-    "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/restart.raw" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 "$raw_file" "$S3_BUCKET" "restart.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
     set_s3_config "$img" "restart.raw"
@@ -474,7 +474,7 @@ test_backfill_status_transitions() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
 
     create_test_image_with_pattern $size_mb "$raw_file"
-    "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/status-trans.raw" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 "$raw_file" "$S3_BUCKET" "status-trans.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
     set_s3_config "$img" "status-trans.raw"
@@ -616,7 +616,7 @@ test_parent_du_after_backfill() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
 
     create_test_image_with_pattern $size_mb "$raw_file"
-    "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/du-backfill.raw" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 "$raw_file" "$S3_BUCKET" "du-backfill.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
     set_s3_config "$img" "du-backfill.raw"
@@ -676,7 +676,7 @@ test_parent_du_after_child_writeback() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent_img" 2>/dev/null || true
 
     create_test_image_with_pattern $size_mb "$raw_file"
-    "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/du-writeback.raw" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 "$raw_file" "$S3_BUCKET" "du-writeback.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$parent_img" --size ${size_mb}M
     set_s3_config "$parent_img" "du-writeback.raw"
@@ -745,8 +745,8 @@ test_backfill_rescan_picks_up_new_image() {
 
     create_test_image_with_pattern $size_mb "$raw1"
     create_test_image_with_pattern $size_mb "$raw2"
-    "$MINIO_BIN/mc" cp "$raw1" "local/$S3_BUCKET/rescan-img1.raw" 2>&1 | grep -v "^mc:" || true
-    "$MINIO_BIN/mc" cp "$raw2" "local/$S3_BUCKET/rescan-img2.raw" 2>&1 | grep -v "^mc:" || true
+    upload_to_s3 "$raw1" "$S3_BUCKET" "rescan-img1.raw"
+    upload_to_s3 "$raw2" "$S3_BUCKET" "rescan-img2.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img1" --size ${size_mb}M
     set_s3_config "$img1" "rescan-img1.raw"
