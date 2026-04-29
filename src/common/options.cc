@@ -7460,34 +7460,6 @@ static std::vector<Option> get_rbd_options() {
     .set_min(1)
     .set_description("maximum concurrent S3 backfill operations globally"),
 
-    Option("rbd_backfill_lock_timeout", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_default(30)
-    .set_description("lock timeout for backfill operations in seconds"),
-
-    Option("rbd_backfill_max_retries", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_default(5)
-    .set_description("maximum number of retries for failed backfill operations"),
-
-    Option("rbd_backfill_retry_delay", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
-    .set_default(5.0)
-    .set_description("initial delay in seconds after preemption before retry"),
-
-    Option("rbd_backfill_progress_interval", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_default(60)
-    .set_description("interval in seconds to save backfill progress"),
-
-    Option("rbd_backfill_bandwidth_limit", Option::TYPE_SIZE, Option::LEVEL_ADVANCED)
-    .set_default(0)
-    .set_description("bandwidth limit in bytes/second (0 = unlimited)"),
-
-    Option("rbd_backfill_enable_preemption", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
-    .set_default(true)
-    .set_description("enable user IO preemption of background backfill"),
-
-    Option("rbd_backfill_cancel_timeout", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_default(2000)
-    .set_description("maximum time in milliseconds to wait for S3 fetch cancellation"),
-
     Option("rbd_backfill_rescan_interval", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(30)
     .set_description("seconds between BackfillDaemon rescans of scheduled images "
@@ -7697,21 +7669,6 @@ static std::vector<Option> get_rbd_mirror_options() {
     .set_long_description("When enabled, child images of standalone clone parents "
                           "can automatically fetch missing parent objects from S3 "
                           "storage and write them back to the parent RADOS pool."),
-
-    Option("rbd_s3_fetch_timeout_ms", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_default(30000)
-    .set_min(1000)
-    .set_description("S3 HTTP request timeout in milliseconds")
-    .set_long_description("Maximum time to wait for an S3 HTTP GET request to "
-                          "complete before aborting and retrying."),
-
-    Option("rbd_s3_fetch_max_retries", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
-    .set_default(3)
-    .set_min_max(0, 10)
-    .set_description("maximum number of S3 fetch retry attempts")
-    .set_long_description("Number of times to retry fetching an object from S3 "
-                          "on timeout or transient network errors. Uses exponential "
-                          "backoff (1s, 2s, 4s, ...)."),
 
     Option("rbd_s3_parent_lock_timeout", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(30)
