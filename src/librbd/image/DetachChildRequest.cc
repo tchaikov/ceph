@@ -39,15 +39,13 @@ void DetachChildRequest<I>::send() {
 
     // use oldest snapshot or HEAD for parent spec
     if (!m_image_ctx.snap_info.empty()) {
-      m_parent_spec = m_image_ctx.snap_info.begin()->second.parent.spec;
       m_parent_info = m_image_ctx.snap_info.begin()->second.parent;
     } else {
-      m_parent_spec = m_image_ctx.parent_md.spec;
       m_parent_info = m_image_ctx.parent_md;
     }
   }
 
-  if (m_parent_spec.pool_id == -1 && m_parent_spec.pool_name.empty()) {
+  if (m_parent_info.spec.pool_id == -1 && m_parent_info.spec.pool_name.empty()) {
     // No parent at all — ignore potential race with parent disappearing.
     // NOTE: pool_id == -1 alone is NOT sufficient to skip detach, because
     // remote standalone parents use pool_id == -1 with pool_name set.
@@ -69,7 +67,7 @@ void DetachChildRequest<I>::clone_v2_child_detach() {
   ldout(cct, 5) << dendl;
 
   librados::ObjectWriteOperation op;
-  cls_client::child_detach(&op, m_parent_spec.snap_id,
+  cls_client::child_detach(&op, m_parent_info.spec.snap_id,
                            {m_image_ctx.md_ctx.get_id(),
                             m_image_ctx.md_ctx.get_namespace(),
                             m_image_ctx.id});
@@ -83,8 +81,8 @@ void DetachChildRequest<I>::clone_v2_child_detach() {
     m_remote_parent_cluster.reset(new librados::Rados());
     r = util::open_remote_parent_ioctx(
       cct, m_parent_info.remote,
-      m_parent_spec.pool_name, m_parent_spec.pool_id,
-      m_parent_spec.pool_namespace,
+      m_parent_info.spec.pool_name, m_parent_info.spec.pool_id,
+      m_parent_info.spec.pool_namespace,
       *m_remote_parent_cluster, m_parent_io_ctx);
     if (r < 0) {
       lderr(cct) << "failed to open remote parent: " << cpp_strerror(r) << dendl;
@@ -95,15 +93,15 @@ void DetachChildRequest<I>::clone_v2_child_detach() {
   } else {
     // Local parent - use existing code path
     r = util::create_ioctx(m_image_ctx.md_ctx, "parent image",
-                           m_parent_spec.pool_id,
-                           m_parent_spec.pool_namespace, &m_parent_io_ctx);
+                           m_parent_info.spec.pool_id,
+                           m_parent_info.spec.pool_namespace, &m_parent_io_ctx);
     if (r < 0) {
       finish(r);
       return;
     }
   }
 
-  m_parent_header_name = util::header_name(m_parent_spec.image_id);
+  m_parent_header_name = util::header_name(m_parent_info.spec.image_id);
 
   auto aio_comp = create_rados_callback<
     DetachChildRequest<I>,
@@ -127,7 +125,7 @@ void DetachChildRequest<I>::handle_clone_v2_child_detach(int r) {
 
   // For standalone clones (snap_id == CEPH_NOSNAP), skip snapshot operations
   // as they don't clone from a snapshot and there's nothing to clean up
-  if (m_parent_spec.snap_id == CEPH_NOSNAP) {
+  if (m_parent_info.spec.snap_id == CEPH_NOSNAP) {
     ldout(cct, 10) << "standalone clone - skipping snapshot cleanup" << dendl;
     finish(0);
     return;
@@ -142,7 +140,7 @@ void DetachChildRequest<I>::clone_v2_get_snapshot() {
   ldout(cct, 5) << dendl;
 
   librados::ObjectReadOperation op;
-  cls_client::snapshot_get_start(&op, m_parent_spec.snap_id);
+  cls_client::snapshot_get_start(&op, m_parent_info.spec.snap_id);
 
   m_out_bl.clear();
   auto aio_comp = create_rados_callback<
@@ -195,7 +193,7 @@ void DetachChildRequest<I>::clone_v2_open_parent() {
   auto cct = m_image_ctx.cct;
   ldout(cct, 5) << dendl;
 
-  m_parent_image_ctx = I::create("", m_parent_spec.image_id, nullptr,
+  m_parent_image_ctx = I::create("", m_parent_info.spec.image_id, nullptr,
                                  m_parent_io_ctx, false);
 
   auto ctx = create_context_callback<
@@ -292,10 +290,10 @@ void DetachChildRequest<I>::clone_v1_remove_child() {
   auto cct = m_image_ctx.cct;
   ldout(cct, 5) << dendl;
 
-  m_parent_spec.pool_namespace = "";
+  m_parent_info.spec.pool_namespace = "";
 
   librados::ObjectWriteOperation op;
-  librbd::cls_client::remove_child(&op, m_parent_spec, m_image_ctx.id);
+  librbd::cls_client::remove_child(&op, m_parent_info.spec, m_image_ctx.id);
 
   auto aio_comp = create_rados_callback<
     DetachChildRequest<I>,

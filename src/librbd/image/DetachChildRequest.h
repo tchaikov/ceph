@@ -68,11 +68,12 @@ private:
   Context* m_on_finish;
 
   librados::IoCtx m_parent_io_ctx;
-  cls::rbd::ParentImageSpec m_parent_spec;
   std::string m_parent_header_name;
 
   // Remote cluster connection for cross-cluster parents
   std::shared_ptr<librados::Rados> m_remote_parent_cluster;
+  // Carries m_parent_info.spec (the ParentImageSpec) plus the new
+  // remote_cluster fields used to resolve cross-cluster parents.
   ParentImageInfo m_parent_info;
 
   cls::rbd::SnapshotNamespace m_parent_snap_namespace;
