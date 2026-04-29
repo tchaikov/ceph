@@ -115,8 +115,14 @@ check_cluster_running() {
         return 1
     fi
 
-    if ! "$BUILD_DIR/bin/ceph" --conf "$conf" status >/dev/null 2>&1; then
-        log_error "Ceph cluster not running"
+    # `ceph status` waits indefinitely if mons are unreachable or paxos is
+    # stuck (e.g. quorum lost after a mon crash).  Wrap with `timeout` so
+    # the harness fast-fails with a useful diagnostic instead of hanging
+    # the suite for hours behind a silent mon outage.
+    if ! timeout 15 "$BUILD_DIR/bin/ceph" --conf "$conf" status >/dev/null 2>&1; then
+        log_error "Ceph cluster unreachable (no quorum or no mons listening)"
+        log_error "Likely vstart cluster lost mon quorum; restart with:"
+        log_error "  cd $BUILD_DIR && MON=1 OSD=3 MDS=0 MGR=1 RGW=0 ../src/vstart.sh -n -d --without-dashboard"
         return 1
     fi
 
