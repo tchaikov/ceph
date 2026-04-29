@@ -79,19 +79,14 @@ namespace librbd {
             const char *c_name, ImageOptions& c_opts,
             const std::string &non_primary_global_image_id,
             const std::string &primary_mirror_uuid);
+  // Standalone clone.  When c_opts has RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF
+  // set (along with the optional REMOTE_KEYRING and REMOTE_CLIENT_NAME)
+  // the parent image is looked up in a remote cluster.
   int clone_standalone(IoCtx& p_ioctx, const char *p_id, const char *p_name,
                        IoCtx& c_ioctx, const char *c_id, const char *c_name,
                        ImageOptions& c_opts,
                        const std::string &non_primary_global_image_id,
                        const std::string &primary_mirror_uuid);
-  int clone_standalone_remote(IoCtx& p_ioctx, const char *p_id, const char *p_name,
-                              IoCtx& c_ioctx, const char *c_id, const char *c_name,
-                              ImageOptions& c_opts,
-                              const std::string &non_primary_global_image_id,
-                              const std::string &primary_mirror_uuid,
-                              const std::string &remote_cluster_conf,
-                              const std::string &remote_keyring,
-                              const std::string &remote_client_name);
   int rename(librados::IoCtx& io_ctx, const char *srcname, const char *dstname);
   int info(ImageCtx *ictx, image_info_t& info, size_t image_size);
   int get_old_format(ImageCtx *ictx, uint8_t *old);

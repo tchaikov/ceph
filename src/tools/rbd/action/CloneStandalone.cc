@@ -104,17 +104,17 @@ int execute(const po::variables_map &vm,
     return r;
   }
 
-  librbd::RBD rbd;
-
   if (is_remote) {
-    r = rbd.clone_standalone_remote(io_ctx, image_name.c_str(), dst_io_ctx,
-                                    dst_image_name.c_str(), opts,
-                                    remote_cluster_conf, remote_keyring,
-                                    remote_client_name);
-  } else {
-    r = rbd.clone_standalone(io_ctx, image_name.c_str(), dst_io_ctx,
-                             dst_image_name.c_str(), opts);
+    opts.set(RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF, remote_cluster_conf);
+    if (!remote_keyring.empty()) {
+      opts.set(RBD_IMAGE_OPTION_REMOTE_KEYRING, remote_keyring);
+    }
+    opts.set(RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME, remote_client_name);
   }
+
+  librbd::RBD rbd;
+  r = rbd.clone_standalone(io_ctx, image_name.c_str(), dst_io_ctx,
+                           dst_image_name.c_str(), opts);
 
   if (r == -EXDEV) {
     std::cerr << "rbd: clone v2 required for cross-namespace clones."
