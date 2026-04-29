@@ -173,9 +173,8 @@ chmod 600 /home/cephdev/.ceph/cluster1.keyring"
 
     # Verify RADOS objects created on cluster2
     local block_prefix obj_count
-    block_prefix=$(exec_on cluster2 \
-        "./bin/rbd --conf /tmp/cluster2/ceph.conf info child_pool/child_image 2>/dev/null \
-         | awk '/block_name_prefix:/ {print \$2}'")
+    block_prefix=$(get_remote_block_prefix cluster2 \
+        /tmp/cluster2/ceph.conf child_pool/child_image)
     obj_count=$(exec_on cluster2 \
         "./bin/rados --conf /tmp/cluster2/ceph.conf -p child_pool ls 2>/dev/null \
          | grep -c \"^${block_prefix}\\.\"" || echo "0")
@@ -324,9 +323,8 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
     # ────────────────────────────────────────────────────────────────────────
     log_step "Verifying parent has cached objects after flatten (bug #3 regression)"
     local parent_prefix parent_obj_count
-    parent_prefix=$(exec_on cluster1 \
-        "./bin/rbd --conf /tmp/cluster1/ceph.conf info xcluster_pool/xcluster-parent 2>/dev/null \
-         | awk '/block_name_prefix:/ {print \$2}'")
+    parent_prefix=$(get_remote_block_prefix cluster1 \
+        /tmp/cluster1/ceph.conf xcluster_pool/xcluster-parent)
     if [ -z "$parent_prefix" ]; then
         log_error "Could not get parent block_name_prefix on cluster1"
         return 1
@@ -691,9 +689,8 @@ chmod 600 /home/cephdev/.ceph/xconcur1.keyring"
     # Verify data integrity: parent object 0 in cluster1's RADOS matches S3 source.
     # The first CopyupRequest to win the sentinel lock wrote it; verify it wrote correctly.
     local parent_prefix
-    parent_prefix=$(exec_on cluster1 \
-        "./bin/rbd --conf /tmp/cluster1/ceph.conf info xconcur_pool/xconcur-parent 2>/dev/null \
-         | awk '/block_name_prefix:/ {print \$2}'")
+    parent_prefix=$(get_remote_block_prefix cluster1 \
+        /tmp/cluster1/ceph.conf xconcur_pool/xconcur-parent)
 
     if [ -n "$parent_prefix" ]; then
         local parent_obj="${parent_prefix}.0000000000000000"

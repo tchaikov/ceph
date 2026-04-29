@@ -61,9 +61,7 @@ create_s3_parent $POOL "dedup-read-parent" "dedup-read-parent.raw" $PARENT_SIZE_
     $S3_ENDPOINT $S3_BUCKET
 
 # Confirm parent oid is not yet in RADOS (S3 hasn't been fetched yet).
-PARENT_OID=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
-    info "$POOL/dedup-read-parent" --format json \
-    | python3 -c "import sys,json; print(json.load(sys.stdin)['block_name_prefix'])")
+PARENT_OID=$(get_block_prefix "$CEPH_CONF" "$POOL" "dedup-read-parent")
 DATA_OID="${PARENT_OID}.0000000000000000"
 log_info "Parent data oid: $DATA_OID"
 

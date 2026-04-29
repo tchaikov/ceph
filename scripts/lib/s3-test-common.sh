@@ -448,6 +448,19 @@ wait_for_backfill_complete() {
 # Object/image introspection helpers
 # ---------------------------------------------------------------------------
 
+# Extract block_name_prefix from `rbd info` output running inside a remote
+# cluster's container.  exec_on runs the bash snippet via `docker exec`, so
+# $2 must be escaped as \$2 to defer expansion until the container side.
+# Usage: prefix=$(get_remote_block_prefix <cluster> <conf-path-in-container> <pool>/<image>)
+get_remote_block_prefix() {
+    local cluster=$1
+    local conf=$2
+    local image_spec=$3
+    exec_on "$cluster" \
+        "./bin/rbd --conf $conf info $image_spec 2>/dev/null \
+         | awk '/block_name_prefix:/ {print \$2}'"
+}
+
 # Extract block_name_prefix from `rbd info` output.
 # Usage: get_block_prefix <conf> <pool> <image>
 get_block_prefix() {
