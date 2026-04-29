@@ -14,9 +14,6 @@ class CephContext;
 namespace librbd {
 namespace util {
 
-// Default RADOS client name for connecting to remote clusters
-static constexpr const char* DEFAULT_REMOTE_CLIENT_NAME = "client.admin";
-
 /**
  * Parse monitor addresses from ceph.conf file
  *

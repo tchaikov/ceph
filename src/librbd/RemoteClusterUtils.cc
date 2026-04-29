@@ -135,9 +135,14 @@ int open_remote_parent_ioctx(CephContext* cct,
                               const std::string& pool_namespace,
                               librados::Rados& cluster,
                               librados::IoCtx& ioctx) {
+  // open_remote_parent_ioctx is the cross-cluster path used by RBD I/O
+  // (CopyupRequest) and refresh; both rely on the parent cluster's admin
+  // user.  CLI-driven flows (clone-standalone --remote-cluster-conf ...)
+  // go through connect_to_remote_cluster directly with a user-specified
+  // client name.
   int r = connect_to_remote_cluster(cct,
     remote.cluster_name, remote.mon_hosts, remote.keyring,
-    DEFAULT_REMOTE_CLIENT_NAME, cluster);
+    "client.admin", cluster);
   if (r < 0) {
     return r;
   }
