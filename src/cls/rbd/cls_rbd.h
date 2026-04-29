@@ -54,6 +54,15 @@ struct cls_rbd_parent {
     return ((pool_id >= 0 || !pool_name.empty()) && !image_id.empty());
   }
 
+  // Identity does NOT include remote_mon_hosts or remote_keyring.  Those are
+  // connection details and credentials, not parent identity: an operator who
+  // rotates the keyring or whose remote cluster reconfigures its mons must
+  // be able to run `parent_attach` again without hitting -EEXIST.  The
+  // distinguishing tuple is (pool_id, pool_namespace, image_id, snap_id) for
+  // local parents plus (pool_name, remote_cluster_name) for remote parents.
+  // parent_type is included for defensive consistency: it is derivable from
+  // the rest of the identity, but a mismatch indicates a state-tracking bug
+  // that should surface here rather than be silently accepted.
   inline bool operator==(const cls_rbd_parent& rhs) const {
     return (pool_id == rhs.pool_id &&
             pool_namespace == rhs.pool_namespace &&
@@ -61,9 +70,7 @@ struct cls_rbd_parent {
             snap_id == rhs.snap_id &&
             parent_type == rhs.parent_type &&
             pool_name == rhs.pool_name &&
-            remote_cluster_name == rhs.remote_cluster_name &&
-            remote_mon_hosts == rhs.remote_mon_hosts &&
-            remote_keyring == rhs.remote_keyring);
+            remote_cluster_name == rhs.remote_cluster_name);
   }
   inline bool operator!=(const cls_rbd_parent& rhs) const {
     return !(*this == rhs);
