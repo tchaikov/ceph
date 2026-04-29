@@ -82,12 +82,7 @@ test_backfill_lifecycle() {
 
     # Create the parent image with S3 config
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img" \
-        --s3-endpoint   "$S3_ENDPOINT" \
-        --s3-bucket     "$S3_BUCKET" \
-        --s3-image-name "lifecycle.raw" \
-        --s3-access-key minioadmin \
-        --s3-secret-key minioadmin
+    set_s3_config "$img" "lifecycle.raw"
 
     # Schedule backfill
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$img"
@@ -134,12 +129,7 @@ test_backfill_data_integrity() {
     "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/integrity.raw" 2>&1 | grep -v "^mc:" || true
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img" \
-        --s3-endpoint   "$S3_ENDPOINT" \
-        --s3-bucket     "$S3_BUCKET" \
-        --s3-image-name "integrity.raw" \
-        --s3-access-key minioadmin \
-        --s3-secret-key minioadmin
+    set_s3_config "$img" "integrity.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$img"
 
@@ -185,12 +175,7 @@ test_backfill_object_naming() {
     "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/naming.raw" 2>&1 | grep -v "^mc:" || true
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img" \
-        --s3-endpoint   "$S3_ENDPOINT" \
-        --s3-bucket     "$S3_BUCKET" \
-        --s3-image-name "naming.raw" \
-        --s3-access-key minioadmin \
-        --s3-secret-key minioadmin
+    set_s3_config "$img" "naming.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$img"
 
@@ -270,12 +255,7 @@ test_backfill_cache_hit() {
     "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/cache-hit.raw" 2>&1 | grep -v "^mc:" || true
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$parent_img" --size ${size_mb}M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$parent_img" \
-        --s3-endpoint   "$S3_ENDPOINT" \
-        --s3-bucket     "$S3_BUCKET" \
-        --s3-image-name "cache-hit.raw" \
-        --s3-access-key minioadmin \
-        --s3-secret-key minioadmin
+    set_s3_config "$parent_img" "cache-hit.raw"
 
     # Create a child clone from the parent
     create_standalone_clone "$POOL" "cache-hit-parent" "cache-hit-child"
@@ -348,12 +328,7 @@ test_backfill_restart_recovery() {
     "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/restart.raw" 2>&1 | grep -v "^mc:" || true
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img" \
-        --s3-endpoint   "$S3_ENDPOINT" \
-        --s3-bucket     "$S3_BUCKET" \
-        --s3-image-name "restart.raw" \
-        --s3-access-key minioadmin \
-        --s3-secret-key minioadmin
+    set_s3_config "$img" "restart.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$img"
     run_backfill_daemon "$CEPH_CONF" "$blog1"
@@ -502,12 +477,7 @@ test_backfill_status_transitions() {
     "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/status-trans.raw" 2>&1 | grep -v "^mc:" || true
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img" \
-        --s3-endpoint   "$S3_ENDPOINT" \
-        --s3-bucket     "$S3_BUCKET" \
-        --s3-image-name "status-trans.raw" \
-        --s3-access-key minioadmin \
-        --s3-secret-key minioadmin
+    set_s3_config "$img" "status-trans.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$img"
 
@@ -577,12 +547,7 @@ test_backfill_status_on_failure() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img" \
-        --s3-endpoint   "$bad_endpoint" \
-        --s3-bucket     "no-such-bucket" \
-        --s3-image-name "no-such-image.raw" \
-        --s3-access-key minioadmin \
-        --s3-secret-key minioadmin
+    set_s3_config "$img" "no-such-image.raw" "$bad_endpoint" "no-such-bucket"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$img"
 
@@ -654,12 +619,7 @@ test_parent_du_after_backfill() {
     "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/du-backfill.raw" 2>&1 | grep -v "^mc:" || true
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img" \
-        --s3-endpoint   "$S3_ENDPOINT" \
-        --s3-bucket     "$S3_BUCKET" \
-        --s3-image-name "du-backfill.raw" \
-        --s3-access-key minioadmin \
-        --s3-secret-key minioadmin
+    set_s3_config "$img" "du-backfill.raw"
 
     # Before backfill: freshly created image has no RADOS objects → used_size=0
     local used_before
@@ -719,12 +679,7 @@ test_parent_du_after_child_writeback() {
     "$MINIO_BIN/mc" cp "$raw_file" "local/$S3_BUCKET/du-writeback.raw" 2>&1 | grep -v "^mc:" || true
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$parent_img" --size ${size_mb}M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$parent_img" \
-        --s3-endpoint   "$S3_ENDPOINT" \
-        --s3-bucket     "$S3_BUCKET" \
-        --s3-image-name "du-writeback.raw" \
-        --s3-access-key minioadmin \
-        --s3-secret-key minioadmin
+    set_s3_config "$parent_img" "du-writeback.raw"
 
     create_standalone_clone "$POOL" "du-writeback-parent" "du-writeback-child"
 
@@ -794,16 +749,10 @@ test_backfill_rescan_picks_up_new_image() {
     "$MINIO_BIN/mc" cp "$raw2" "local/$S3_BUCKET/rescan-img2.raw" 2>&1 | grep -v "^mc:" || true
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img1" --size ${size_mb}M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img1" \
-        --s3-endpoint "$S3_ENDPOINT" --s3-bucket "$S3_BUCKET" \
-        --s3-image-name "rescan-img1.raw" \
-        --s3-access-key minioadmin --s3-secret-key minioadmin
+    set_s3_config "$img1" "rescan-img1.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img2" --size ${size_mb}M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$img2" \
-        --s3-endpoint "$S3_ENDPOINT" --s3-bucket "$S3_BUCKET" \
-        --s3-image-name "rescan-img2.raw" \
-        --s3-access-key minioadmin --s3-secret-key minioadmin
+    set_s3_config "$img2" "rescan-img2.raw"
 
     # Schedule img1 BEFORE daemon starts.  img2 will be scheduled afterward
     # to exercise the rescan path.

@@ -57,12 +57,7 @@ test_metadata_no_inheritance() {
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$parent" --size 100M
 
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$parent" \
-        --s3-bucket      "$S3_BUCKET" \
-        --s3-endpoint    "$S3_ENDPOINT" \
-        --s3-image-name  "edge.raw" \
-        --s3-access-key  minioadmin \
-        --s3-secret-key  minioadmin
+    set_s3_config "$parent" "edge.raw"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" clone-standalone "$parent" "$child"
 

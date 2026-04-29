@@ -120,12 +120,7 @@ setup_fresh_image() {
     # Create RBD parent referencing that S3 object
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$POOL/$PERF_PARENT" \
         --size "${size_mb}M" --object-size 4M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$POOL/$PERF_PARENT" \
-        --s3-endpoint   "$S3_ENDPOINT" \
-        --s3-bucket     "$S3_BUCKET" \
-        --s3-image-name "$s3_name" \
-        --s3-access-key minioadmin \
-        --s3-secret-key minioadmin
+    set_s3_config "$POOL/$PERF_PARENT" "$s3_name"
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" clone-standalone \
         "$POOL/$PERF_PARENT" "$POOL/$PERF_CHILD"

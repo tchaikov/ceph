@@ -141,12 +141,7 @@ test_s3_object_not_found() {
     # Create parent pointing to a non-existent S3 object (do NOT upload anything).
     # We use rbd image-meta set directly here so the file is never uploaded.
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$POOL_NAME/parent-test" --size ${IMAGE_SIZE_MB}M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$POOL_NAME/parent-test" \
-        --s3-endpoint   "$S3_ENDPOINT" \
-        --s3-bucket     "$S3_BUCKET" \
-        --s3-image-name "this-object-does-not-exist-in-bucket.raw" \
-        --s3-access-key minioadmin \
-        --s3-secret-key minioadmin
+    set_s3_config "$POOL_NAME/parent-test" "this-object-does-not-exist-in-bucket.raw"
     create_standalone_clone "$POOL_NAME" "parent-test" "child-test"
 
     # Write a PARTIAL 4K write to trigger copyup → S3 fetch → 404.
@@ -199,12 +194,7 @@ test_sparse_image() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL_NAME/parent-test" 2>/dev/null || true
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$POOL_NAME/parent-test" \
         --size ${IMAGE_SIZE_MB}M --object-size 4M
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" s3-config set "$POOL_NAME/parent-test" \
-        --s3-endpoint   "$S3_ENDPOINT" \
-        --s3-bucket     "$S3_BUCKET" \
-        --s3-image-name "parent-sparse.raw" \
-        --s3-access-key minioadmin \
-        --s3-secret-key minioadmin
+    set_s3_config "$POOL_NAME/parent-test" "parent-sparse.raw"
     create_standalone_clone "$POOL_NAME" "parent-test" "child-test"
 
     # Read entire image

@@ -133,6 +133,22 @@ create_pool() {
     log_success "Pool ready: $pool"
 }
 
+# Configure an existing rbd image as an S3-backed parent.
+# Usage: set_s3_config <image_spec> <s3_image_name> [endpoint] [bucket] [conf]
+set_s3_config() {
+    local img=$1
+    local s3_image_name=$2
+    local endpoint=${3:-$S3_ENDPOINT}
+    local bucket=${4:-$S3_BUCKET}
+    local conf=${5:-$CEPH_CONF}
+    "$BUILD_DIR/bin/rbd" --conf "$conf" s3-config set "$img" \
+        --s3-endpoint   "$endpoint" \
+        --s3-bucket     "$bucket" \
+        --s3-image-name "$s3_image_name" \
+        --s3-access-key minioadmin \
+        --s3-secret-key minioadmin
+}
+
 enable_s3_fetch() {
     local conf=${1:-$CEPH_CONF}
 
@@ -167,7 +183,10 @@ create_s3_parent() {
     "$BUILD_DIR/bin/rbd" --conf "$conf" rm "$pool/$parent_name" 2>/dev/null || true
     "$BUILD_DIR/bin/rbd" --conf "$conf" create "$pool/$parent_name" --size ${size_mb}M --object-size 4M
 
-    # Configure S3 via s3-config set (sets s3.enabled, base64-encodes secret key, uses correct key names)
+    # Custom credentials for create_s3_parent's optional 8th/9th args:
+    # set_s3_config hardcodes minioadmin/minioadmin, which covers every test
+    # except the ones that exercise rejection paths.  Inline the s3-config
+    # set call here so those remaining tests can still pass through.
     "$BUILD_DIR/bin/rbd" --conf "$conf" s3-config set "$pool/$parent_name" \
         --s3-endpoint   "$s3_endpoint" \
         --s3-bucket     "$s3_bucket" \
