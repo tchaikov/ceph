@@ -171,8 +171,7 @@ void CloneRequest<I>::open_parent() {
   ceph_assert(is_standalone_clone() ||
               (m_parent_snap_name.empty() ^ (m_parent_snap_id == CEPH_NOSNAP)));
 
-  librados::IoCtx& parent_io_ctx = m_remote_parent_io_ctx ?
-                                   *m_remote_parent_io_ctx : m_parent_io_ctx;
+  librados::IoCtx& parent_io_ctx = effective_parent_io_ctx();
 
   if (is_standalone_clone()) {
     m_parent_image_ctx = I::create("", m_parent_image_id, nullptr,
@@ -210,8 +209,7 @@ void CloneRequest<I>::handle_open_parent(int r) {
   // that the stored pool_id and pool_name refer to the remote cluster.  This
   // is required because RefreshParentRequest uses pool_name to reconnect to
   // the correct pool in the remote cluster (pool IDs are cluster-specific).
-  librados::IoCtx& used_io_ctx = m_remote_parent_io_ctx ?
-                                 *m_remote_parent_io_ctx : m_parent_io_ctx;
+  librados::IoCtx& used_io_ctx = effective_parent_io_ctx();
   m_pspec = {used_io_ctx.get_id(), used_io_ctx.get_namespace(),
              m_parent_image_id, m_parent_snap_id};
   m_pspec.pool_name = used_io_ctx.get_pool_name();

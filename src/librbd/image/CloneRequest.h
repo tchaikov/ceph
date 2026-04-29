@@ -109,6 +109,13 @@ private:
   std::unique_ptr<librados::Rados> m_remote_parent_cluster;
   std::unique_ptr<librados::IoCtx> m_remote_parent_io_ctx;
 
+  // Pick the IoCtx the parent image was actually opened against — the local
+  // m_parent_io_ctx for snapshot- and local-standalone clones, or the
+  // connected remote IoCtx for cross-cluster parents.
+  librados::IoCtx& effective_parent_io_ctx() {
+    return m_remote_parent_io_ctx ? *m_remote_parent_io_ctx : m_parent_io_ctx;
+  }
+
   IoCtx &m_ioctx;
   std::string m_name;
   std::string m_id;
