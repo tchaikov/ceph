@@ -52,8 +52,8 @@ test_metadata_no_inheritance() {
     local parent="$POOL/edge-parent"
     local child="$POOL/edge-child"
 
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$(echo "$parent")" 2>/dev/null || true
-    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$(echo "$child")"  2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child"  2>/dev/null || true
 
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$parent" --size 100M
 
