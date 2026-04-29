@@ -35,47 +35,55 @@ std::string AWSV4Signer::get_iso8601_timestamp(time_t t) {
   return format_time(t, "%Y%m%dT%H%M%SZ", 20);
 }
 
-std::string AWSV4Signer::sha256_hex(const std::string& data) {
-  unsigned char hash[CEPH_CRYPTO_SHA256_DIGESTSIZE];
+namespace {
+// Internal helpers used by AWSV4Signer.  Demoted from public statics in
+// the header because no external caller ever used them.
 
+std::string to_hex(const unsigned char* data, size_t len) {
+  static const char hex_chars[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(len * 2);
+  for (size_t i = 0; i < len; ++i) {
+    result.push_back(hex_chars[data[i] >> 4]);
+    result.push_back(hex_chars[data[i] & 0x0f]);
+  }
+  return result;
+}
+
+std::string sha256_hex(const std::string& data) {
+  unsigned char hash[CEPH_CRYPTO_SHA256_DIGESTSIZE];
   ceph::crypto::SHA256 sha256;
   sha256.Update(reinterpret_cast<const unsigned char*>(data.data()), data.size());
   sha256.Final(hash);
-
   return to_hex(hash, CEPH_CRYPTO_SHA256_DIGESTSIZE);
 }
 
-std::array<unsigned char, 32> AWSV4Signer::hmac_sha256(
+std::array<unsigned char, 32> hmac_sha256(
     const std::array<unsigned char, 32>& key,
     const std::string& data) {
   std::array<unsigned char, 32> digest;
-
   ceph::crypto::HMACSHA256 hmac(key.data(), key.size());
   hmac.Update(reinterpret_cast<const unsigned char*>(data.data()), data.size());
   hmac.Final(digest.data());
-
   return digest;
 }
 
-std::array<unsigned char, 32> AWSV4Signer::hmac_sha256(
+std::array<unsigned char, 32> hmac_sha256(
     const std::string& key,
     const std::string& data) {
   std::array<unsigned char, 32> digest;
-
   ceph::crypto::HMACSHA256 hmac(
     reinterpret_cast<const unsigned char*>(key.data()),
     key.size());
   hmac.Update(reinterpret_cast<const unsigned char*>(data.data()), data.size());
   hmac.Final(digest.data());
-
   return digest;
 }
 
-std::string AWSV4Signer::uri_encode(const std::string& str, bool encode_slash) {
+std::string uri_encode(const std::string& str, bool encode_slash = true) {
   static const char upper_hex[] = "0123456789ABCDEF";
   std::string result;
   result.reserve(str.size() * 3);  // worst case: every byte percent-encoded
-
   for (unsigned char c : str) {
     if ((c >= '0' && c <= '9') ||
         (c >= 'A' && c <= 'Z') ||
@@ -89,20 +97,10 @@ std::string AWSV4Signer::uri_encode(const std::string& str, bool encode_slash) {
       result += upper_hex[c & 0x0f];
     }
   }
-
   return result;
 }
 
-std::string AWSV4Signer::to_hex(const unsigned char* data, size_t len) {
-  static const char hex_chars[] = "0123456789abcdef";
-  std::string result;
-  result.reserve(len * 2);
-  for (size_t i = 0; i < len; ++i) {
-    result.push_back(hex_chars[data[i] >> 4]);
-    result.push_back(hex_chars[data[i] & 0x0f]);
-  }
-  return result;
-}
+} // anonymous namespace
 
 std::string AWSV4Signer::create_canonical_request(
     const std::string& method,

@@ -79,25 +79,6 @@ public:
    */
   static const std::string UNSIGNED_PAYLOAD;
 
-  /**
-   * Calculate SHA256 hash of data and return hex string.
-   */
-  static std::string sha256_hex(const std::string& data);
-
-  /**
-   * Calculate HMAC-SHA256 and return raw bytes.
-   */
-  static std::array<unsigned char, 32> hmac_sha256(
-    const std::array<unsigned char, 32>& key,
-    const std::string& data);
-
-  /**
-   * Calculate HMAC-SHA256 with string key and return raw bytes.
-   */
-  static std::array<unsigned char, 32> hmac_sha256(
-    const std::string& key,
-    const std::string& data);
-
 private:
   Credentials m_credentials;
 
@@ -141,16 +122,6 @@ private:
     const std::string& signed_headers,
     const std::string& scope,
     const std::string& signature);
-
-  /**
-   * URI encode a string (AWS-style).
-   */
-  static std::string uri_encode(const std::string& str, bool encode_slash = true);
-
-  /**
-   * Convert bytes to hex string.
-   */
-  static std::string to_hex(const unsigned char* data, size_t len);
 };
 
 } // namespace io
