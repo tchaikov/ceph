@@ -350,23 +350,19 @@ int Operations<I>::flatten(ProgressContext &prog_ctx) {
 
   {
     RWLock::RLocker parent_locker(m_image_ctx.parent_lock);
-    bool has_traditional_parent = (m_image_ctx.parent_md.spec.pool_id != -1);
-    bool has_metadata_parent = false;
-
-    // Check for remote standalone clone: pool_id is -1 but pool_name is set
-    // because pool IDs are cluster-specific.  The parent_md is populated by
-    // RefreshParentRequest from the CLS parent_get response.
-    if (!has_traditional_parent) {
-      has_metadata_parent = !m_image_ctx.parent_md.spec.pool_name.empty();
-      if (has_metadata_parent) {
-        ldout(cct, 10) << "detected remote standalone parent: pool_name="
-                       << m_image_ctx.parent_md.spec.pool_name << dendl;
-      }
-    }
-
-    if (!has_traditional_parent && !has_metadata_parent) {
+    // Both pool_id == -1 AND pool_name empty means there is no parent at all.
+    // Either alone is fine: a local parent has pool_id >= 0; a remote
+    // standalone parent has pool_id == -1 with pool_name set (pool IDs are
+    // cluster-specific, so RefreshParentRequest carries pool_name across
+    // for cross-cluster parents).
+    const auto& spec = m_image_ctx.parent_md.spec;
+    if (spec.pool_id == -1 && spec.pool_name.empty()) {
       lderr(cct) << "image has no parent" << dendl;
       return -EINVAL;
+    }
+    if (spec.pool_id == -1) {
+      ldout(cct, 10) << "detected remote standalone parent: pool_name="
+                     << spec.pool_name << dendl;
     }
   }
 
