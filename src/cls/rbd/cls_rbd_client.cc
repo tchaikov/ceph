@@ -397,19 +397,15 @@ int parent_get_finish(bufferlist::const_iterator* it,
   try {
     decode(*parent_image_spec, *it);
 
-    // Try to decode additional remote parent metadata (backward compatible)
-    // Only decode if parent exists - OSD only encodes these fields when parent.exists()
+    // Older OSDs don't encode the remote-parent fields; the caller is
+    // responsible for default-initialising the outputs (which std::string
+    // and std::vector already do, and parent_type defaults to
+    // CLS_RBD_PARENT_TYPE_SNAPSHOT == 0).
     if (parent_image_spec->exists_or_standalone() && !it->end()) {
       decode(*parent_type, *it);
       decode(*remote_cluster_name, *it);
       decode(*remote_mon_hosts, *it);
       decode(*remote_keyring, *it);
-    } else {
-      // No parent, or older OSD - no remote parent metadata available
-      *parent_type = 0; // CLS_RBD_PARENT_TYPE_SNAPSHOT
-      remote_cluster_name->clear();
-      remote_mon_hosts->clear();
-      remote_keyring->clear();
     }
   } catch (const buffer::error &) {
     return -EBADMSG;
