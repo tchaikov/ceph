@@ -99,47 +99,23 @@ int connect_to_remote_cluster(CephContext* cct,
 
   std::string mon_host_str = joinify(mon_hosts.begin(), mon_hosts.end(),
                                      std::string(","));
-
-  r = cluster.conf_set("mon_host", mon_host_str.c_str());
-  if (r < 0) {
-    cluster.shutdown();
-    return r;
-  }
-
-  // conf_set avoids creating a temporary keyring file, eliminating the window
-  // where key material would exist on disk.
-  r = cluster.conf_set("key", keyring.c_str());
-  if (r < 0) {
-    cluster.shutdown();
-    return r;
-  }
-
-  r = cluster.conf_set("keyring", "");
-  if (r < 0) {
-    cluster.shutdown();
-    return r;
-  }
-
   auto& conf = cct->_conf;
 
-  r = cluster.conf_set("rados_osd_op_timeout",
-                       stringify(conf->rados_osd_op_timeout).c_str());
-  if (r < 0) {
-    cluster.shutdown();
-    return r;
-  }
-
-  r = cluster.conf_set("client_mount_timeout",
-                       stringify(conf->client_mount_timeout).c_str());
-  if (r < 0) {
-    cluster.shutdown();
-    return r;
-  }
-
-  r = cluster.conf_set("rados_mon_op_timeout",
-                       stringify(conf->rados_mon_op_timeout).c_str());
-  if (r < 0) {
-    cluster.shutdown();
+  // conf_set avoids creating a temporary keyring file, eliminating the
+  // window where key material would exist on disk.
+  auto set = [&](const char* key, const std::string& value) {
+    int rc = cluster.conf_set(key, value.c_str());
+    if (rc < 0) {
+      cluster.shutdown();
+    }
+    return rc;
+  };
+  if ((r = set("mon_host",             mon_host_str)) < 0 ||
+      (r = set("key",                  keyring))      < 0 ||
+      (r = set("keyring",              ""))           < 0 ||
+      (r = set("rados_osd_op_timeout", stringify(conf->rados_osd_op_timeout))) < 0 ||
+      (r = set("client_mount_timeout", stringify(conf->client_mount_timeout))) < 0 ||
+      (r = set("rados_mon_op_timeout", stringify(conf->rados_mon_op_timeout))) < 0) {
     return r;
   }
 
