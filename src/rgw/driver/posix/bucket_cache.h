@@ -510,6 +510,7 @@ public:
 	  (opaque && (b != opaque)) ||
 	  (! (b->flags & BucketCacheEntry<D, B>::FLAG_FILLED))) {
 	/* do nothing */
+	lru.unref(b, cohort::lru::FLAG_NONE);
 	return 0;
       }
       ulk.unlock();
@@ -560,6 +561,7 @@ public:
 	  mdb_drop(*txn, b->dbi, 0);
 	  txn->commit();
 	  b->flags &= ~BucketCacheEntry<D, B>::FLAG_FILLED;
+	  lru.unref(b, cohort::lru::FLAG_NONE);
 	  return 0; /* don't process any more events in this batch */
 	}
 	  break;
@@ -642,6 +644,7 @@ public:
       b->flags &= ~BucketCacheEntry<D, B>::FLAG_FILLED;
 
       ulk.unlock();
+      lru.unref(b, cohort::lru::FLAG_NONE);
     } /* b */
 
     return 0;
