@@ -198,6 +198,14 @@ private:
   std::string m_lock_oid;     // m_oid + S3_FETCH_LOCK_SENTINEL_SUFFIX
   std::string m_lock_cookie;  // "<image_id>_r_<object_no>"
   ceph::bufferlist m_lock_info_bl;  // buffer for async get_lock_info response
+  // Set in handle_list_lock_holders_for_read iff the cls_lock is held by at
+  // least one cookie that does NOT match the reader naming pattern
+  // ("<image_id>_r_<object_no>") — i.e., a writer (CopyupRequest) or a
+  // backfill daemon.  When true, wait_for_peer_writeback is worth running
+  // (a write_full is on its way).  When false (all peers are readers, no
+  // backfill), no writeback will land — skip the wait to avoid the 250 ms
+  // dead time we measured at 100% timeout for reader-only contention.
+  bool m_peer_is_writer = false;
 
   void read_object();
   void handle_read_object(int r);
@@ -214,8 +222,6 @@ private:
   void try_preempt_backfill_lock_for_read();
   void handle_list_lock_holders_for_read(int r);
   void handle_break_backfill_lock_for_read(int r);
-  void recheck_oid_after_lock();
-  void handle_recheck_oid_after_lock(int r);
   void read_from_s3();
   void handle_read_from_s3(int r);
   // Lock-coordination soft-fail dispatch: any path that gives up on holding
