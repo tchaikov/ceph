@@ -220,6 +220,12 @@ run_s3_cross_cluster() {
     local s3_bucket="cross-cluster-test"
     local container_s3="http://${minio_ip}:${minio_port}"
 
+    # Ensure the sidecar container is reaped on EVERY return path (including
+    # `return 1` from a failed assertion).  Without this, an aborted run
+    # leaves the container holding minio_ip; the next run dies in the
+    # IP-allocation step with "ip address ... is already allocated".
+    trap "docker rm -f $minio_name >/dev/null 2>&1; rm -rf $minio_data" RETURN
+
     # Pre-place the parent data in MinIO's data dir so we don't need any
     # host->container upload path (the host can't reach the container in
     # rootless podman either, for the same pasta reason).  MinIO with the
@@ -417,6 +423,11 @@ run_s3_cross_cluster_rbd_children() {
     local minio_data="/tmp/${minio_name}-data"
     local container_s3="http://${minio_ip}:${minio_port}"
 
+    # Ensure the sidecar container is reaped on EVERY return path (see
+    # run_s3_cross_cluster for the same idiom and the IP-collision bug it
+    # prevents).
+    trap "docker rm -f $minio_name >/dev/null 2>&1; rm -rf $minio_data" RETURN
+
     mkdir -p "${minio_data}/${s3_bucket}"
     dd if=/dev/urandom bs=1M count=4 status=none \
         of="${minio_data}/${s3_bucket}/rbdchildren-parent-raw"
@@ -574,6 +585,11 @@ run_s3_cross_cluster_concurrent() {
     local s3_bucket="xconcur-test"
     local container_s3="http://${minio_ip}:${minio_port}"
     local parent_raw="${minio_data}/${s3_bucket}/xconcur-parent-raw"
+
+    # Ensure the sidecar container is reaped on EVERY return path (see
+    # run_s3_cross_cluster for the same idiom and the IP-collision bug it
+    # prevents).
+    trap "docker rm -f $minio_name >/dev/null 2>&1; rm -rf $minio_data" RETURN
 
     # Pre-stage the parent file in MinIO's fs backend so we don't need a
     # host->container upload path (pasta blocks that too).  MinIO with the
