@@ -451,9 +451,15 @@ int Image<I>::list_descendants(
   };
 
   for (auto& child_image : child_images) {
+    // Carry the spec's image_name into the descendant entry.  For same-
+    // cluster children the local-pool lookup below overwrites it with the
+    // authoritative directory entry; for cross-cluster children where no
+    // local lookup is possible, this is the name the parent will display.
+    // Pre-v5 ChildImageSpec records have empty image_name — mark_remote
+    // detects that and falls back to "<image_id> (remote)".
     images->push_back({
       child_image.pool_id, child_image.pool_name, child_image.pool_namespace,
-      child_image.image_id, "", false});
+      child_image.image_id, child_image.image_name, false});
 
     if (is_remote_child(child_image)) {
       // Remote child — cannot be opened from this cluster's IoCtx.
@@ -482,12 +488,18 @@ int Image<I>::list_descendants(
   std::sort(images->begin(), images->end(), compare_by_pool);
 
   // Mark a descendant image as a cross-cluster (remote) child.  Centralised
-  // so the display convention ("<id> (remote)") and the trash flag stay in
-  // sync across the three sites that need it.
+  // so the display convention and the trash flag stay in sync across the
+  // three sites that need it.  Always append " (remote)" so operators can
+  // tell at a glance the child is in another cluster.  Prefer the spec's
+  // image_name (captured at attach time in v5 ChildImageSpec); fall back to
+  // image_id only when the spec is empty (i.e., attached by a pre-v5 client).
   auto mark_remote = [&](decltype(*images->begin())& image, const char* reason) {
     ldout(cct, 10) << reason << ": pool_name=" << image.pool_name
-                   << ", image_id=" << image.image_id << dendl;
-    image.image_name = image.image_id + " (remote)";
+                   << ", image_id=" << image.image_id
+                   << ", image_name=" << image.image_name << dendl;
+    const std::string& display = image.image_name.empty() ? image.image_id
+                                                          : image.image_name;
+    image.image_name = display + " (remote)";
     image.trash = false;
   };
 

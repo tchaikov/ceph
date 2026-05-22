@@ -249,17 +249,18 @@ void ParentImageSpec::generate_test_instances(std::list<ParentImageSpec*>& o) {
 }
 
 void ChildImageSpec::encode(bufferlist &bl) const {
-  ENCODE_START(4, 1, bl);
+  ENCODE_START(5, 1, bl);
   encode(pool_id, bl);
   encode(image_id, bl);
   encode(pool_namespace, bl);
   encode(pool_name, bl);     // v3: pool name for cross-cluster children
   encode(cluster_name, bl);  // v4: cluster name (empty == same cluster)
+  encode(image_name, bl);    // v5: child's image name for display
   ENCODE_FINISH(bl);
 }
 
 void ChildImageSpec::decode(bufferlist::const_iterator &it) {
-  DECODE_START(4, it);
+  DECODE_START(5, it);
   decode(pool_id, it);
   decode(image_id, it);
   if (struct_v >= 2) {
@@ -271,6 +272,9 @@ void ChildImageSpec::decode(bufferlist::const_iterator &it) {
   if (struct_v >= 4) {
     decode(cluster_name, it);
   }
+  if (struct_v >= 5) {
+    decode(image_name, it);
+  }
   DECODE_FINISH(it);
 }
 
@@ -280,6 +284,7 @@ void ChildImageSpec::dump(Formatter *f) const {
   f->dump_string("image_id", image_id);
   f->dump_string("pool_name", pool_name);
   f->dump_string("cluster_name", cluster_name);
+  f->dump_string("image_name", image_name);
 }
 
 void ChildImageSpec::generate_test_instances(std::list<ChildImageSpec*> &o) {
@@ -289,6 +294,7 @@ void ChildImageSpec::generate_test_instances(std::list<ChildImageSpec*> &o) {
   auto remote = new ChildImageSpec(123, "", "abc");
   remote->pool_name = "ebs_ssd";
   remote->cluster_name = "remote";
+  remote->image_name = "vm-disk";
   o.push_back(remote);
 }
 

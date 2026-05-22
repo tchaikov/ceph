@@ -188,6 +188,10 @@ void AttachChildRequest<I>::v2_child_attach() {
     m_image_ctx->md_ctx.get_namespace(),
     m_image_ctx->id};
   child_spec.pool_name = m_image_ctx->md_ctx.get_pool_name();
+  // Capture the child's image name at attach time so cross-cluster
+  // rbd children can show it (the parent cluster cannot reach the child
+  // cluster's directory to resolve image_id → name at display time).
+  child_spec.image_name = m_image_ctx->name;
 
   // Cross-cluster check: child's IoCtx and parent's IoCtx come from different
   // librados Rados handles iff this is a cross-cluster clone.  Record the

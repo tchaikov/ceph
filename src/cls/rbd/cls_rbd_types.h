@@ -241,6 +241,16 @@ struct ChildImageSpec {
                              // list_descendants uses this to skip lookups in
                              // the parent's local pool when the child is
                              // remote.
+  std::string image_name;    // v5: human-readable name of the child image,
+                             // captured at attach time.  For same-cluster
+                             // children this is redundant (the local
+                             // directory can resolve image_id → name).  For
+                             // cross-cluster children it is the only place
+                             // the parent cluster sees the name — without it
+                             // list_descendants must fall back to printing
+                             // the raw image_id, which is what the user
+                             // reported as the "rbd children shows id, not
+                             // name" symptom on cross-cluster bases.
 
   ChildImageSpec() {}
   ChildImageSpec(int64_t pool_id, const std::string& pool_namespace,

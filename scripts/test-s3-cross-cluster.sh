@@ -519,6 +519,22 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
     fi
     log_success "rbd children listed cross-cluster child as remote (cluster_name dispatch works)"
 
+    # Bug #2 regression: with ChildImageSpec v5 (image_name captured at
+    # attach time), the listing must show the actual child image NAME, not
+    # just its image_id.  Pre-fix, list_descendants fell back to
+    # "<image_id> (remote)" because the parent couldn't talk to the remote
+    # cluster to resolve image_id → name.
+    if ! echo "$children_output" | grep -q "rbdchildren-child"; then
+        log_fail "Bug #2 regression: cross-cluster child shown by image_id, not by name"
+        log_error "  Expected the listing to contain 'rbdchildren-child'."
+        log_error "  Got:"
+        echo "$children_output" | sed 's/^/    /'
+        log_error "  Most likely: ChildImageSpec.image_name not populated at attach time,"
+        log_error "  or mark_remote not consulting it (Image.cc::list_descendants)."
+        return 1
+    fi
+    log_success "rbd children showed cross-cluster child by name (ChildImageSpec.image_name works)"
+
     # Cleanup
     rbd_on  cluster2 "rm $child_pool/rbdchildren-child"     2>/dev/null || true
     rbd_on  cluster1 "rm $shared_pool/rbdchildren-parent"   2>/dev/null || true
