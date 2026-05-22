@@ -19,9 +19,16 @@
 #   6. perf_test_daemon_throughput        — backfill MB/s on a 100 MB image
 #   7. perf_test_vm_boot_scaling          — N=1, 2, 4 concurrent readers
 #                                            (per-client time should not grow ≥2x)
+#   8. perf_test_scattered_random_reads_concurrent
+#                                          — 5 clients × 100 random 4 KB reads
+#                                            across a 100 MB image (the user's
+#                                            "5 VMs booting on same lazy base"
+#                                            scenario: scattered reads, low
+#                                            cross-client overlap, dominated by
+#                                            per-read coordination overhead)
 #
 # Usage:
-#   ./test-s3-performance.sh                   # run all 7 tests
+#   ./test-s3-performance.sh                   # run all 8 tests
 #   ./test-s3-performance.sh --test <name>     # run a single test by name
 #   ./test-s3-performance.sh --list            # list test names
 #   ./test-s3-performance.sh --conf <ceph.conf>
@@ -67,6 +74,7 @@ ALL_TESTS=(
     perf_test_zero_object_unified
     perf_test_daemon_throughput
     perf_test_vm_boot_scaling
+    perf_test_scattered_random_reads_concurrent
 )
 
 if [ "$LIST_ONLY" = "1" ]; then
@@ -579,6 +587,100 @@ perf_test_vm_boot_scaling() {
     fi
 
     log_success "$name: scaling test complete"
+    return 0
+}
+
+# ============================================================================
+# Test 8 — scattered random reads across N concurrent clients
+# ============================================================================
+# Modelled after the user's "5 VMs booting on the same lazy base" scenario.
+# Each VM does many small random reads scattered across the disk (boot
+# reads partition table → FS metadata → file data at unrelated offsets).
+# Cross-client overlap is LOW — different VMs hit different parts of the
+# image — so cls_lock dedup buys very little.  This scenario is dominated
+# by per-read coordination overhead (lock acquire → recheck → S3 GET →
+# write_full → object_map update → unlock), not S3 throughput.
+#
+# Recorded so we can measure the effect of future optimisations
+# targeting per-read overhead (drop recheck, async fire-and-forget
+# write_back, skip lock entirely, etc.) WITHOUT having to read each
+# change against the synthetic concurrent_read_dedup test, which
+# exercises a workload (4 clients all on same object) that the user
+# doesn't actually have.
+#
+# Asserts wall_time_per_read_ms — a soft regression budget so a future
+# change that doubles per-read overhead trips the test, but absolute
+# numbers stay informational (they depend on host RADOS + MinIO
+# throughput, which varies).
+perf_test_scattered_random_reads_concurrent() {
+    local name="scattered_random_reads_concurrent"
+    local n=5
+    local reads_per_client=100
+    local io_size=4096
+    local total_per_client=$((reads_per_client * io_size))
+    log_step "$name: $n clients × $reads_per_client × ${io_size}B random reads each"
+
+    setup_fresh_image_n_children "$PERF_FIXTURE_PATTERN_100MB" "perf-pattern-100mb.raw" "$n"
+
+    reset_trace
+    local rados_before
+    rados_before=$(perf_rados_snapshot "$CEPH_CONF" "$POOL")
+
+    local t0
+    t0=$(perf_time_ms)
+    perf_drive_concurrent_rand_reads "$CEPH_CONF" "$POOL" "$PERF_CHILD_BASE" \
+        "$n" "$total_per_client" "$io_size" \
+        || log_warn "$name: some readers failed (still recording metrics)"
+    local elapsed
+    elapsed=$(perf_time_elapsed_ms "$t0")
+
+    # Let async fire-and-forget write-backs settle into RADOS counters.
+    sleep 3
+
+    local rados_after
+    rados_after=$(perf_rados_snapshot "$CEPH_CONF" "$POOL")
+    local delta
+    delta=$(perf_rados_delta "$rados_before" "$rados_after")
+    local rados_writes
+    rados_writes=$(perf_extract_field "$delta" write_ops)
+
+    local s3_gets
+    s3_gets=$(perf_minio_get_count "$MINIO_TRACE_LOG" "$S3_BUCKET")
+
+    # Per-read latency = aggregate wall time / total reads.  With perfect
+    # parallelism across N clients this would equal the wall-time of any
+    # one client.  In practice it captures both per-client serialisation
+    # and any cross-client contention.
+    local total_reads=$((n * reads_per_client))
+    local per_read_ms
+    per_read_ms=$(awk "BEGIN{printf \"%.1f\", $elapsed / $total_reads}")
+
+    perf_record "$name" num_clients         "$n"               count
+    perf_record "$name" reads_per_client    "$reads_per_client" count
+    perf_record "$name" io_size_bytes       "$io_size"         bytes
+    perf_record "$name" wall_time_ms        "$elapsed"         ms
+    perf_record "$name" s3_get_count        "$s3_gets"         count
+    perf_record "$name" rados_writes        "$rados_writes"    count
+    perf_record "$name" per_read_latency_ms "$per_read_ms"     ms
+
+    log_info "$name: $elapsed ms wall, $s3_gets S3 GETs, $rados_writes RADOS writes"
+    log_info "$name: avg per-read latency $per_read_ms ms across $total_reads reads"
+
+    # Soft regression budget.  The original user-reported "VM boot too long"
+    # symptom was ~500ms per read in their environment.  This test runs on
+    # local MinIO with much lower latency; a per-read latency exceeding
+    # 200ms here means coordination overhead has grown disproportionately
+    # — likely a regression.  Tune upward if vstart's RADOS varies a lot.
+    local per_read_budget_ms=200
+    if [ "${per_read_ms%%.*}" -gt "$per_read_budget_ms" ]; then
+        log_fail "$name: per-read latency $per_read_ms ms exceeds ${per_read_budget_ms} ms budget"
+        log_fail "  coordination overhead (cls_lock + recheck + writeback + obj_map)"
+        log_fail "  has likely regressed.  See perf_test_concurrent_read_dedup for"
+        log_fail "  the within-object dedup behaviour; this test covers the OTHER"
+        log_fail "  half of the user's workload (scattered, low-overlap reads)."
+        return 1
+    fi
+    log_success "$name: per-read latency $per_read_ms ms within budget"
     return 0
 }
 

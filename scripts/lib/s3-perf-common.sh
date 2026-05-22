@@ -367,3 +367,37 @@ perf_drive_concurrent_reads() {
     return $failures
 }
 
+# Same as perf_drive_concurrent_reads but with --io-pattern rand instead of
+# seq.  Each rbd bench process picks its own random offsets, so clients tend
+# to read different parts of the image (low cross-client overlap — the VM
+# boot pattern, where 5 instances each read scattered FS metadata + file
+# data with little intersection).
+# Usage: perf_drive_concurrent_rand_reads <conf> <pool> <image_basename> <num_clients> <total_bytes> [io_size]
+perf_drive_concurrent_rand_reads() {
+    local conf=$1
+    local pool=$2
+    local image_base=$3
+    local num=$4
+    local total_bytes=$5
+    local io_size=${6:-4096}
+
+    local pids=()
+    local i
+    for i in $(seq 1 "$num"); do
+        "$BUILD_DIR/bin/rbd" --conf "$conf" bench \
+            --io-type read \
+            --io-size "$io_size" \
+            --io-total "$total_bytes" \
+            --io-pattern rand \
+            --io-threads 1 \
+            "$pool/${image_base}-$i" >/dev/null 2>&1 &
+        pids+=("$!")
+    done
+
+    local failures=0
+    for pid in "${pids[@]}"; do
+        wait "$pid" || failures=$((failures + 1))
+    done
+    return $failures
+}
+
