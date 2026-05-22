@@ -254,12 +254,18 @@ struct ChildImageSpec {
 
   static void generate_test_instances(std::list<ChildImageSpec*> &o);
 
+  // Identity = (pool_id, pool_namespace, image_id) only.  pool_name and
+  // cluster_name are routing metadata, populated inconsistently by
+  // different code paths (attach knows the child's cluster; detach
+  // reconstructs from m_parent_info.spec and may not).  Including them
+  // here makes child_detach's std::set::erase silently fail when the
+  // attach- and detach-time values diverge, leaving a phantom child entry
+  // that blocks parent removal.  This is the same identity-vs-metadata
+  // split applied to cls_rbd_parent::operator== in d785e81c430.
   inline bool operator==(const ChildImageSpec& rhs) const {
     return (pool_id == rhs.pool_id &&
             pool_namespace == rhs.pool_namespace &&
-            image_id == rhs.image_id &&
-            pool_name == rhs.pool_name &&
-            cluster_name == rhs.cluster_name);
+            image_id == rhs.image_id);
   }
   inline bool operator<(const ChildImageSpec& rhs) const {
     if (pool_id != rhs.pool_id) {
@@ -268,17 +274,7 @@ struct ChildImageSpec {
     if (pool_namespace != rhs.pool_namespace) {
       return pool_namespace < rhs.pool_namespace;
     }
-    if (image_id != rhs.image_id) {
-      return image_id < rhs.image_id;
-    }
-    if (pool_name != rhs.pool_name) {
-      return pool_name < rhs.pool_name;
-    }
-    // cluster_name is the final tiebreaker: two children with the same
-    // (pool_id, namespace, image_id, pool_name) but different clusters are
-    // distinct (cluster names disambiguate identical pool layouts across
-    // sibling clusters).
-    return cluster_name < rhs.cluster_name;
+    return image_id < rhs.image_id;
   }
 };
 WRITE_CLASS_ENCODER(ChildImageSpec);

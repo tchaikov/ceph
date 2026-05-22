@@ -285,6 +285,25 @@ run_flatten_test() {
         rm -f "$export_file"
     fi
 
+    # Bug #1 regression check: after a successful flatten, removing the child
+    # then the parent must both succeed.  Before the ChildImageSpec identity
+    # fix, pool_name / cluster_name participated in operator== so
+    # child_detach's std::set::erase silently failed when the attach-time
+    # spec didn't match the detach-time spec — leaving a phantom child entry
+    # that made `rbd rm <parent>` fail with "image has 1 child(ren)".
+    log_info "Verifying child and parent are removable after flatten (bug #1)..."
+    if ! "$BUILD_DIR/bin/rbd" --conf "$conf" rm "$pool/$child"; then
+        log_error "Bug #1 regression: child rm failed after flatten"
+        return 1
+    fi
+    if ! "$BUILD_DIR/bin/rbd" --conf "$conf" rm "$pool/$parent"; then
+        log_error "Bug #1 regression: parent rm failed after child rm"
+        log_error "  child_detach likely silently failed — phantom child entry"
+        log_error "  in parent's snap_children omap key blocks PreRemoveRequest."
+        return 1
+    fi
+    log_success "child and parent both removed after flatten"
+
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
 

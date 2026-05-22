@@ -356,9 +356,30 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
     fi
     log_success "Parent has $parent_obj_count cached object(s) (>= $expected_obj_count expected) — write-back to remote parent works"
 
-    # Cleanup
-    rbd_on  cluster2 "rm xchild_pool/xcluster-child" 2>/dev/null || true
-    rbd_on  cluster1 "rm xcluster_pool/xcluster-parent" 2>/dev/null || true
+    # ────────────────────────────────────────────────────────────────────────
+    # Bug #1 regression check: after flatten + child rm, the parent must be
+    # removable.  Before the ChildImageSpec::operator== identity fix, the
+    # cluster_name field participated in equality, so child_detach's
+    # std::set::erase silently failed when attach-time and detach-time values
+    # diverged.  The phantom child entry then made `rbd rm <parent>` fail with
+    # "image has 1 child(ren) - not removing".  This step removes child then
+    # parent without `|| true` — any failure surfaces the regression.
+    # ────────────────────────────────────────────────────────────────────────
+    log_step "Verifying parent is removable after flatten + child rm (bug #1 regression)"
+    if ! rbd_on cluster2 "rm xchild_pool/xcluster-child"; then
+        log_fail "Bug #1 regression: child removal failed after flatten"
+        return 1
+    fi
+    if ! rbd_on cluster1 "rm xcluster_pool/xcluster-parent"; then
+        log_fail "Bug #1 regression: parent removal failed after flatten + child rm"
+        log_error "  Most likely: child_detach silently failed because"
+        log_error "  ChildImageSpec identity includes non-identity routing fields"
+        log_error "  (pool_name / cluster_name) that diverged between attach and detach."
+        return 1
+    fi
+    log_success "Parent removed successfully after flatten + child rm"
+
+    # Pool cleanup (best-effort)
     ceph_on cluster1 "osd pool delete xcluster_pool xcluster_pool --yes-i-really-really-mean-it" 2>/dev/null || true
     ceph_on cluster2 "osd pool delete xcluster_pool xcluster_pool --yes-i-really-really-mean-it" 2>/dev/null || true
     ceph_on cluster2 "osd pool delete xchild_pool   xchild_pool   --yes-i-really-really-mean-it" 2>/dev/null || true
