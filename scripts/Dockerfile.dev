@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y \
     python3-prettytable \
     python3-yaml \
     libssl3t64 \
-    libcurl3t64-gnutls \
+    libcurl4t64 \
     libleveldb1d \
     libnss3 \
     libsnappy1v5 \
