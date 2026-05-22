@@ -460,16 +460,8 @@ void ObjectReadRequest<I>::handle_lock_for_s3_read(int r) {
   if (r == 0) {
     ceph_assert(!m_skip_writeback);
     m_s3_lock_acquired = true;
-    // Skip the post-acquire stat(m_oid) recheck.  It was a narrow
-    // optimisation for the case "backfill daemon completed write_full while
-    // we were waiting for the lock" — saving 1 S3 fetch per such race.  In
-    // the cold-boot regime (no concurrent backfill, all parents missing
-    // from RADOS) the stat is 100% wasted: every check returns ENOENT and
-    // we still proceed to S3, but we've paid one extra RADOS RTT per
-    // object.  Net cost dominates net benefit; CopyupRequest keeps its
-    // analogous stat because the write path's race window is wider.
-    ldout(cct, 10) << "acquired S3 read lock, proceeding to S3 fetch" << dendl;
-    read_from_s3();
+    ldout(cct, 10) << "acquired S3 read lock, re-stat'ing object before fetch" << dendl;
+    recheck_oid_after_lock();
   } else if (r == -EBUSY || r == -EEXIST) {
     ldout(cct, 10) << "lock busy, identifying holder" << dendl;
     try_preempt_backfill_lock_for_read();
@@ -530,9 +522,6 @@ void ObjectReadRequest<I>::handle_list_lock_holders_for_read(int r) {
     return;
   }
 
-  // Pass 1: backfill preemption.  If any holder is the backfill daemon we
-  // break its lock and re-acquire (foreground user wins the priority
-  // contest).
   for (auto &kv : lockers) {
     const auto &cookie = kv.first.cookie;
     if (boost::starts_with(cookie, BACKFILL_LOCK_COOKIE_PREFIX)) {
@@ -555,21 +544,6 @@ void ObjectReadRequest<I>::handle_list_lock_holders_for_read(int r) {
     }
   }
 
-  // Pass 2: classify the non-backfill holders.  Reader cookies match the
-  // pattern "<image_id>_r_<object_no>"; CopyupRequest writer cookies match
-  // "<image_id>_<object_no>" (no "_r_").  If at least one writer is holding
-  // the lock, wait_for_peer_writeback is worth running — a write_full is
-  // coming.  If ALL holders are readers, no writeback will ever land;
-  // skipping the wait saves the 250 ms default poll budget per object that
-  // would otherwise tick out to 100% timeout.
-  m_peer_is_writer = false;
-  for (const auto &kv : lockers) {
-    if (kv.first.cookie.find("_r_") == std::string::npos) {
-      m_peer_is_writer = true;
-      break;
-    }
-  }
-
   // No backfill holder — another foreground user request holds the lock.
   // User-vs-user is cooperative on the writeback only: we fetch our own
   // S3 copy in parallel (no waiting on the holder) but skip the RADOS
@@ -577,8 +551,7 @@ void ObjectReadRequest<I>::handle_list_lock_holders_for_read(int r) {
   // exactly once.  Two write_fulls would cost duplicate IOPS without
   // changing the resulting bytes — RBD parents are immutable raw exports.
   ldout(cct, 10) << "lock held by another user request, fetching own copy + "
-                 << "skipping writeback (peer_is_writer=" << m_peer_is_writer
-                 << ")" << dendl;
+                 << "skipping writeback (peer will populate)" << dendl;
   fetch_without_lock_skip_writeback();
 }
 
@@ -603,6 +576,50 @@ void ObjectReadRequest<I>::handle_break_backfill_lock_for_read(int r) {
                   << ", retrying lock acquire anyway" << dendl;
   }
   read_from_s3_with_lock();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::recheck_oid_after_lock() {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+  ldout(cct, 15) << "stat'ing " << this->m_oid
+                 << " after lock acquire to short-circuit duplicate fetch" << dendl;
+
+  // A peer (e.g., the backfill daemon completing while we were taking the
+  // lock) may have populated the object.  If so we skip the S3 round-trip
+  // and re-issue the RADOS read instead.
+  using klass = ObjectReadRequest<I>;
+  librados::AioCompletion *rados_completion =
+    util::create_rados_callback<klass, &klass::handle_recheck_oid_after_lock>(this);
+
+  int r = image_ctx->data_ctx.aio_stat(this->m_oid, rados_completion, nullptr, nullptr);
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::handle_recheck_oid_after_lock(int r) {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+
+  if (r == -ENOENT) {
+    ldout(cct, 15) << "object still missing after lock, proceeding to S3" << dendl;
+    read_from_s3();
+    return;
+  }
+  if (r < 0) {
+    ldout(cct, 5) << "stat failed after lock: " << cpp_strerror(r)
+                  << ", proceeding to S3 anyway" << dendl;
+    read_from_s3();
+    return;
+  }
+
+  // Object now exists in RADOS (peer populated it).  Release lock and
+  // re-issue the RADOS read.
+  ldout(cct, 10) << "object now populated; releasing lock and re-reading from RADOS"
+                 << dendl;
+  unlock_after_s3_read();
+  read_object();
 }
 
 template <typename I>
@@ -934,25 +951,8 @@ void ObjectReadRequest<I>::write_back_s3_data_then_finish(
   // in RADOS so subsequent in-process reads of this object hit local cache
   // instead of refetching.  See wait_for_peer_writeback().
   if (m_skip_writeback) {
-    // Both branches keep the same "skipping writeback: peer user holds lock"
-    // prefix so test-s3-dedup-{read,writeback}.sh's strict 1-wrote-N-skipped
-    // assertion (which greps for that exact prefix) catches both the writer-
-    // peer path and the reader-peer fast path.  The bracketed suffix
-    // distinguishes them in operator logs.
-    if (!m_peer_is_writer) {
-      // All cls_lock holders we observed were other readers (cookie pattern
-      // "<image_id>_r_<object_no>") and no backfill daemon was there.  None
-      // of them will write_full this oid — waiting for a peer writeback
-      // would deterministically time out at the poll budget.  Finish
-      // immediately with the bytes we already have in m_read_data.
-      ldout(cct, 10) << "skipping writeback: peer user holds lock "
-                     << "(reader, no writeback expected — finishing immediately)"
-                     << dendl;
-      this->finish(0);
-      return;
-    }
-    ldout(cct, 10) << "skipping writeback: peer user holds lock "
-                   << "(writer, will populate — waiting for peer)" << dendl;
+    ldout(cct, 10) << "skipping writeback: peer user holds lock, will populate"
+                   << dendl;
     wait_for_peer_writeback();
     return;
   }
