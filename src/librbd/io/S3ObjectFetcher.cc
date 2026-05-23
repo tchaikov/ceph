@@ -483,7 +483,8 @@ void S3ObjectFetcher::complete_and_destroy(FetchContext* ctx, int result) {
 
 bool S3ObjectFetcher::try_serve_from_recent(const std::string& key,
                                              bufferlist* out_bl,
-                                             Context* on_finish) {
+                                             Context* on_finish,
+                                             bool *out_from_cache) {
   std::shared_ptr<bufferlist> data;
   {
     std::lock_guard<std::mutex> lock(m_recent_mutex);
@@ -510,12 +511,19 @@ bool S3ObjectFetcher::try_serve_from_recent(const std::string& key,
   // Copy outside the lock.  bufferlist copy is shallow (refcounted
   // buffer sharing), so this is cheap.
   *out_bl = *data;
-  // Fire callback inline.  Safe because callers (ObjectReadRequest,
-  // CopyupRequest) do not deref `this` after the fetch_url call returns
-  // — the last statement of their dispatch functions IS the fetch_url
-  // call, so any synchronous completion is well-defined.
   ldout(m_cct, 15) << "recent-fetch cache HIT for key=" << key
                    << " (" << out_bl->length() << " bytes, 0 S3 GETs)" << dendl;
+  // Flip the cache-hit flag BEFORE firing the callback.  The callback
+  // may synchronously destroy the object that owns *out_from_cache
+  // (e.g. ObjectReadRequest::handle_read_from_s3's cache-hit short-
+  // circuit calls finish(0) which deletes the request, whose
+  // m_fetched_from_cache member is our out_from_cache target).
+  // Writing to *out_from_cache after on_finish would dereference a
+  // freed object — valgrind catches this as a single-byte invalid write
+  // 144 bytes inside the freed ObjectReadRequest block.
+  if (out_from_cache != nullptr) {
+    *out_from_cache = true;
+  }
   on_finish->complete(0);
   return true;
 }
@@ -587,7 +595,11 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
                                  Context* on_finish,
                                  uint64_t byte_start,
                                  uint64_t byte_length,
-                                 std::shared_ptr<std::atomic<bool>> cancel_flag) {
+                                 std::shared_ptr<std::atomic<bool>> cancel_flag,
+                                 bool *out_from_cache) {
+  if (out_from_cache != nullptr) {
+    *out_from_cache = false;  // default; flipped below on cache hit
+  }
   auto cct = m_cct;
 
   if (byte_length > 0) {
@@ -607,9 +619,11 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
   std::string coalesce_key = url + "@" + std::to_string(byte_start) + "-" +
                              std::to_string(byte_length);
 
-  // Note: lookup re-enabled — cache_recent in complete_and_destroy was
-  // never disabled, so just re-test with full path.
-  if (try_serve_from_recent(coalesce_key, data, on_finish)) {
+  // LRU cache hit short-circuits the whole flow.  try_serve_from_recent
+  // sets *out_from_cache=true (if non-null) BEFORE firing the callback;
+  // we cannot set it here on return because the callback may
+  // synchronously destroy the object that owns *out_from_cache.
+  if (try_serve_from_recent(coalesce_key, data, on_finish, out_from_cache)) {
     return;
   }
 

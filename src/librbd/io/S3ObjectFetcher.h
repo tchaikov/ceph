@@ -72,13 +72,22 @@ public:
    * @param byte_start Start byte offset for range request (0 = beginning)
    * @param byte_length Number of bytes to fetch (0 = fetch entire object)
    */
+  // out_from_cache (optional): set to true if the request was served
+  // inline from the in-process LRU cache (m_recent_lru), false if an
+  // actual S3 GET was issued (or coalesced with an in-flight GET).
+  // Callers that submit cache-populate writebacks should skip the
+  // submission on cache-hit — the original fetch already submitted,
+  // and re-submitting just bounces off the throttler's cls_lock with
+  // EBUSY-drops that show up as RADOS write_ops pollution (caught by
+  // perf_test_warm_cache_zero_overhead).
   void fetch_url(
     const std::string& url,
     bufferlist* data,
     Context* on_finish,
     uint64_t byte_start = 0,
     uint64_t byte_length = 0,
-    std::shared_ptr<std::atomic<bool>> cancel_flag = nullptr);
+    std::shared_ptr<std::atomic<bool>> cancel_flag = nullptr,
+    bool *out_from_cache = nullptr);
 
   /**
    * Fetch data from S3 parent image using RBD object number (for backfill daemon)
@@ -265,13 +274,16 @@ private:
 
   // Returns true and serves the response from m_recent_lru iff the cache
   // has a non-expired entry for coalesce_key.  Side effect on hit: copies
-  // bytes into *out_bl, LRU-touches the entry, and fires on_finish inline
-  // (caller does not deref `this` after fetch_url returns, so inline
-  // completion is safe).  Returns false on miss or expiry (and evicts the
-  // expired entry).
+  // bytes into *out_bl, LRU-touches the entry, sets *out_from_cache=true
+  // (if non-null), AND fires on_finish inline.  The flag must be set
+  // BEFORE on_finish fires because the callback may synchronously destroy
+  // the object that owns *out_from_cache; writing it after the callback
+  // would be use-after-free.  Returns false on miss or expiry (and evicts
+  // the expired entry); does not touch *out_from_cache on the miss path.
   bool try_serve_from_recent(const std::string& coalesce_key,
                              ceph::bufferlist* out_bl,
-                             Context* on_finish);
+                             Context* on_finish,
+                             bool *out_from_cache = nullptr);
 
   // Insert a freshly-completed fetch result into the recent cache.
   // Updates LRU position if the key was already present.  Evicts the
