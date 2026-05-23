@@ -474,14 +474,34 @@ perf_test_zero_object_unified() {
 
     log_info "$name: zero-object presence — daemon=$daemon_zero_present read=$read_zero_present write=$write_zero_present"
 
+    # Tightened (post code-review): the original assertion checked only
+    # AGREEMENT across the 3 paths.  The user's bug #1 was specifically
+    # that daemon WROTE the zero object (1) while read/write paths
+    # didn't (0) — divergence in the "buggy" direction.  But a regression
+    # in the SAME direction across all 3 (everyone writes zero again)
+    # would have silently passed the old assertion.  Now we require the
+    # CORRECT value (all three = 0, meaning no zero object in RADOS;
+    # sparse parent pool, S3 re-fetch on next read) and only accept
+    # "consistent but wrong" as an explicit failure with a distinct
+    # diagnostic.
+    if [ "$daemon_zero_present" = "0" ] && \
+       [ "$read_zero_present"   = "0" ] && \
+       [ "$write_zero_present"  = "0" ]; then
+        log_success "$name: all 3 paths skipped zero object (sparse — correct)"
+        return 0
+    fi
     if [ "$daemon_zero_present" = "$read_zero_present" ] && \
        [ "$read_zero_present" = "$write_zero_present" ]; then
-        log_success "$name: all 3 paths consistent"
-        return 0
-    else
-        log_fail "$name: paths disagree on zero-object handling — bug #1"
+        log_fail "$name: all 3 paths consistent but in BUGGY direction"
+        log_fail "  (zero object persisted in RADOS; parent pool no longer sparse)"
+        log_fail "  Expected: daemon=0 read=0 write=0"
+        log_fail "  Got:      daemon=$daemon_zero_present read=$read_zero_present write=$write_zero_present"
         return 1
     fi
+    log_fail "$name: paths disagree on zero-object handling — bug #1"
+    log_fail "  Expected: all three = 0 (sparse)"
+    log_fail "  Got:      daemon=$daemon_zero_present read=$read_zero_present write=$write_zero_present"
+    return 1
 }
 
 # ============================================================================
