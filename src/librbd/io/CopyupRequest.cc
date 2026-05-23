@@ -782,17 +782,18 @@ void CopyupRequest<I>::fetch_from_s3() {
   // the fetcher).  HTTP keep-alive connections are reused across COW requests
   // targeting the same S3 endpoint instead of paying TCP+TLS setup each time.
   //
-  // Double-checked init: parent_locker is an RWLock R-locker (multiple
-  // CopyupRequests can hold it concurrently).  Mutating
-  // parent->s3_fetcher under only an R-lock raced non-atomic shared_ptr
-  // writes (two threads pass the null check, both make_shared, last
-  // write wins and the other shared_ptr leaks its refcount — UB).
-  // Mirror ObjectReadRequest's pattern: take the PARENT's snap_lock W
-  // for the slow path, re-check under W, then drop W.  Lock ordering:
-  // child.parent_lock(R) → parent.snap_lock(W); safe because nothing
+  // Double-checked init: the slow-path WRITE at parent->s3_fetcher takes
+  // PARENT's snap_lock W; the fast-path READ must take PARENT's snap_lock
+  // R to be safely paired -- holding only the CHILD's parent_lock R (as
+  // parent_locker does) does not serialize against the parent's snap_lock
+  // W and would leave a torn shared_ptr read window.  Lock ordering:
+  // child.parent_lock(R) -> parent.snap_lock(R|W); safe because nothing
   // takes them in the reverse order (parent doesn't reach into its
   // children's parent_lock).
-  m_s3_fetcher = m_image_ctx->parent->s3_fetcher;
+  {
+    RWLock::RLocker parent_snap_rlocker(m_image_ctx->parent->snap_lock);
+    m_s3_fetcher = m_image_ctx->parent->s3_fetcher;
+  }
   if (!m_s3_fetcher) {
     RWLock::WLocker parent_snap_wlocker(m_image_ctx->parent->snap_lock);
     if (!m_image_ctx->parent->s3_fetcher) {
@@ -879,12 +880,23 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
   // S3ObjectFetcher::prefetch_next -- is required for cold->warm
   // correctness; see the design note in ObjectRequest.cc's
   // handle_read_from_s3 readahead loop.
+  //
+  // Hold child->parent_lock R for the entire loop: this fires from an
+  // S3 worker thread after fetch_from_s3 released the lock; without
+  // re-acquiring it, a concurrent DetachParentRequest (flatten) could
+  // null+free m_image_ctx->parent between the check and the dereference
+  // inside spawn_prefetch.  Once spawn_prefetch returns, its
+  // AsyncOperation is registered on the parent ictx and parent close
+  // will wait for it -- so we can safely drop the lock after the loop.
   uint64_t readahead = cct->_conf.template get_val<uint64_t>(
       "rbd_s3_readahead_objects");
-  if (readahead > 0 && m_image_ctx->parent != nullptr) {
-    for (uint64_t i = 1; i <= readahead; i++) {
-      librbd::io::ObjectReadRequest<librbd::ImageCtx>::spawn_prefetch(
-          m_image_ctx->parent, m_object_no + i);
+  if (readahead > 0) {
+    RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+    if (m_image_ctx->parent != nullptr) {
+      for (uint64_t i = 1; i <= readahead; i++) {
+        librbd::io::ObjectReadRequest<librbd::ImageCtx>::spawn_prefetch(
+            m_image_ctx->parent, m_object_no + i);
+      }
     }
   }
 

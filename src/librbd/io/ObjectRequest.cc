@@ -599,7 +599,16 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
   // ObjectMap<>::build_update_op against the parent's object_map_oid)
   // — matching the OLD code's "Path 2" — but now serialized through
   // the cls_lock.  This in-memory update is "Path 1" of the OLD design.
-  if (image_ctx->object_map != nullptr) {
+  //
+  // SKIP on all-zero data: WritebackRequest::write_full short-circuits
+  // to release_lock on is_zero(), bypassing both the RADOS write_full
+  // AND the on-disk object_map update.  If we set the in-memory bit to
+  // OBJECT_EXISTS here, the in-mem and on-disk maps diverge: in-mem
+  // says EXISTS, on-disk says NONEXISTENT, RADOS has no object.  Then
+  // object_may_exist=true skips the parent-read shortcut, aio_read
+  // returns ENOENT, and we refetch from S3 on every read for that
+  // object -- defeats the warm-cache invariant for sparse parents.
+  if (image_ctx->object_map != nullptr && !full_object_data.is_zero()) {
     RWLock::RLocker owner_locker(image_ctx->owner_lock);
     if (image_ctx->object_map != nullptr) {
       RWLock::WLocker object_map_locker(image_ctx->object_map_lock);
@@ -642,44 +651,59 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
 template <typename I>
 void ObjectReadRequest<I>::spawn_prefetch(I *ictx,
                                           uint64_t target_object_no) {
-  // Heap-allocate throwaway storage; the completion lambda frees them
-  // when the spawned ObjectReadRequest finishes.  Lifetime is bounded
-  // by the request, not this function's stack -- the request always
-  // outlives us (fire-and-forget).
-  auto buf = new ceph::bufferlist();
-  auto extent_map = new ExtentMap();
-
-  // Register the prefetch as an in-flight async op on the target
-  // ImageCtx so close() waits for us to finish before tearing down the
-  // ictx that the spawned ObjectReadRequest holds as a raw pointer.
-  // Without this, a child ImageCtx close that drops the last refcount
-  // on the parent (typical at end-of-bench) could free parent_ictx
-  // mid-prefetch -- UAF on every field the prefetch dereferences
-  // (data_ctx, object_map, snap_lock, ...).
-  auto async_op = new AsyncOperation();
+  // Allocate ALL resources first, registering the AsyncOperation LAST.
+  // If we registered async_op->start_op on the parent xlist before
+  // every other allocation succeeded, a subsequent `new` throwing
+  // bad_alloc would leave the AsyncOperation permanently on the xlist
+  // (its destructor asserts it is NOT on a list, but we never call
+  // finish_op on the abandoned op).  ~ImageCtx -> wait_for_async_ops
+  // would then deadlock waiting for an op that no one will complete.
+  // Wrap the allocation block in try/catch so OOM is recoverable;
+  // prefetch is opportunistic, so dropping it on bad_alloc is fine.
+  ceph::bufferlist *buf = nullptr;
+  ExtentMap *extent_map = nullptr;
+  AsyncOperation *async_op = nullptr;
+  FunctionContext *on_finish = nullptr;
+  ObjectReadRequest<I> *req = nullptr;
+  try {
+    buf = new ceph::bufferlist();
+    extent_map = new ExtentMap();
+    async_op = new AsyncOperation();
+    on_finish = new FunctionContext(
+        [buf, extent_map, async_op](int r) {
+          // Result ignored: prefetch is opportunistic.  Errors here
+          // (past-EOF -ENOENT, S3 5xx) are not actionable; the
+          // throttler submission + LRU populate + object_map update
+          // either ran or didn't.  The next foreground read will
+          // detect and recover.
+          async_op->finish_op();
+          delete async_op;
+          delete buf;
+          delete extent_map;
+        });
+    uint64_t object_size = ictx->get_object_size();
+    std::string oid = ictx->get_object_name(target_object_no);
+    req = ObjectReadRequest<I>::create(
+        ictx, oid, target_object_no, /*offset=*/ 0, /*len=*/ object_size,
+        CEPH_NOSNAP, /*op_flags=*/ 0, ZTracer::Trace{},
+        buf, extent_map, on_finish);
+    req->m_is_prefetch = true;
+  } catch (...) {
+    // Allocation failed before AsyncOperation was registered.  The
+    // lambda's captures are still set but we delete the captured
+    // objects manually here; the lambda itself never fires because
+    // on_finish->complete() is never called.
+    delete req;
+    delete on_finish;
+    delete async_op;
+    delete extent_map;
+    delete buf;
+    return;
+  }
+  // All allocations succeeded.  Register the AsyncOperation only NOW,
+  // so it is paired with a guaranteed-to-fire finish_op() via the
+  // lambda above.
   async_op->start_op(*util::get_image_ctx(ictx));
-
-  auto on_finish = new FunctionContext(
-      [buf, extent_map, async_op](int r) {
-        // Result ignored: prefetch is opportunistic.  Errors here
-        // (past-EOF -ENOENT, S3 5xx) are not actionable; the throttler
-        // submission + LRU populate + object_map update either ran or
-        // didn't.  Either way, the next foreground read will detect
-        // and recover.
-        async_op->finish_op();
-        delete async_op;
-        delete buf;
-        delete extent_map;
-      });
-
-  uint64_t object_size = ictx->get_object_size();
-  std::string oid = ictx->get_object_name(target_object_no);
-
-  auto req = ObjectReadRequest<I>::create(
-      ictx, oid, target_object_no, /*offset=*/ 0, /*len=*/ object_size,
-      CEPH_NOSNAP, /*op_flags=*/ 0, ZTracer::Trace{},
-      buf, extent_map, on_finish);
-  req->m_is_prefetch = true;
   req->send();
 }
 
