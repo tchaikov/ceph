@@ -291,35 +291,6 @@ private:
   void cache_recent(const std::string& coalesce_key,
                     const ceph::bufferlist& data);
 
-public:
-  // Issue up to `count` async readahead fetches for objects
-  // object_no+1 .. object_no+count.  Results land in the in-process
-  // LRU cache (m_recent_lru) via the normal completion path; the
-  // per-fetch callback is a no-op that just frees the temporary
-  // bufferlist holding the response.
-  //
-  // Intended for opportunistic prefetch: after ObjectReadRequest or
-  // CopyupRequest completes its primary fetch for object_no, the next
-  // K objects are warmed in the background so a subsequent client read
-  // for any of them hits the LRU in 0 RTTs.
-  //
-  // Coalesces with in-flight fetches and skips entries already in the
-  // LRU cache (the existing try_serve_from_recent / in-flight map paths
-  // handle both cases — never wastes work on an already-known object).
-  //
-  // Out-of-range objects (past end of S3 file) return 416/-EINVAL and
-  // are silently discarded; no cache pollution and no error surfaces
-  // to anyone (prefetch is best-effort).
-  //
-  // Bounded by:
-  //   - count argument (caller-provided, typically the value of
-  //     rbd_s3_readahead_objects)
-  //   - LRU cache size (entries evict under pressure if the readahead
-  //     misses become hot)
-  //
-  // Thread-safe; can be invoked from any context including librados
-  // callback threads.  Returns immediately (work runs on the worker pool).
-  void prefetch_next(uint64_t object_no, uint32_t count);
 };
 
 } // namespace io

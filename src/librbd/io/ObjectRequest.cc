@@ -18,6 +18,7 @@
 #include "librbd/ObjectMap.h"
 #include "librbd/Types.h"
 #include "librbd/Utils.h"
+#include "librbd/io/AsyncOperation.h"
 #include "librbd/io/AsyncWritebackThrottler.h"
 #include "librbd/io/S3ObjectFetcher.h"
 #include "librbd/io/AioCompletion.h"
@@ -490,7 +491,7 @@ void ObjectReadRequest<I>::read_from_s3() {
   });
 
   m_s3_fetcher->fetch_url(s3_url, m_read_data, ctx, byte_start, byte_length,
-                          m_cancelled);
+                          m_cancelled, &m_fetched_from_cache);
 }
 
 template <typename I>
@@ -569,6 +570,19 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
   // backfill daemon) is already mid-write.  Net RADOS write count is
   // bounded by the cls_lock the same way the old lock-on-critical-path
   // design bounded it — what changed is that the dance is post-finish().
+  // LRU cache-hit short-circuit: an earlier ObjectReadRequest already
+  // ran the in-memory object_map mutation + throttler submission +
+  // readahead prefetch for this object_no.  Re-doing them now just
+  // adds noise to the warm-cache invariants (RADOS write_ops counter
+  // climbs via the throttler's EBUSY-drop attempts).  Bail to finish
+  // with the data already in m_read_data.
+  if (m_fetched_from_cache) {
+    ldout(cct, 20) << "served from in-process LRU; skipping resubmit + "
+                   << "prefetch" << dendl;
+    this->finish(0);
+    return;
+  }
+
   // Update the in-memory object_map BEFORE submitting the throttler
   // writeback.  The pre-c2 ObjectReadRequest::update_object_map_for_s3
   // _write_back set both the on-disk bit (via cls) AND the in-memory
@@ -603,20 +617,70 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
                    << this->m_oid << " (" << bytes << " bytes)" << dendl;
   }
 
-  // Opportunistic readahead: pre-warm the in-process LRU with the next
-  // K objects so subsequent reads (sequential or "random with locality"
-  // patterns common in VM I/O) hit memory in 0 RTTs.  Bounded by
-  // rbd_s3_readahead_objects; 0 disables.  Prefetched data is
-  // cache-only — no RADOS writeback fires, so it doesn't compete with
-  // foreground I/O writebacks for the throttler budget.
+  // Opportunistic readahead: spawn N more reads through the FULL pipeline
+  // (read_object first, then read_from_s3 on RADOS miss, then
+  // handle_read_from_s3 which submits the throttler).  Critical for
+  // cold->warm correctness: bypassing the pipeline (calling
+  // S3ObjectFetcher::prefetch_next directly) populates only the
+  // per-process LRU, which evaporates on process exit -- the next
+  // process re-fetches from S3 because the parent's RADOS pool was
+  // never written.  Suppressed when m_is_prefetch=true so prefetch
+  // chains don't compound (rbd_s3_readahead_objects=2 with depth=N
+  // would fan out to 2^N reads otherwise).
   uint64_t readahead = cct->_conf.template get_val<uint64_t>(
       "rbd_s3_readahead_objects");
-  if (readahead > 0 && m_s3_fetcher) {
-    m_s3_fetcher->prefetch_next(this->m_object_no,
-                                 static_cast<uint32_t>(readahead));
+  if (readahead > 0 && !m_is_prefetch) {
+    for (uint64_t i = 1; i <= readahead; i++) {
+      ObjectReadRequest<I>::spawn_prefetch(image_ctx,
+                                           this->m_object_no + i);
+    }
   }
 
   this->finish(0);
+}
+
+template <typename I>
+void ObjectReadRequest<I>::spawn_prefetch(I *ictx,
+                                          uint64_t target_object_no) {
+  // Heap-allocate throwaway storage; the completion lambda frees them
+  // when the spawned ObjectReadRequest finishes.  Lifetime is bounded
+  // by the request, not this function's stack -- the request always
+  // outlives us (fire-and-forget).
+  auto buf = new ceph::bufferlist();
+  auto extent_map = new ExtentMap();
+
+  // Register the prefetch as an in-flight async op on the target
+  // ImageCtx so close() waits for us to finish before tearing down the
+  // ictx that the spawned ObjectReadRequest holds as a raw pointer.
+  // Without this, a child ImageCtx close that drops the last refcount
+  // on the parent (typical at end-of-bench) could free parent_ictx
+  // mid-prefetch -- UAF on every field the prefetch dereferences
+  // (data_ctx, object_map, snap_lock, ...).
+  auto async_op = new AsyncOperation();
+  async_op->start_op(*util::get_image_ctx(ictx));
+
+  auto on_finish = new FunctionContext(
+      [buf, extent_map, async_op](int r) {
+        // Result ignored: prefetch is opportunistic.  Errors here
+        // (past-EOF -ENOENT, S3 5xx) are not actionable; the throttler
+        // submission + LRU populate + object_map update either ran or
+        // didn't.  Either way, the next foreground read will detect
+        // and recover.
+        async_op->finish_op();
+        delete async_op;
+        delete buf;
+        delete extent_map;
+      });
+
+  uint64_t object_size = ictx->get_object_size();
+  std::string oid = ictx->get_object_name(target_object_no);
+
+  auto req = ObjectReadRequest<I>::create(
+      ictx, oid, target_object_no, /*offset=*/ 0, /*len=*/ object_size,
+      CEPH_NOSNAP, /*op_flags=*/ 0, ZTracer::Trace{},
+      buf, extent_map, on_finish);
+  req->m_is_prefetch = true;
+  req->send();
 }
 
 template <typename I>

@@ -528,38 +528,6 @@ bool S3ObjectFetcher::try_serve_from_recent(const std::string& key,
   return true;
 }
 
-void S3ObjectFetcher::prefetch_next(uint64_t object_no, uint32_t count) {
-  if (count == 0) {
-    return;
-  }
-  for (uint32_t i = 1; i <= count; ++i) {
-    uint64_t target_obj = object_no + i;
-    uint64_t byte_start = target_obj * m_object_size;
-    uint64_t byte_length = m_object_size;
-
-    // Heap-allocate a per-fetch bufferlist and a no-op completion.
-    // The prefetched bytes land in m_recent_lru via cache_recent()
-    // inside complete_and_destroy() — that's the entire point.  The
-    // callback's only job is to free the temporary bufferlist; we don't
-    // need the data exposed anywhere because the LRU has its own
-    // (refcount-shared) copy.
-    //
-    // Out-of-range objects (past end of S3 file) come back as
-    // -EINVAL (HTTP 416); cache_recent isn't called on error, so no
-    // pollution.  fetch_url logs the error at level 10 — operator can
-    // silence by reducing rbd_s3_readahead_objects.
-    auto *buf = new ceph::bufferlist();
-    auto *ctx = new FunctionContext(
-        [buf](int) { delete buf; });
-
-    ldout(m_cct, 15) << "readahead prefetch object " << target_obj
-                     << " (bytes=" << byte_start << "-"
-                     << (byte_start + byte_length - 1) << ")" << dendl;
-
-    fetch_url(m_cached_url, buf, ctx, byte_start, byte_length);
-  }
-}
-
 void S3ObjectFetcher::cache_recent(const std::string& key,
                                     const bufferlist& data) {
   // Shallow copy via bufferlist's copy constructor; refcounted buffer

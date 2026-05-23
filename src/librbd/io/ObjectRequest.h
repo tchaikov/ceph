@@ -128,6 +128,19 @@ public:
     return "read";
   }
 
+  // Fire-and-forget readahead helper: spawn an ObjectReadRequest that
+  // routes through the normal read pipeline (read_object -> RADOS, fall
+  // through to read_from_s3 -> handle_read_from_s3 which submits the
+  // throttler, populates the in-process LRU, and updates object_map).
+  // Unlike S3ObjectFetcher::prefetch_next, this populates the durable
+  // RADOS cache too -- without it, prefetched data lives only in the
+  // per-process LRU and is lost when the process exits, forcing the
+  // next process to re-fetch from S3 (caught by warm_cache_zero_overhead).
+  // The spawned request has m_is_prefetch=true to suppress recursive
+  // prefetch chains and self-deletes its throwaway read_data + extent_map
+  // when the completion fires.
+  static void spawn_prefetch(ImageCtxT *ictx, uint64_t target_object_no);
+
 private:
   /**
    * @verbatim
@@ -169,6 +182,19 @@ private:
   // request's destruction.  Mirrors CopyupRequest::m_cancelled.
   std::shared_ptr<std::atomic<bool>> m_cancelled{
     std::make_shared<std::atomic<bool>>(false)};
+
+  // Set by S3ObjectFetcher::fetch_url to true iff the response was
+  // served inline from the in-process LRU cache (no actual S3 GET).
+  // handle_read_from_s3 reads this and SKIPS the throttler submission
+  // and prefetch — the original fetch already submitted them, and
+  // re-submitting just burns RADOS cls_lock acquire+EBUSY-drop ops
+  // that pollute pool write_ops (caught by warm_cache_zero_overhead).
+  bool m_fetched_from_cache = false;
+
+  // Set true by spawn_prefetch so handle_read_from_s3 suppresses its own
+  // recursive readahead -- otherwise each level of prefetch would compound
+  // into an unbounded fanout (depth K fires K^N reads).
+  bool m_is_prefetch = false;
 
   void read_object();
   void handle_read_object(int r);
