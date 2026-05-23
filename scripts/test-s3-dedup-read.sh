@@ -145,8 +145,16 @@ WRITES_PER_OID=$(grep -h "async_writeback:.*write_full.*bytes to " \
     | awk '{print $NF}' | sort | uniq -c)
 MAX_WRITES_PER_OID=$(echo "$WRITES_PER_OID" \
     | awk 'NR==1 || $1>m {m=$1} END {print m+0}')
-WROTE_BACK_TOTAL=$(echo "$WRITES_PER_OID" | wc -l)
-WROTE_BACK=$(echo "$WRITES_PER_OID" | awk '{s+=$1} END {print s+0}')
+# `echo "" | wc -l` reports 1 (the trailing newline) even when
+# WRITES_PER_OID is empty.  Guard so the diagnostic line doesn't
+# claim "1 distinct OIDs" when actually 0 write_fulls fired.
+if [ -z "$WRITES_PER_OID" ]; then
+    WROTE_BACK_TOTAL=0
+    WROTE_BACK=0
+else
+    WROTE_BACK_TOTAL=$(echo "$WRITES_PER_OID" | wc -l)
+    WROTE_BACK=$(echo "$WRITES_PER_OID" | awk '{s+=$1} END {print s+0}')
+fi
 
 # Verify all readers got correct data — diff the exports against the source.
 INTEGRITY_FAIL=0
