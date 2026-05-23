@@ -307,18 +307,30 @@ perf_test_concurrent_read_dedup() {
     perf_record "$name" s3_get_count_total "$s3_gets"  count
     log_info "$name: $n clients × ${bytes_per_client} B of object 0 → $s3_gets S3 GETs"
 
-    # Targets:
-    #   1 GET = ideal cross-process dedup (would require a cls_lock, future work)
-    #   N GETs = each process fetches independently (current realistic behavior
-    #            now that single-client wait-for-writeback eliminates within-
-    #            process duplicates, and in-flight coalescing handles concurrent
-    #            same-process fetches).
-    # Anything between 1 and N is partial dedup.  > N indicates a regression.
-    if [ "$s3_gets" -le "$n" ]; then
-        log_success "$name: $s3_gets GETs (≤ $n: each client fetches object 0 at most once)"
+    # Targets (after c4 readahead prefetch):
+    #   N GETs = each process fetches object 0 once (within-process LRU
+    #            dedups the 16 × 64 KB sub-reads); prefetch fires K async
+    #            GETs for object 1..K behind each fetch.  Net per process
+    #            is bounded by (1 + K).  Cross-process: no LRU sharing,
+    #            so the per-process count multiplies by N clients.
+    # Ceiling: N × (1 + K) where K = rbd_s3_readahead_objects (default 2).
+    # Beyond that, within-process duplicate fetching has regressed.
+    #
+    # Cross-process write_full dedup (the original concern this test was
+    # built around) is now verified by test-s3-dedup-{read,writeback}.sh,
+    # which checks the cls_lock-EBUSY accounting in the throttler's
+    # WritebackRequest.  This test stays focused on within-process
+    # fetch-coalesce behaviour.
+    local readahead_k
+    readahead_k=$("$BUILD_DIR/bin/ceph-conf" --conf "$CEPH_CONF" \
+        -- --name client.admin --show-config-value rbd_s3_readahead_objects \
+        2>/dev/null || echo 2)
+    local ceiling=$(( n * (1 + readahead_k) ))
+    if [ "$s3_gets" -le "$ceiling" ]; then
+        log_success "$name: $s3_gets GETs (≤ ${ceiling}: $n clients × (1 fetch + ${readahead_k} prefetch))"
         return 0
     else
-        log_fail "$name: $s3_gets GETs > $n clients — within-client duplicate fetch detected"
+        log_fail "$name: $s3_gets GETs > $ceiling — within-process fetch dedup regressed"
         return 1
     fi
 }

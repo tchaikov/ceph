@@ -7725,6 +7725,22 @@ static std::vector<Option> get_rbd_mirror_options() {
                           "writeback state machines.  Each writeback holds one object "
                           "(typically 4 MB) until its write_full lands.  Set to a "
                           "small multiple of the object size × max_concurrent."),
+
+    Option("rbd_s3_readahead_objects", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(2)
+    .set_min_max(0, 32)
+    .set_description("number of S3 objects to prefetch into cache after each fetch")
+    .set_long_description("After ObjectReadRequest or CopyupRequest completes a "
+                          "successful fetch of object N from S3, opportunistically "
+                          "fetch the next N+1..N+K objects in the background so "
+                          "subsequent reads hit the in-process LRU cache with zero "
+                          "RTTs.  Set to 0 to disable prefetch entirely (for "
+                          "purely random workloads where prefetch wastes S3 "
+                          "bandwidth on never-read objects); raise to 4-8 for "
+                          "known-sequential workloads (e.g. VM boot reading the "
+                          "kernel + initrd + early FS metadata).  Prefetched data "
+                          "is cache-only; it doesn't trigger RADOS writebacks so "
+                          "doesn't compete with the foreground I/O writeback budget."),
   });
 }
 

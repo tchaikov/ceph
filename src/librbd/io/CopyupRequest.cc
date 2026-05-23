@@ -856,6 +856,18 @@ void CopyupRequest<I>::handle_s3_fetch(int r) {
   // first; the throttler populates the parent cache off the critical
   // path so the client write returns without waiting for parent RADOS.
 
+  // Opportunistic readahead on the COW path: pre-warm the in-process
+  // LRU with the next K parent objects so subsequent COW writes (or
+  // reads) on neighbouring child objects hit memory in 0 RTTs.  Same
+  // mechanism as ObjectReadRequest's prefetch in handle_read_from_s3;
+  // both contribute to the same shared LRU on the parent's fetcher.
+  uint64_t readahead = cct->_conf.template get_val<uint64_t>(
+      "rbd_s3_readahead_objects");
+  if (readahead > 0 && m_s3_fetcher) {
+    m_s3_fetcher->prefetch_next(m_object_no,
+                                 static_cast<uint32_t>(readahead));
+  }
+
   // Transfer S3 data into the copyup buffer (move avoids copying 4MB).
   m_copyup_data = std::move(m_s3_data);
   m_data_is_from_s3 = true;

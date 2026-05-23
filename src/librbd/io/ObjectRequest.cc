@@ -559,6 +559,19 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
                    << this->m_oid << " (" << bytes << " bytes)" << dendl;
   }
 
+  // Opportunistic readahead: pre-warm the in-process LRU with the next
+  // K objects so subsequent reads (sequential or "random with locality"
+  // patterns common in VM I/O) hit memory in 0 RTTs.  Bounded by
+  // rbd_s3_readahead_objects; 0 disables.  Prefetched data is
+  // cache-only — no RADOS writeback fires, so it doesn't compete with
+  // foreground I/O writebacks for the throttler budget.
+  uint64_t readahead = cct->_conf.template get_val<uint64_t>(
+      "rbd_s3_readahead_objects");
+  if (readahead > 0 && m_s3_fetcher) {
+    m_s3_fetcher->prefetch_next(this->m_object_no,
+                                 static_cast<uint32_t>(readahead));
+  }
+
   this->finish(0);
 }
 
