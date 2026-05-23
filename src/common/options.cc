@@ -7702,6 +7702,29 @@ static std::vector<Option> get_rbd_mirror_options() {
                           "the specified bandwidth in bytes per second. Useful for "
                           "testing preemption scenarios where slow S3 fetches allow "
                           "client I/O to acquire locks. Set to 0 for unlimited bandwidth."),
+
+    Option("rbd_s3_async_writeback_max_concurrent", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(8)
+    .set_min_max(1, 1024)
+    .set_description("maximum concurrent in-flight detached parent-cache writebacks")
+    .set_long_description("After a client read or COW write fetches data from S3, "
+                          "the cache-populating write_full to the parent RADOS object "
+                          "runs detached so the client doesn't wait.  This caps how "
+                          "many such detached writebacks can be in flight per process. "
+                          "When the cap is hit, additional submissions are DROPPED "
+                          "(not queued) — dropped writebacks are eventually covered "
+                          "by the backfill daemon's rescan or by a later reader.  "
+                          "Lower values protect foreground client I/O from RADOS "
+                          "competition; higher values warm the cache faster."),
+
+    Option("rbd_s3_async_writeback_max_bytes_in_flight", Option::TYPE_SIZE, Option::LEVEL_ADVANCED)
+    .set_default(32_M)
+    .set_description("maximum aggregate bytes held by in-flight detached writebacks")
+    .set_long_description("Companion limit to rbd_s3_async_writeback_max_concurrent: "
+                          "the total bytes held in bufferlists by in-flight detached "
+                          "writeback state machines.  Each writeback holds one object "
+                          "(typically 4 MB) until its write_full lands.  Set to a "
+                          "small multiple of the object size × max_concurrent."),
   });
 }
 

@@ -70,6 +70,7 @@ set(librbd_internal_srcs
   image_watcher/NotifyLockOwner.cc
   io/AioCompletion.cc
   io/AsyncOperation.cc
+  io/AsyncWritebackThrottler.cc
   io/CopyupRequest.cc
   io/ImageDispatchSpec.cc
   io/ImageRequest.cc
