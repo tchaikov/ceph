@@ -131,27 +131,41 @@ DROP_FULL=$(grep -hE "async_writeback:.*drop: (in_flight|bytes_in_flight)" \
     "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
 LOCK_EBUSY=$(grep -h "async_writeback:.*lock not acquired" \
     "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
-WROTE_BACK=$(grep -h "async_writeback:.*write_full.*bytes to " \
-    "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
+# Count per-OID, not total: the cls_lock dedup invariant is per-object
+# ("only one WritebackRequest wins per parent oid"), not per-suite.
+# After commit 85ac924ca40 routed S3 prefetch through ObjectReadRequest,
+# prefetched parent objects also flow through the throttler.  Each such
+# object hits its own cls_lock and emerges with one winner -- so the
+# total write_full count exceeds 1 even when the per-object invariant
+# holds.  MAX_WRITES_PER_OID checks the invariant directly.
+WRITES_PER_OID=$(grep -h "async_writeback:.*write_full.*bytes to " \
+    "$LOG_DIR"/client-*.log 2>/dev/null \
+    | awk '{print $NF}' | sort | uniq -c)
+MAX_WRITES_PER_OID=$(echo "$WRITES_PER_OID" \
+    | awk 'NR==1 || $1>m {m=$1} END {print m+0}')
+WROTE_BACK_TOTAL=$(echo "$WRITES_PER_OID" | wc -l)
+WROTE_BACK=$(echo "$WRITES_PER_OID" | awk '{s+=$1} END {print s+0}')
 
 echo
 log_info "=== COW-path throttler-dedup metrics ==="
 log_info "throttler accepts (submissions):     $ACCEPT"
 log_info "throttler drops (over-cap):          $DROP_FULL"
 log_info "WritebackRequest cls_lock EBUSY:     $LOCK_EBUSY"
-log_info "WritebackRequest write_full success: $WROTE_BACK"
+log_info "WritebackRequest write_full total:   $WROTE_BACK ($WROTE_BACK_TOTAL distinct OIDs, max $MAX_WRITES_PER_OID per OID)"
 log_info "RADOS pool wr_ops delta:             $WR_DELTA"
 echo
 
 # Hard assertions on the cross-process write dedup invariant:
-#  1. WROTE_BACK <= 1 — the throttler's cls_lock guarantees only one
-#     WritebackRequest wins and writes the parent oid even under N-client
-#     contention.  > 1 means the cls_lock dedup is broken.
-#  2. accept == wrote + ebusy + drop — every throttler submission must
+#  1. MAX_WRITES_PER_OID <= 1 -- the throttler's cls_lock guarantees only
+#     one WritebackRequest wins per parent oid even under N-client
+#     contention.  > 1 means the cls_lock dedup is broken for that oid.
+#  2. accept == wrote + ebusy + drop -- every throttler submission must
 #     terminate exactly once.  Imbalance signals a leaked SM or
 #     unexpected termination path.
-if [ $WROTE_BACK -gt 1 ]; then
-    log_fail "Expected WROTE_BACK <= 1 (cls_lock guarantees single writer); got $WROTE_BACK"
+if [ "$MAX_WRITES_PER_OID" -gt 1 ]; then
+    log_fail "Expected <= 1 write_full per OID (cls_lock dedups per-object);"
+    log_fail "  found OID with $MAX_WRITES_PER_OID write_fulls:"
+    echo "$WRITES_PER_OID" | sort -rn | head -3 | sed 's/^/    /'
     log_fail "  Cross-process write dedup is broken in the throttler's WritebackRequest"
     exit 1
 fi

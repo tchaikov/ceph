@@ -134,11 +134,19 @@ DROP_FULL=$(grep -hE "async_writeback:.*drop: (in_flight|bytes_in_flight)" \
 # dedup signal.  Each EBUSY is one peer that skipped its write_full.
 LOCK_EBUSY=$(grep -h "async_writeback:.*lock not acquired" \
     "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
-# Successful write_full count = WritebackRequests that reached the
-# write_full step (acquired the lock).  We expect this to equal 1 per
-# object when the race triggers properly.
-WROTE_BACK=$(grep -h "async_writeback:.*write_full.*bytes to " \
-    "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
+# Successful write_full count -- broken down per parent oid because the
+# cls_lock dedup invariant is per-object, not per-suite.  After commit
+# 85ac924ca40 routed S3 prefetch through ObjectReadRequest, prefetched
+# parent objects also flow through the throttler; each hits its own
+# cls_lock and emerges with one winner, so the total write_full count
+# can exceed 1 while the per-object invariant still holds.
+WRITES_PER_OID=$(grep -h "async_writeback:.*write_full.*bytes to " \
+    "$LOG_DIR"/client-*.log 2>/dev/null \
+    | awk '{print $NF}' | sort | uniq -c)
+MAX_WRITES_PER_OID=$(echo "$WRITES_PER_OID" \
+    | awk 'NR==1 || $1>m {m=$1} END {print m+0}')
+WROTE_BACK_TOTAL=$(echo "$WRITES_PER_OID" | wc -l)
+WROTE_BACK=$(echo "$WRITES_PER_OID" | awk '{s+=$1} END {print s+0}')
 
 # Verify all readers got correct data — diff the exports against the source.
 INTEGRITY_FAIL=0
@@ -154,7 +162,7 @@ log_info "=== Read-path throttler-dedup metrics ==="
 log_info "throttler accepts (submissions):     $ACCEPT"
 log_info "throttler drops (over-cap):          $DROP_FULL"
 log_info "WritebackRequest cls_lock EBUSY:     $LOCK_EBUSY"
-log_info "WritebackRequest write_full success: $WROTE_BACK"
+log_info "WritebackRequest write_full total:   $WROTE_BACK ($WROTE_BACK_TOTAL distinct OIDs, max $MAX_WRITES_PER_OID per OID)"
 log_info "RADOS pool wr_ops delta:             $WR_DELTA"
 log_info "integrity check (mismatches):        $INTEGRITY_FAIL/$NUM_CLIENTS"
 echo
@@ -165,16 +173,18 @@ if [ $INTEGRITY_FAIL -ne 0 ]; then
 fi
 
 # Hard assertions on the cross-process write dedup invariant:
-#  1. write_full count <= 1 — even with N concurrent reads, the
-#     throttler's cls_lock guarantees only one WritebackRequest wins and
-#     writes the object.  > 1 means the cls_lock dedup is broken.
+#  1. MAX_WRITES_PER_OID <= 1 -- even with N concurrent reads, the
+#     throttler's cls_lock guarantees only one WritebackRequest wins per
+#     parent oid.  > 1 means the cls_lock dedup is broken for that oid.
 #  2. If at least one WritebackRequest was accepted (ACCEPT > 0), then
-#     ACCEPT == WROTE_BACK + LOCK_EBUSY + DROP_FULL — every submission
+#     ACCEPT == WROTE_BACK + LOCK_EBUSY + DROP_FULL -- every submission
 #     must terminate in exactly one of {acquired-lock-and-wrote,
 #     EBUSY-dropped, throttle-cap-dropped}.  An imbalance here means a
 #     WritebackRequest leaked or terminated through an unexpected path.
-if [ $WROTE_BACK -gt 1 ]; then
-    log_fail "Expected WROTE_BACK <= 1 (cls_lock guarantees single writer); got $WROTE_BACK"
+if [ "$MAX_WRITES_PER_OID" -gt 1 ]; then
+    log_fail "Expected <= 1 write_full per OID (cls_lock dedups per-object);"
+    log_fail "  found OID with $MAX_WRITES_PER_OID write_fulls:"
+    echo "$WRITES_PER_OID" | sort -rn | head -3 | sed 's/^/    /'
     log_fail "  Cross-process write dedup is broken in the throttler's WritebackRequest"
     exit 1
 fi
