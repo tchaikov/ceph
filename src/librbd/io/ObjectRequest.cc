@@ -600,6 +600,27 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
   // — matching the OLD code's "Path 2" — but now serialized through
   // the cls_lock.  This in-memory update is "Path 1" of the OLD design.
   //
+  // !! SCOPE WARNING — DO NOT REUSE OUTSIDE STANDALONE-CLONE !!
+  // The deleted ObjectMap::aio_update path that this raw write
+  // replaces enforced two guards:
+  //   (a) ExclusiveLock ownership: silently no-op if this client
+  //       didn't hold the image's exclusive_lock, preventing a non-
+  //       owner from mutating shared state that the actual owner is
+  //       tracking authoritatively
+  //   (b) bounds: aio_update would queue under proper sequencing
+  // For the standalone-clone scope this is safe by construction:
+  // (a) the image we mutate is the S3-BACKED PARENT, which is
+  //     effectively read-only -- the only writes that ever land
+  //     here are these opportunistic cache-populates issued by any
+  //     reader, none of which need cross-client coordination
+  //     because the data is identical (sourced from immutable S3)
+  // (b) m_object_no is bounded by image size; spawn_prefetch past-EOF
+  //     returns -ENOENT before reaching this point (line ~518)
+  // If this code path is later reused for a WRITABLE parent (e.g.,
+  // standalone clone of another standalone clone with copy-on-write
+  // semantics layered in), reintroduce the aio_update ownership
+  // check or this becomes a multi-writer object_map race.
+  //
   // SKIP on all-zero data: WritebackRequest::write_full short-circuits
   // to release_lock on is_zero(), bypassing both the RADOS write_full
   // AND the on-disk object_map update.  If we set the in-memory bit to
