@@ -121,6 +121,11 @@ public:
   uint32_t in_flight() const;
   uint64_t bytes_in_flight() const;
 
+  // Public only because g_instances's std::unique_ptr deleter needs
+  // access for cleanup_for_test and static-teardown destruction.  Do
+  // NOT construct or destroy directly; use instance() / cleanup_for_test.
+  ~AsyncWritebackThrottler();
+
 private:
   AsyncWritebackThrottler(CephContext* cct,
                           uint32_t max_concurrent,

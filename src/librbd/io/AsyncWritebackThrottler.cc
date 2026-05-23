@@ -58,6 +58,13 @@ public:
       m_image_id(std::move(image_id)),
       m_data(std::move(data)),
       m_bytes_at_submit(m_data.length()) {
+    // Hold a CephContext refcount: this SM can outlive the throttler
+    // when AsyncWritebackThrottler::wait_for_idle hits its timeout
+    // and returns leaving in-flight SMs running.  If ~ImageCtx /
+    // ~Rados then drop the last cct ref, every ldout(m_cct, ...) in
+    // this SM would UAF.  Holding our own ref keeps cct alive until
+    // ~WritebackRequest.
+    m_cct->get();
     // Sentinel oid: same convention as CopyupRequest, ObjectReadRequest,
     // and ObjectBackfillRequest — all four parties coordinate on the
     // same ".s3lk" sentinel so cls_lock contention works across them.
@@ -71,15 +78,25 @@ public:
                     stringify(object_no);
   }
 
+  ~WritebackRequest() {
+    m_cct->put();
+  }
+
   void send() {
     acquire_lock();
   }
 
 private:
-  // Short lock duration: the SM completes in ~3 RTTs (~100-300 ms).  If
-  // we crash mid-flight, the lock auto-expires within 5 s so peers
-  // aren't blocked beyond the natural failure-detection window.
-  static constexpr uint32_t LOCK_DURATION_SECONDS = 5;
+  // Lock duration must cover the worst-case write_full + object_map
+  // cls + unlock latency.  ~3 RTTs is typical (100-300 ms) but a 4 MB
+  // write to a journal-pressured OSD under 8-way throttler contention
+  // can take many seconds.  If the lock auto-expires mid write_full,
+  // a peer can acquire and issue ITS OWN write_full to the same OID --
+  // two writers racing on the parent object risk mixed bytes if the
+  // OSD interleaves them.  30 s matches the conventional Ceph cls_lock
+  // duration for multi-MB ops; if we genuinely crash, peers still
+  // recover within one failure-detection window (default mon timeout).
+  static constexpr uint32_t LOCK_DURATION_SECONDS = 30;
 
   void acquire_lock() {
     ldout(m_cct, 15) << "obj=" << m_object_no << " oid=" << m_parent_oid << dendl;
@@ -150,6 +167,7 @@ private:
       release_lock();
       return;
     }
+    m_write_full_succeeded = true;
     update_object_map();
   }
 
@@ -210,12 +228,20 @@ private:
 
   void handle_release_lock(int r) {
     if (r == -ENOENT) {
-      // Lock already gone — typically a CopyupRequest or backfill peer
-      // called break_lock during our write_full.  The write_full itself
-      // succeeded (write_full is idempotent on the same data).  Match
-      // ObjectBackfillRequest's debug-level logging here.
-      ldout(m_cct, 10) << "lock already released (peer preempted); "
-                       << "write_full completed regardless" << dendl;
+      // Lock already gone -- typically a peer (CopyupRequest, backfill)
+      // called break_lock during our write_full, OR our cls_lock TTL
+      // auto-expired before we got around to the unlock op.  Whether
+      // the parent oid was actually written depends on whether
+      // write_full itself succeeded: m_write_full_succeeded captures
+      // that.  Logging the truth here avoids misleading operators who
+      // grep for "completed regardless" after data-loss incidents.
+      if (m_write_full_succeeded) {
+        ldout(m_cct, 10) << "lock already released (peer preempted); "
+                         << "write_full had completed successfully" << dendl;
+      } else {
+        ldout(m_cct, 10) << "lock already released; write_full did NOT "
+                         << "complete (lderr above for details)" << dendl;
+      }
     } else if (r < 0) {
       ldout(m_cct, 5) << "unlock failed: " << cpp_strerror(r)
                       << " (lock will auto-expire)" << dendl;
@@ -240,6 +266,7 @@ private:
   ceph::bufferlist m_data;
   const uint64_t m_bytes_at_submit;
   bool m_lock_held = false;
+  bool m_write_full_succeeded = false;
 };
 
 namespace {
@@ -266,8 +293,23 @@ AsyncWritebackThrottler::AsyncWritebackThrottler(CephContext* cct,
     m_max_bytes_in_flight(max_bytes_in_flight),
     m_lock(util::unique_lock_name(
         "librbd::io::AsyncWritebackThrottler::m_lock", this)) {
+  // Pin the CephContext so the throttler (and its long-lived
+  // ldout(m_cct, ...) calls) stay valid even if all ImageCtxs sharing
+  // this cct are destroyed.  Without this, g_instances entries keep
+  // the throttler alive but its m_cct can dangle once the last Rados
+  // handle drops its ref; instance() for a future cct that happens to
+  // get the same address would also return this stale entry with a
+  // freed m_cct.  ~AsyncWritebackThrottler is never called (entries
+  // live until cleanup_for_test or process exit), so this ref is a
+  // one-per-cct ground-state, not a leak that grows.
+  m_cct->get();
   ldout(m_cct, 10) << "max_concurrent=" << m_max_concurrent
                    << " max_bytes_in_flight=" << m_max_bytes_in_flight << dendl;
+}
+
+AsyncWritebackThrottler::~AsyncWritebackThrottler() {
+  // Only reached via cleanup_for_test or process-exit static teardown.
+  m_cct->put();
 }
 
 AsyncWritebackThrottler& AsyncWritebackThrottler::instance(CephContext* cct) {
@@ -284,6 +326,11 @@ AsyncWritebackThrottler& AsyncWritebackThrottler::instance(CephContext* cct) {
         "rbd_s3_async_writeback_max_concurrent");
     auto max_bytes = cct->_conf.get_val<Option::size_t>(
         "rbd_s3_async_writeback_max_bytes_in_flight").value;
+    // options.cc declares min=1 for these so 0 is unreachable in
+    // production -- but keep a defensive default for unit tests that
+    // poke the throttler directly without going through Ceph config
+    // validation, and for any future flag rename that briefly leaves
+    // the new key absent.
     if (max_concurrent == 0) max_concurrent = DEFAULT_MAX_CONCURRENT;
     if (max_bytes == 0) max_bytes = DEFAULT_MAX_BYTES_IN_FLIGHT;
     auto inserted = g_instances.emplace(
@@ -393,21 +440,23 @@ void AsyncWritebackThrottler::wait_for_idle(uint64_t deadline_ms) {
       m_idle_cond.Wait(m_lock);
     }
   } else {
-    auto deadline = ceph::real_clock::now() +
-                    std::chrono::milliseconds(deadline_ms);
+    // Use a monotonic clock for the deadline so an NTP backward step
+    // can't drive the cutoff into the past and turn the first
+    // WaitInterval into an immediate ETIMEDOUT (which would skip the
+    // drain entirely while in-flight SMs are still running -- and the
+    // destructor would tear down the IoCtx under them).  Integer-only
+    // arithmetic also avoids the double-precision rounding that
+    // utime_t::set_from_double does for nanos/1e9.
+    auto start = ceph::coarse_mono_clock::now();
+    auto deadline = start + std::chrono::milliseconds(deadline_ms);
     while (m_in_flight > 0) {
-      ldout(m_cct, 15) << "wait_for_idle: " << m_in_flight
-                       << " in-flight (deadline " << deadline_ms
-                       << " ms)" << dendl;
-      utime_t cutoff;
-      cutoff.set_from_double(std::chrono::duration_cast<std::chrono::nanoseconds>(
-          deadline.time_since_epoch()).count() / 1e9);
-      int r = m_idle_cond.WaitUntil(m_lock, cutoff);
-      if (r == ETIMEDOUT && m_in_flight > 0) {
+      auto now = ceph::coarse_mono_clock::now();
+      if (now >= deadline) {
         // Stuck OSD / partitioned cluster / cls_lock holder unreachable.
         // The still-in-flight SMs continue running; they cleanup via
         // librados's own op_timeout (if configured) or via process
-        // exit.  IoCtx held by copy keeps their target alive.  Log
+        // exit.  Each SM holds its own CephContext ref + IoCtx copy,
+        // so the SM can safely outlive ~ImageCtx and ~Rados.  Log
         // loudly so the operator can correlate with cluster issues.
         lderr(m_cct) << "wait_for_idle deadline " << deadline_ms
                      << " ms exceeded with " << m_in_flight
@@ -415,6 +464,16 @@ void AsyncWritebackThrottler::wait_for_idle(uint64_t deadline_ms) {
                      << dendl;
         break;
       }
+      auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline - now);
+      ldout(m_cct, 15) << "wait_for_idle: " << m_in_flight
+                       << " in-flight (" << remaining.count()
+                       << " ms remaining of " << deadline_ms << ")" << dendl;
+      // WaitInterval is internally wall-clock-based (Cond.h:79), but the
+      // relative-duration form recomputes the wall-time cutoff on each
+      // call from the current wall time, so a single NTP step costs at
+      // most one iteration's worth of extra wait, not the full drain.
+      m_idle_cond.WaitInterval(m_lock, remaining);
     }
   }
   ldout(m_cct, 15) << "wait_for_idle: in_flight=" << m_in_flight << dendl;
