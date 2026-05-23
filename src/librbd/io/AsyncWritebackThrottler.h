@@ -40,20 +40,41 @@ namespace io {
 //   - queueing would let memory grow unbounded under sustained read load,
 //     and stale queued writebacks are less useful than fresh ones anyway
 //
-// Per-process scope: a single instance shared across every ImageCtx in
-// the process.  Matches the deployment model (1 VM = 1 librbd client =
-// 1 process) and keeps the throttle budget interpretable.
+// Per-CephContext scope: each cct gets its own throttler.  Multi-Rados
+// processes (QEMU multi-attach, librados unit tests, librbd consumers
+// with multiple tenants) thus have independent throttle budgets and
+// — critically — independent in_flight counters.  The previous
+// per-process singleton design (c1) had three problems all fixed
+// here:
+//   (1) UAF: the first cct's pointer was captured in m_cct forever;
+//       after that cct was destroyed, every ldout deref'd freed memory.
+//   (2) Process-wide wait_for_idle: closing one image blocked on every
+//       other image's writebacks.  Each ~ImageCtx now drains only its
+//       own cct's throttler.
+//   (3) Runtime config changes (ceph config set rbd_s3_async_writeback_*)
+//       were silently ignored after the first instance was constructed;
+//       per-cct creation re-reads the snapshot when a new cct first
+//       hits the path.
 //
-// Lifetime: the first instance() call creates the singleton; later calls
-// return the same instance regardless of the cct they pass.  The
-// singleton is never destroyed (lives for the process lifetime).
+// Lifetime: an instance is created on first instance(cct) for each cct
+// and kept in a static map keyed by cct pointer.  Removed when the cct
+// itself is torn down (cleanup_for_test() in tests; production processes
+// simply don't reuse cct pointers).
 class AsyncWritebackThrottler {
 public:
   AsyncWritebackThrottler(const AsyncWritebackThrottler&) = delete;
   AsyncWritebackThrottler& operator=(const AsyncWritebackThrottler&) = delete;
 
-  // Per-process singleton accessor.  Thread-safe.
+  // Per-cct accessor.  Thread-safe.  Distinct ccts yield distinct
+  // instances; the throttle budgets and counters do not interact.
   static AsyncWritebackThrottler& instance(CephContext* cct);
+
+  // For tests: drop the per-cct instance map entirely.  Real callers
+  // must NOT invoke this; the production lifecycle is "created lazily,
+  // never reset."  After cleanup_for_test, any in-flight WritebackRequest
+  // referencing a destroyed throttler would UAF, so the caller MUST have
+  // already drained via wait_for_idle on every live cct's instance.
+  static void cleanup_for_test();
 
   // Returns true if accepted (caller hands off data ownership via move).
   // Returns false if throttle is full (caller must drop the data; the
@@ -79,12 +100,21 @@ public:
                   ceph::bufferlist&& data,
                   const std::string& image_id);
 
-  // Blocks until every in-flight detached writeback has terminated
-  // (success, EBUSY, timeout, error).  Used by:
-  //   - ImageCtx::close paths that want to ensure no detached SM holds
-  //     an IoCtx alias past the close
-  //   - unit tests that need to observe the terminal state
-  void wait_for_idle();
+  // Blocks until every in-flight detached writeback for THIS cct has
+  // terminated (success, EBUSY, timeout, error), OR until the
+  // configurable deadline expires (whichever comes first).
+  //
+  // A bounded wait protects ImageCtx teardown from a stuck OSD or
+  // unresponsive cluster: without a deadline, a single WritebackRequest
+  // wedged inside aio_operate would block ~ImageCtx forever.  When the
+  // deadline expires we log a warning and return; the still-in-flight
+  // SMs continue running but their cleanup happens via librados's own
+  // op_timeout / process exit.  The IoCtx they hold via copy keeps the
+  // underlying IoCtxImpl alive for them.
+  //
+  // deadline_ms: max wait in milliseconds.  0 = unbounded (legacy).
+  // Default from rbd_s3_async_writeback_wait_for_idle_timeout_ms.
+  void wait_for_idle(uint64_t deadline_ms = 0);
 
   // Snapshots for diagnostics (visible via the perf-counters / admin
   // socket once wired up by callers).  Cheap (mutex acquire only).

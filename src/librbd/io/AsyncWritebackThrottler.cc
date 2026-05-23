@@ -244,11 +244,14 @@ private:
 
 namespace {
 
-// Singleton mutex + storage.  Function-local static would also work
-// (C++11 mandates thread-safe init), but the explicit pair makes it
-// trivial to support per-cct instances later if that becomes useful.
-std::mutex g_instance_lock;
-std::unique_ptr<AsyncWritebackThrottler> g_instance;
+// Per-cct instance map.  Each CephContext (one per librados::Rados in
+// the typical librbd consumer) gets its own throttler with independent
+// in_flight counters and config snapshot.  Replaces the c1 singleton
+// design (process-wide; addressed review findings C2, New6, and the
+// C1 UAF — see header design comment).
+std::mutex g_instances_lock;
+std::unordered_map<CephContext*,
+                   std::unique_ptr<AsyncWritebackThrottler>> g_instances;
 
 constexpr uint32_t DEFAULT_MAX_CONCURRENT = 8;
 constexpr uint64_t DEFAULT_MAX_BYTES_IN_FLIGHT = 32ull * 1024 * 1024;  // 32 MB
@@ -268,22 +271,33 @@ AsyncWritebackThrottler::AsyncWritebackThrottler(CephContext* cct,
 }
 
 AsyncWritebackThrottler& AsyncWritebackThrottler::instance(CephContext* cct) {
-  std::lock_guard<std::mutex> guard(g_instance_lock);
-  if (!g_instance) {
-    // Config snapshot at first-use.  Subsequent cct passed in is ignored;
-    // the process-wide throttle is committed to whatever the first cct's
-    // config said.  Acceptable trade-off — the option is admin-tuned at
-    // startup, not per-image.
+  std::lock_guard<std::mutex> guard(g_instances_lock);
+  auto it = g_instances.find(cct);
+  if (it == g_instances.end()) {
+    // Config snapshot at first-use for THIS cct.  Different ccts can
+    // therefore have different snapshots — what cct A saw when its
+    // first ImageCtx opened, and what cct B saw when its first
+    // ImageCtx opened.  ceph_config set after either cct's first use
+    // is silently ignored for that cct until process restart; this is
+    // a known limitation documented on rbd_s3_async_writeback_max_*.
     auto max_concurrent = cct->_conf.get_val<uint64_t>(
         "rbd_s3_async_writeback_max_concurrent");
     auto max_bytes = cct->_conf.get_val<Option::size_t>(
         "rbd_s3_async_writeback_max_bytes_in_flight").value;
     if (max_concurrent == 0) max_concurrent = DEFAULT_MAX_CONCURRENT;
     if (max_bytes == 0) max_bytes = DEFAULT_MAX_BYTES_IN_FLIGHT;
-    g_instance.reset(new AsyncWritebackThrottler(
-        cct, static_cast<uint32_t>(max_concurrent), max_bytes));
+    auto inserted = g_instances.emplace(
+        cct,
+        std::unique_ptr<AsyncWritebackThrottler>(new AsyncWritebackThrottler(
+            cct, static_cast<uint32_t>(max_concurrent), max_bytes)));
+    it = inserted.first;
   }
-  return *g_instance;
+  return *it->second;
+}
+
+void AsyncWritebackThrottler::cleanup_for_test() {
+  std::lock_guard<std::mutex> guard(g_instances_lock);
+  g_instances.clear();
 }
 
 bool AsyncWritebackThrottler::try_submit(librados::IoCtx& ioctx,
@@ -360,14 +374,50 @@ void AsyncWritebackThrottler::on_writeback_complete(uint64_t bytes_freed) {
   }
 }
 
-void AsyncWritebackThrottler::wait_for_idle() {
-  Mutex::Locker locker(m_lock);
-  while (m_in_flight > 0) {
-    ldout(m_cct, 15) << "wait_for_idle: " << m_in_flight
-                     << " in-flight" << dendl;
-    m_idle_cond.Wait(m_lock);
+void AsyncWritebackThrottler::wait_for_idle(uint64_t deadline_ms) {
+  // Resolve deadline_ms == 0 to the configured default so callers
+  // (typically ~ImageCtx) get the bounded wait without having to pass
+  // the option name through.  Pre-fix behaviour (unbounded) is
+  // recovered only when the operator explicitly sets the option to 0.
+  if (deadline_ms == 0) {
+    deadline_ms = m_cct->_conf.get_val<uint64_t>(
+        "rbd_s3_async_writeback_wait_for_idle_timeout_ms");
   }
-  ldout(m_cct, 15) << "wait_for_idle: all complete" << dendl;
+
+  Mutex::Locker locker(m_lock);
+  if (deadline_ms == 0) {
+    // Operator explicitly opted into the unbounded wait.
+    while (m_in_flight > 0) {
+      ldout(m_cct, 15) << "wait_for_idle: " << m_in_flight
+                       << " in-flight (unbounded)" << dendl;
+      m_idle_cond.Wait(m_lock);
+    }
+  } else {
+    auto deadline = ceph::real_clock::now() +
+                    std::chrono::milliseconds(deadline_ms);
+    while (m_in_flight > 0) {
+      ldout(m_cct, 15) << "wait_for_idle: " << m_in_flight
+                       << " in-flight (deadline " << deadline_ms
+                       << " ms)" << dendl;
+      utime_t cutoff;
+      cutoff.set_from_double(std::chrono::duration_cast<std::chrono::nanoseconds>(
+          deadline.time_since_epoch()).count() / 1e9);
+      int r = m_idle_cond.WaitUntil(m_lock, cutoff);
+      if (r == ETIMEDOUT && m_in_flight > 0) {
+        // Stuck OSD / partitioned cluster / cls_lock holder unreachable.
+        // The still-in-flight SMs continue running; they cleanup via
+        // librados's own op_timeout (if configured) or via process
+        // exit.  IoCtx held by copy keeps their target alive.  Log
+        // loudly so the operator can correlate with cluster issues.
+        lderr(m_cct) << "wait_for_idle deadline " << deadline_ms
+                     << " ms exceeded with " << m_in_flight
+                     << " writeback(s) still in flight; returning anyway"
+                     << dendl;
+        break;
+      }
+    }
+  }
+  ldout(m_cct, 15) << "wait_for_idle: in_flight=" << m_in_flight << dendl;
 }
 
 uint32_t AsyncWritebackThrottler::in_flight() const {

@@ -7726,6 +7726,18 @@ static std::vector<Option> get_rbd_mirror_options() {
                           "(typically 4 MB) until its write_full lands.  Set to a "
                           "small multiple of the object size × max_concurrent."),
 
+    Option("rbd_s3_async_writeback_wait_for_idle_timeout_ms", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(30000)
+    .set_description("max ms ImageCtx close waits for detached writebacks to drain")
+    .set_long_description("ImageCtx close blocks until the AsyncWritebackThrottler's "
+                          "in-flight WritebackRequests for this CephContext drain to "
+                          "zero, OR until this deadline elapses (whichever comes first).  "
+                          "On deadline, the close logs a warning and proceeds; the "
+                          "still-in-flight SMs continue running and clean up via "
+                          "librados's own op_timeout (if configured) or process exit.  "
+                          "Set to 0 for the legacy unbounded wait — only safe if all "
+                          "your OSDs are reliably responsive."),
+
     Option("rbd_s3_readahead_objects", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(2)
     .set_min_max(0, 32)
