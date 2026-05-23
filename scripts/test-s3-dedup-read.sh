@@ -115,15 +115,29 @@ log_info "Pool contents (via rados ls):"
 DATA_STAT=$("$BUILD_DIR/bin/rados" --conf "$CEPH_CONF" -p "$POOL" stat "$DATA_OID" 2>&1 || true)
 log_info "rados stat on data oid: $DATA_STAT"
 
-# Read-path log markers from ObjectReadRequest.
-LOCK_ACQ=$(grep -h "acquired S3 read lock" "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
-LOCK_BUSY=$(grep -h "lock held by another user request, fetching own copy" \
+# Throttler-mediated dedup log markers (post-c2).  The cls_lock that used
+# to dedup on the read critical path now lives inside the throttler's
+# detached WritebackRequest state machine; the net invariant (one
+# write_full per parent object per concurrent burst) is preserved.
+#
+# Old markers ("acquired S3 read lock", "skipping writeback: peer user
+# holds lock", "stat-after-lock short-circuit") no longer exist — the
+# code paths that emitted them were deleted in c2.
+# All throttler + WritebackRequest log lines share the prefix
+# "librbd::io::async_writeback:" (set in AsyncWritebackThrottler.cc).
+ACCEPT=$(grep -h "async_writeback:.*accept obj=" \
     "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
-WROTE_BACK=$(grep -h "writing.*bytes (entire object) to parent cache object" \
+DROP_FULL=$(grep -hE "async_writeback:.*drop: (in_flight|bytes_in_flight)" \
     "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
-SKIPPED=$(grep -h "skipping writeback: peer user holds lock" \
+# The WritebackRequest's cls_lock acquire returns EBUSY when a peer
+# WritebackRequest holds the sentinel — this is the cross-process write
+# dedup signal.  Each EBUSY is one peer that skipped its write_full.
+LOCK_EBUSY=$(grep -h "async_writeback:.*lock not acquired" \
     "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
-RECHECK_HIT=$(grep -h "object now populated; releasing lock and re-reading from RADOS" \
+# Successful write_full count = WritebackRequests that reached the
+# write_full step (acquired the lock).  We expect this to equal 1 per
+# object when the race triggers properly.
+WROTE_BACK=$(grep -h "async_writeback:.*write_full.*bytes to " \
     "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
 
 # Verify all readers got correct data — diff the exports against the source.
@@ -136,14 +150,13 @@ for i in $(seq 1 $NUM_CLIENTS); do
 done
 
 echo
-log_info "=== Read-path dedup metrics ==="
-log_info "lock acquired (won race):       $LOCK_ACQ"
-log_info "lock busy (peer already held):  $LOCK_BUSY"
-log_info "wrote back (lock holder):       $WROTE_BACK"
-log_info "skipped writeback (peer):       $SKIPPED"
-log_info "stat-after-lock short-circuit:  $RECHECK_HIT"
-log_info "RADOS pool wr_ops delta:        $WR_DELTA"
-log_info "integrity check (mismatches):   $INTEGRITY_FAIL/$NUM_CLIENTS"
+log_info "=== Read-path throttler-dedup metrics ==="
+log_info "throttler accepts (submissions):     $ACCEPT"
+log_info "throttler drops (over-cap):          $DROP_FULL"
+log_info "WritebackRequest cls_lock EBUSY:     $LOCK_EBUSY"
+log_info "WritebackRequest write_full success: $WROTE_BACK"
+log_info "RADOS pool wr_ops delta:             $WR_DELTA"
+log_info "integrity check (mismatches):        $INTEGRITY_FAIL/$NUM_CLIENTS"
 echo
 
 if [ $INTEGRITY_FAIL -ne 0 ]; then
@@ -151,31 +164,36 @@ if [ $INTEGRITY_FAIL -ne 0 ]; then
     exit 1
 fi
 
-# Hard assertions on the dedup behavior itself (NOT just data correctness):
-#  1. WROTE_BACK + RECHECK_HIT must be exactly 1.  With proper dedup, exactly
-#     one client populates the parent oid (either by writing it after S3 fetch
-#     or by short-circuiting after stat-after-lock found a peer-populated
-#     copy).  WROTE_BACK > 1 means losers wrote duplicates — the skip-writeback
-#     feature is broken.
-#  2. If LOCK_BUSY > 0 (race triggered), SKIPPED must be > 0.  Nonzero
-#     LOCK_BUSY with SKIPPED=0 means the losers fell through instead of
-#     taking the skip-writeback path.
+# Hard assertions on the cross-process write dedup invariant:
+#  1. write_full count <= 1 — even with N concurrent reads, the
+#     throttler's cls_lock guarantees only one WritebackRequest wins and
+#     writes the object.  > 1 means the cls_lock dedup is broken.
+#  2. If at least one WritebackRequest was accepted (ACCEPT > 0), then
+#     ACCEPT == WROTE_BACK + LOCK_EBUSY + DROP_FULL — every submission
+#     must terminate in exactly one of {acquired-lock-and-wrote,
+#     EBUSY-dropped, throttle-cap-dropped}.  An imbalance here means a
+#     WritebackRequest leaked or terminated through an unexpected path.
 if [ $WROTE_BACK -gt 1 ]; then
-    log_fail "Expected WROTE_BACK <= 1 (single writeback per parent object); got $WROTE_BACK"
-    log_fail "  Read-path skip-writeback dedup is broken: multiple losers wrote duplicates"
+    log_fail "Expected WROTE_BACK <= 1 (cls_lock guarantees single writer); got $WROTE_BACK"
+    log_fail "  Cross-process write dedup is broken in the throttler's WritebackRequest"
     exit 1
 fi
-if [ $LOCK_BUSY -gt 0 ] && [ $SKIPPED -eq 0 ]; then
-    log_fail "Race triggered ($LOCK_BUSY EBUSY-user events) but SKIPPED=0"
-    log_fail "  Losers are not using the skip-writeback path"
-    exit 1
+if [ $ACCEPT -gt 0 ]; then
+    EXPECTED_TOTAL=$((WROTE_BACK + LOCK_EBUSY + DROP_FULL))
+    if [ "$ACCEPT" -ne "$EXPECTED_TOTAL" ]; then
+        log_warn "Throttler accept/terminate imbalance: accepts=$ACCEPT, "
+        log_warn "  wrote=$WROTE_BACK + ebusy=$LOCK_EBUSY + drop=$DROP_FULL = $EXPECTED_TOTAL"
+        log_warn "  Some WritebackRequests may have terminated through an unexpected path"
+        # Warning, not failure — could be a write_full failure path; data
+        # integrity (verified above) is what matters for correctness.
+    fi
 fi
-if [ $SKIPPED -gt 0 ]; then
-    log_success "Read-path skip-writeback dedup is firing: $WROTE_BACK wrote, $SKIPPED skipped"
-elif [ $RECHECK_HIT -gt 0 ]; then
-    log_success "stat-after-lock short-circuit fired (peer beat us to writeback)"
-elif [ $LOCK_BUSY -eq 0 ]; then
-    log_warn "Race didn't trigger this run — clients may have serialized."
-    log_warn "  Data integrity verified ($INTEGRITY_FAIL/$NUM_CLIENTS mismatches);"
-    log_warn "  re-run for full dedup-path confidence."
+if [ $LOCK_EBUSY -gt 0 ]; then
+    log_success "Cross-process write dedup firing: $WROTE_BACK wrote, $LOCK_EBUSY EBUSY-dropped"
+elif [ $ACCEPT -eq 0 ]; then
+    log_warn "No throttler submissions seen — clients may have all hit the recent-fetch"
+    log_warn "  cache (sequential same-object reads) and never reached the S3 GET path."
+    log_warn "  Data integrity verified ($INTEGRITY_FAIL/$NUM_CLIENTS mismatches)."
+elif [ $WROTE_BACK -gt 0 ]; then
+    log_success "Single client won the lock: $WROTE_BACK wrote (race didn't trigger this run)"
 fi

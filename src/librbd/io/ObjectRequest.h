@@ -117,10 +117,7 @@ public:
                     ceph::bufferlist* read_data, ExtentMap* extent_map,
                     Context *completion);
 
-  // Set m_cancelled BEFORE the base ~ObjectRequest runs so the
-  // wait_for_peer_writeback timer lambda (captures shared_ptr by value) bails
-  // even if it fires concurrently with destruction.
-  ~ObjectReadRequest() override;
+  ~ObjectReadRequest() override = default;
 
   void send() override;
 
@@ -161,44 +158,6 @@ private:
   // is closed concurrently (e.g., during flatten).
   std::shared_ptr<S3ObjectFetcher> m_s3_fetcher;
 
-  // Cross-process dedup state — mirrors CopyupRequest, but for the read path.
-  // The lock target is m_oid + S3_FETCH_LOCK_SENTINEL_SUFFIX so concurrent
-  // CopyupRequests on the same S3-backed parent and ObjectReadRequests on
-  // that same image coordinate via the same sentinel object.
-  bool m_s3_lock_acquired = false;
-  // When another foreground user request holds the lock we fetch our own
-  // copy and return data to the caller, but skip the local RADOS write_full
-  // and object_map update — the lock holder is already committed to that
-  // work and a duplicate write_full just wastes RADOS IOPS.
-  // Mutually exclusive with m_s3_lock_acquired — see unlock_after_s3_read
-  // for the assert.
-  bool m_skip_writeback = false;
-  // On the skip-writeback path only: if our own S3 fetch fails with a
-  // non-sparse error, we save the original S3 error here and attempt a
-  // single RADOS fallback read of m_oid (the peer lock holder may have
-  // committed its write_full while our fetch was failing).  Propagated
-  // back to the caller only if the RADOS fallback also misses.
-  int m_skip_writeback_fallback_err = 0;
-  // On the skip-writeback path (peer user holds the lock and will populate
-  // RADOS), we briefly poll m_oid before returning to the caller so that
-  // subsequent in-process reads of the same object hit local RADOS instead
-  // of refetching from S3.  Without this, a sequential reader (e.g.
-  // rbd bench --io-size 64K --io-total 1M) issues N small reads, each
-  // missing RADOS until the peer's write_full lands and inflating S3 GET
-  // count.  Counter caps the wait at PEER_WRITEBACK_MAX_POLLS attempts.
-  uint32_t m_peer_poll_count = 0;
-  // Cancellation flag captured by value (shared_ptr) into the
-  // wait_for_peer_writeback timer lambda.  When this request is destroyed
-  // (finish() -> delete this -> ~ObjectReadRequest), the destructor stores
-  // true here BEFORE the base ~ObjectRequest runs, so a still-pending timer
-  // lambda checks this->load() and bails before dereferencing the
-  // (about-to-be-)freed `this`.  Same pattern as CopyupRequest::m_cancelled.
-  std::shared_ptr<std::atomic<bool>> m_cancelled{
-    std::make_shared<std::atomic<bool>>(false)};
-  std::string m_lock_oid;     // m_oid + S3_FETCH_LOCK_SENTINEL_SUFFIX
-  std::string m_lock_cookie;  // "<image_id>_r_<object_no>"
-  ceph::bufferlist m_lock_info_bl;  // buffer for async get_lock_info response
-
   void read_object();
   void handle_read_object(int r);
 
@@ -207,35 +166,15 @@ private:
 
   void copyup();
 
-  // S3 backend support for reads
+  // Client I/O critical path on the read side stays minimal:
+  //   read RADOS → on miss → S3 GET → return data + submit detached
+  //   cache writeback to AsyncWritebackThrottler.
+  // The throttler-owned WritebackRequest handles cls_lock acquire,
+  // write_full of the parent oid, and obj_map update entirely off
+  // the client's critical path.
   bool should_read_from_s3();
-  void read_from_s3_with_lock();
-  void handle_lock_for_s3_read(int r);
-  void try_preempt_backfill_lock_for_read();
-  void handle_list_lock_holders_for_read(int r);
-  void handle_break_backfill_lock_for_read(int r);
-  void recheck_oid_after_lock();
-  void handle_recheck_oid_after_lock(int r);
   void read_from_s3();
   void handle_read_from_s3(int r);
-  // Lock-coordination soft-fail dispatch: any path that gives up on holding
-  // the cls_lock (busy from a peer user request, list/parse/break errors,
-  // etc.) fetches its own S3 copy with writeback skipped so the holder
-  // populates RADOS exactly once.  Asserts the lock was never acquired.
-  void fetch_without_lock_skip_writeback();
-  // Skip-writeback path only: single RADOS fallback read attempted when our
-  // own S3 fetch failed with a non-sparse error.  Bounded — leaf handler
-  // that always finishes; never re-enters the state machine or S3.
-  void handle_skip_writeback_fallback(int r);
-  void write_back_s3_data_then_finish(bufferlist& full_object_data);
-  void handle_write_back_done(int r);
-  void update_object_map_for_s3_write_back();
-  void unlock_after_s3_read();
-  // Peer-writeback wait, skip-writeback path only.  Polls m_oid up to
-  // PEER_WRITEBACK_MAX_POLLS times at PEER_WRITEBACK_POLL_INTERVAL_MS
-  // intervals, exiting early as soon as the peer's write_full lands.
-  void wait_for_peer_writeback();
-  void handle_peer_writeback_poll(int r);
 };
 
 template <typename ImageCtxT = ImageCtx>

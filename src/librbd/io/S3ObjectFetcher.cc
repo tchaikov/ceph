@@ -423,6 +423,11 @@ void S3ObjectFetcher::execute_fetch(FetchContext* ctx) {
 // deletes ctx.  curl_slist_free_all and curl_easy_cleanup are both safe
 // to call on null handles, so the helper covers both the post-success
 // path and the early-failure paths where setup_curl_handle hasn't run.
+//
+// On success, also inserts the fetched bytes into the recent-fetch
+// cache (m_recent_lru) so closely-spaced sequential reads of the same
+// URL+range hit memory instead of refetching.  See cache_recent() and
+// the design comment on RECENT_FETCH_MAX_ENTRIES in the header.
 void S3ObjectFetcher::complete_and_destroy(FetchContext* ctx, int result) {
   curl_slist_free_all(ctx->headers);
   curl_easy_cleanup(ctx->curl_handle);
@@ -437,14 +442,107 @@ void S3ObjectFetcher::complete_and_destroy(FetchContext* ctx, int result) {
     }
   }
 
-  ctx->on_finish->complete(result);
-  for (auto& [out_bl, on_finish] : waiters) {
-    if (result == 0) {
+  // Recent-cache the result BEFORE firing callbacks.  Doing it before
+  // means a callback's continuation (e.g., ObjectReadRequest::finish ->
+  // delete this -> another read of the same object) can hit the cache.
+  if (result == 0) {
+    cache_recent(ctx->coalesce_key, *ctx->out_bl);
+  }
+
+  // Copy bytes to ALL waiters BEFORE firing ANY callback.  Critical
+  // ordering: ObjectReadRequest::handle_read_from_s3 now finishes
+  // synchronously inside this complete_and_destroy frame, immediately
+  // deleting the primary caller — which makes ctx->out_bl a dangling
+  // pointer.  If we tried to copy from ctx->out_bl while iterating
+  // waiters AFTER firing the primary, we'd dereference freed memory.
+  // Bug surfaced as 4-of-4 SIGSEGV in the N=4 vm_boot_scaling perf
+  // scenario; not present pre-c2 because the primary's writeback then
+  // was async and primary destruction came much later.
+  if (result == 0) {
+    for (auto& [out_bl, _] : waiters) {
       *out_bl = *ctx->out_bl;
     }
+  }
+
+  // Now fire callbacks.  Primary first (the convention this function
+  // documented), then waiters in the order they attached.  Each
+  // callback may synchronously delete its owning request — by this
+  // point we've already extracted everything we need from ctx->out_bl.
+  ctx->on_finish->complete(result);
+  for (auto& [out_bl, on_finish] : waiters) {
+    (void)out_bl;  // already populated above
     on_finish->complete(result);
   }
   delete ctx;
+}
+
+bool S3ObjectFetcher::try_serve_from_recent(const std::string& key,
+                                             bufferlist* out_bl,
+                                             Context* on_finish) {
+  std::shared_ptr<bufferlist> data;
+  {
+    std::lock_guard<std::mutex> lock(m_recent_mutex);
+    auto idx_it = m_recent_index.find(key);
+    if (idx_it == m_recent_index.end()) {
+      return false;
+    }
+    auto now = std::chrono::steady_clock::now();
+    if (idx_it->second->second.expires_at < now) {
+      // Expired — evict and treat as miss.  Lazy eviction is sufficient
+      // for bounded memory growth here (each fetch_url either evicts or
+      // refreshes the corresponding entry).
+      m_recent_lru.erase(idx_it->second);
+      m_recent_index.erase(idx_it);
+      return false;
+    }
+    // Hit — capture the shared_ptr (cheap) and LRU-touch by moving the
+    // node to the back of the list.  list::splice does this in O(1)
+    // without invalidating iterators.
+    data = idx_it->second->second.data;
+    m_recent_lru.splice(m_recent_lru.end(), m_recent_lru, idx_it->second);
+    idx_it->second = std::prev(m_recent_lru.end());
+  }
+  // Copy outside the lock.  bufferlist copy is shallow (refcounted
+  // buffer sharing), so this is cheap.
+  *out_bl = *data;
+  // Fire callback inline.  Safe because callers (ObjectReadRequest,
+  // CopyupRequest) do not deref `this` after the fetch_url call returns
+  // — the last statement of their dispatch functions IS the fetch_url
+  // call, so any synchronous completion is well-defined.
+  ldout(m_cct, 15) << "recent-fetch cache HIT for key=" << key
+                   << " (" << out_bl->length() << " bytes, 0 S3 GETs)" << dendl;
+  on_finish->complete(0);
+  return true;
+}
+
+void S3ObjectFetcher::cache_recent(const std::string& key,
+                                    const bufferlist& data) {
+  // Shallow copy via bufferlist's copy constructor; refcounted buffer
+  // sharing keeps the real memory cost down even though the entry count
+  // suggests a higher worst case.
+  auto entry_data = std::make_shared<bufferlist>(data);
+  auto expires = std::chrono::steady_clock::now() +
+                 std::chrono::milliseconds(RECENT_FETCH_TTL_MS);
+
+  std::lock_guard<std::mutex> lock(m_recent_mutex);
+
+  // If the key is already present (refetch of recently-expired-then-
+  // missed entry, or a primary fetch after we served an unrelated hit),
+  // replace the old entry — the new fetch is authoritative.
+  auto idx_it = m_recent_index.find(key);
+  if (idx_it != m_recent_index.end()) {
+    m_recent_lru.erase(idx_it->second);
+    m_recent_index.erase(idx_it);
+  }
+
+  m_recent_lru.emplace_back(key, CachedEntry{std::move(entry_data), expires});
+  m_recent_index[key] = std::prev(m_recent_lru.end());
+
+  // Trim LRU to the cap.  Eviction is from the front (oldest).
+  while (m_recent_lru.size() > RECENT_FETCH_MAX_ENTRIES) {
+    m_recent_index.erase(m_recent_lru.front().first);
+    m_recent_lru.pop_front();
+  }
 }
 
 void S3ObjectFetcher::fetch_url(const std::string& url,
@@ -469,14 +567,21 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
   // Clear output buffer
   data->clear();
 
+  std::string coalesce_key = url + "@" + std::to_string(byte_start) + "-" +
+                             std::to_string(byte_length);
+
+  // Note: lookup re-enabled — cache_recent in complete_and_destroy was
+  // never disabled, so just re-test with full path.
+  if (try_serve_from_recent(coalesce_key, data, on_finish)) {
+    return;
+  }
+
   // In-flight dedup: register the new fetch context atomically with the
   // dedup-check.  Doing the lookup-then-insert in a single critical section
   // closes the race where two concurrent callers both see "no entry" and
   // each issue their own GET.  Curl setup happens AFTER registration —
   // whichever caller wins the insert is the primary and does the work; the
   // other(s) attach as waiters.
-  std::string coalesce_key = url + "@" + std::to_string(byte_start) + "-" +
-                             std::to_string(byte_length);
   FetchContext* ctx = new FetchContext();
   ctx->out_bl = data;
   ctx->on_finish = on_finish;

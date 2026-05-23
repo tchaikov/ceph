@@ -30,6 +30,7 @@
 #include "librbd/exclusive_lock/StandardPolicy.h"
 #include "librbd/io/AioCompletion.h"
 #include "librbd/io/AsyncOperation.h"
+#include "librbd/io/AsyncWritebackThrottler.h"
 #include "librbd/io/ImageRequestWQ.h"
 #include "librbd/io/ObjectDispatcher.h"
 #include "librbd/journal/StandardPolicy.h"
@@ -172,6 +173,21 @@ public:
       perf_stop();
     }
     delete[] format_string;
+
+    // Wait for any detached parent-cache writebacks fired by
+    // ObjectReadRequest (and CopyupRequest, in c3) through the
+    // AsyncWritebackThrottler.  The throttler holds COPIES of our
+    // data_ctx that aio_flush below cannot drain on its own — those
+    // copies' state machines must terminate BEFORE we tear down the
+    // owning librados client (rbd CLI invocations are the typical
+    // case: rbd export/bench finishes, librados shuts down within
+    // microseconds, and any still-pending throttler op would
+    // aio_operate on a destroyed IoCtxImpl, silently dropping or
+    // segfaulting).  Without this drain, the parent's RADOS cache
+    // never gets populated for short-lived CLI clients and the
+    // backfill-suite parent_du_after_child_writeback test caught
+    // exactly this regression.
+    io::AsyncWritebackThrottler::instance(cct).wait_for_idle();
 
     md_ctx.aio_flush();
     if (data_ctx.is_valid()) {

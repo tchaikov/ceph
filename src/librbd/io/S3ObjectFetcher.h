@@ -10,8 +10,10 @@
 #include "librbd/Types.h"
 #include <curl/curl.h>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -166,12 +168,49 @@ private:
   // In-flight fetch coalescing: maps coalesce_key (url@start-end) to the
   // primary FetchContext.  Concurrent callers asking for the same URL+range
   // attach to the primary's waiters list instead of issuing a duplicate GET.
-  // This eliminates the "single client sequential read of 4 MB triggers 2
-  // S3 GETs" race (handle_read_from_s3's write-back is async, so the next
-  // 64 KB read inside the same 4 MB object can re-fetch from S3 before the
-  // first write-back lands in RADOS).
+  // This handles SIMULTANEOUS overlapping fetches; sequential overlaps are
+  // handled by the recent-fetch cache below.
   std::mutex m_inflight_mutex;
   std::unordered_map<std::string, FetchContext*> m_inflight;
+
+  // Recent-fetch in-process cache.  After a fetch completes, its bytes
+  // sit here for RECENT_FETCH_TTL_MS so closely-spaced SEQUENTIAL reads
+  // of the same URL+range (e.g., rbd bench --io-size 64K --io-total 1M
+  // = 16 sequential sub-reads of one 4 MB object) hit memory in 0 RTTs
+  // instead of refetching.
+  //
+  // Why this exists: ObjectReadRequest's design moved the cache-populate
+  // write_full off the client critical path (into AsyncWritebackThrottler).
+  // The trade-off is that subsequent reads can't rely on RADOS being
+  // populated yet — without this cache they'd each fire their own S3 GET.
+  // This cache fills that gap purely in-process, without restoring the
+  // pre-fix design's wait-for-write-full latency on the client critical
+  // path.
+  //
+  // TTL of 2s is sized to: (a) cover the worst-case 16-sub-read sequence
+  // (typically <1 s); (b) be short enough that stale data doesn't pile
+  // up across unrelated read bursts; (c) overlap with the AsyncWriteback
+  // Throttler's RADOS-populate window (~100-300 ms), so once the cache
+  // entry expires the natural RADOS read path is warm.
+  //
+  // Entry cap of 32 × 4 MB = 128 MB worst case per process; bufferlist's
+  // shallow copy means real memory is typically much less (refcounted
+  // buffer sharing with curl's response buffers).
+  static constexpr size_t RECENT_FETCH_MAX_ENTRIES = 32;
+  static constexpr uint32_t RECENT_FETCH_TTL_MS = 2000;
+  struct CachedEntry {
+    // shared_ptr so multiple concurrent readers can copy out of the same
+    // underlying bufferlist without holding the cache mutex.
+    std::shared_ptr<ceph::bufferlist> data;
+    std::chrono::steady_clock::time_point expires_at;
+  };
+  // List is insertion-ordered (newest at back); LRU touch moves to back;
+  // over-cap eviction pops from front.
+  mutable std::mutex m_recent_mutex;
+  std::list<std::pair<std::string, CachedEntry>> m_recent_lru;
+  std::unordered_map<std::string,
+                     std::list<std::pair<std::string, CachedEntry>>::iterator>
+      m_recent_index;
 
   // libcurl share lock/unlock callbacks (called with 'this' as userptr)
   static void share_lock(CURL*, curl_lock_data data, curl_lock_access, void* userptr);
@@ -220,8 +259,25 @@ private:
   // Free curl resources, detach from the in-flight map, and complete the
   // primary callback followed by all coalesced waiters with the given result.
   // On success (result == 0) the fetched bytes are copied into each waiter's
-  // bufferlist before its callback fires.  Always deletes ctx.
+  // bufferlist before its callback fires, AND the bytes are recorded in
+  // the recent-fetch cache for sequential-read dedup.  Always deletes ctx.
   void complete_and_destroy(FetchContext* ctx, int result);
+
+  // Returns true and serves the response from m_recent_lru iff the cache
+  // has a non-expired entry for coalesce_key.  Side effect on hit: copies
+  // bytes into *out_bl, LRU-touches the entry, and fires on_finish inline
+  // (caller does not deref `this` after fetch_url returns, so inline
+  // completion is safe).  Returns false on miss or expiry (and evicts the
+  // expired entry).
+  bool try_serve_from_recent(const std::string& coalesce_key,
+                             ceph::bufferlist* out_bl,
+                             Context* on_finish);
+
+  // Insert a freshly-completed fetch result into the recent cache.
+  // Updates LRU position if the key was already present.  Evicts the
+  // oldest entry once the map exceeds RECENT_FETCH_MAX_ENTRIES.
+  void cache_recent(const std::string& coalesce_key,
+                    const ceph::bufferlist& data);
 };
 
 } // namespace io

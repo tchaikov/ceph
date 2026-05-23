@@ -14,6 +14,13 @@
 #include <mutex>
 
 #define dout_subsys ceph_subsys_rbd
+#undef dout_prefix
+// Prefix all messages from this TU with a stable substring so
+// log-grepping (e.g., test-s3-dedup-read.sh) can match on
+// "async_writeback:" regardless of thread id or callsite.  Both the
+// throttler and its detached state machine live in this file and
+// share the same prefix root.
+#define dout_prefix *_dout << "librbd::io::async_writeback: "
 
 namespace librbd {
 namespace io {
@@ -117,7 +124,11 @@ private:
       return;
     }
 
-    ldout(m_cct, 15) << "write_full " << m_data.length()
+    // Log at 10 so dedup-{read,writeback}.sh's grep at --debug-rbd=10
+    // can count successful write_fulls.  This is the key cross-process
+    // dedup signal: with N concurrent writebacks contending on cls_lock,
+    // exactly 1 should reach write_full and N-1 should EBUSY-drop above.
+    ldout(m_cct, 10) << "write_full " << m_data.length()
                      << " bytes to " << m_parent_oid << dendl;
 
     librados::ObjectWriteOperation op;
