@@ -569,6 +569,30 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
   // backfill daemon) is already mid-write.  Net RADOS write count is
   // bounded by the cls_lock the same way the old lock-on-critical-path
   // design bounded it — what changed is that the dance is post-finish().
+  // Update the in-memory object_map BEFORE submitting the throttler
+  // writeback.  The pre-c2 ObjectReadRequest::update_object_map_for_s3
+  // _write_back set both the on-disk bit (via cls) AND the in-memory
+  // bit; c2 moved the on-disk update into the throttler's
+  // WritebackRequest (which has no ImageCtx pointer and therefore
+  // cannot touch the in-memory map) but inadvertently dropped the
+  // in-memory mutation entirely.  Without it, rbd_du on a live ImageCtx
+  // reports 0 used even after reads have populated the parent's RADOS
+  // pool, and object_may_exist() returns false, mis-routing the next
+  // read through read_parent() (no-op for standalone) → another S3
+  // fetch.  Both regressions were caught by the C8 review finding.
+  //
+  // The on-disk update still runs inside the throttler's SM (via
+  // ObjectMap<>::build_update_op against the parent's object_map_oid)
+  // — matching the OLD code's "Path 2" — but now serialized through
+  // the cls_lock.  This in-memory update is "Path 1" of the OLD design.
+  if (image_ctx->object_map != nullptr) {
+    RWLock::RLocker owner_locker(image_ctx->owner_lock);
+    if (image_ctx->object_map != nullptr) {
+      RWLock::WLocker object_map_locker(image_ctx->object_map_lock);
+      (*image_ctx->object_map)[this->m_object_no] = OBJECT_EXISTS;
+    }
+  }
+
   auto& throttler = AsyncWritebackThrottler::instance(cct);
   uint64_t bytes = full_object_data.length();
   bool submitted = throttler.try_submit(
