@@ -114,46 +114,59 @@ log_info "wr_ops on $POOL after:  $WR_OPS_AFTER"
 WR_DELTA=$((WR_OPS_AFTER - WR_OPS_BEFORE))
 log_info "wr_ops delta: $WR_DELTA"
 
-# Count log markers across all client logs.
-FIRING=$(grep -h "firing async write-back to parent object" "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
-SKIPPING=$(grep -h "skipping parent writeback: lock holder peer" "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
-LOCK_BUSY=$(grep -h "lock held by another user request" "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
-LOCK_ACQ=$(grep -h "acquired S3 fetch lock" "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
+# Throttler-mediated dedup log markers (post-c3).  CopyupRequest's cls_lock
+# that used to dedup on the COW critical path now lives inside the
+# throttler's detached WritebackRequest state machine fired from
+# fire_parent_s3_writeback; the net invariant (one write_full per parent
+# object per concurrent burst) is preserved.
+#
+# Old markers ("acquired S3 fetch lock", "firing async write-back",
+# "skipping parent writeback") no longer exist — those code paths were
+# deleted in c3.  Match instead on the throttler's "async_writeback:"
+# prefix (set in AsyncWritebackThrottler.cc) which covers both submission
+# accounting and the per-WritebackRequest cls_lock outcome.
+ACCEPT=$(grep -h "async_writeback:.*accept obj=" \
+    "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
+DROP_FULL=$(grep -hE "async_writeback:.*drop: (in_flight|bytes_in_flight)" \
+    "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
+LOCK_EBUSY=$(grep -h "async_writeback:.*lock not acquired" \
+    "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
+WROTE_BACK=$(grep -h "async_writeback:.*write_full.*bytes to " \
+    "$LOG_DIR"/client-*.log 2>/dev/null | wc -l)
 
 echo
-log_info "=== Dedup metrics ==="
-log_info "lock acquired (won race):       $LOCK_ACQ"
-log_info "lock busy (peer already held):  $LOCK_BUSY"
-log_info "fired write-back (lock holder): $FIRING"
-log_info "skipped write-back (peer):      $SKIPPING"
-log_info "RADOS pool wr_ops delta:        $WR_DELTA"
+log_info "=== COW-path throttler-dedup metrics ==="
+log_info "throttler accepts (submissions):     $ACCEPT"
+log_info "throttler drops (over-cap):          $DROP_FULL"
+log_info "WritebackRequest cls_lock EBUSY:     $LOCK_EBUSY"
+log_info "WritebackRequest write_full success: $WROTE_BACK"
+log_info "RADOS pool wr_ops delta:             $WR_DELTA"
 echo
 
-# Hard assertions:
-#  1. FIRING must be exactly 1 — only the lock holder writes the parent oid.
-#     If the skip-writeback feature is broken, every contended client falls
-#     through to its own write_full and FIRING climbs to NUM_CLIENTS.
-#     With --io-pattern seq + small total, all 4 children COW the same
-#     parent object 0, so a properly working dedup yields FIRING=1
-#     regardless of whether the race triggered or the clients serialized.
-#  2. If we observed any race (LOCK_BUSY > 0), SKIPPING must be > 0 too.
-#     A nonzero LOCK_BUSY without any SKIPPING means losers fell through
-#     instead of using the skip-writeback path — the feature is silently
-#     bypassed.
-if [ $FIRING -ne 1 ]; then
-    log_fail "Expected FIRING=1 (single writeback per parent object); got $FIRING"
-    log_fail "  Skip-writeback dedup is broken: lock holder is no longer the sole writer"
+# Hard assertions on the cross-process write dedup invariant:
+#  1. WROTE_BACK <= 1 — the throttler's cls_lock guarantees only one
+#     WritebackRequest wins and writes the parent oid even under N-client
+#     contention.  > 1 means the cls_lock dedup is broken.
+#  2. accept == wrote + ebusy + drop — every throttler submission must
+#     terminate exactly once.  Imbalance signals a leaked SM or
+#     unexpected termination path.
+if [ $WROTE_BACK -gt 1 ]; then
+    log_fail "Expected WROTE_BACK <= 1 (cls_lock guarantees single writer); got $WROTE_BACK"
+    log_fail "  Cross-process write dedup is broken in the throttler's WritebackRequest"
     exit 1
 fi
-if [ $LOCK_BUSY -gt 0 ] && [ $SKIPPING -eq 0 ]; then
-    log_fail "Race triggered ($LOCK_BUSY EBUSY-user events) but SKIPPING=0"
-    log_fail "  Losers are not using the skip-writeback path"
-    exit 1
+if [ $ACCEPT -gt 0 ]; then
+    EXPECTED_TOTAL=$((WROTE_BACK + LOCK_EBUSY + DROP_FULL))
+    if [ "$ACCEPT" -ne "$EXPECTED_TOTAL" ]; then
+        log_warn "Throttler accept/terminate imbalance: accepts=$ACCEPT, "
+        log_warn "  wrote=$WROTE_BACK + ebusy=$LOCK_EBUSY + drop=$DROP_FULL = $EXPECTED_TOTAL"
+        log_warn "  Some WritebackRequests may have terminated through an unexpected path"
+    fi
 fi
-if [ $SKIPPING -gt 0 ]; then
-    log_success "Skip-writeback dedup is firing: $FIRING wrote, $SKIPPING skipped"
-elif [ $LOCK_BUSY -eq 0 ]; then
-    log_warn "Race didn't trigger this run — clients may have serialized."
-    log_warn "  FIRING=1 still observed (cache hit on subsequent clients)."
-    log_warn "  Re-run for confidence; not a failure since no race occurred."
+if [ $LOCK_EBUSY -gt 0 ]; then
+    log_success "Cross-process write dedup firing: $WROTE_BACK wrote, $LOCK_EBUSY EBUSY-dropped"
+elif [ $ACCEPT -gt 0 ]; then
+    log_success "Single client won the lock: $WROTE_BACK wrote (race didn't trigger this run)"
+else
+    log_warn "No throttler submissions seen — race didn't trigger and no client COW'd the parent."
 fi

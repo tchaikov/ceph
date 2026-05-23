@@ -118,7 +118,6 @@ private:
     std::make_shared<std::atomic<bool>>(false)};
 
   // S3 back-fill members
-  bool m_s3_lock_acquired = false;
   // Set to true only when m_copyup_data was populated from a live S3 fetch
   // (handle_s3_fetch).  When false (data came from read_from_parent which
   // reads only m_image_extents), fire_parent_s3_writeback must NOT write
@@ -126,22 +125,13 @@ private:
   // write_full would truncate the already-correct 4MB parent RADOS object
   // to just the size of the write extents (e.g. 4KB).
   bool m_data_is_from_s3 = false;
-  // Set when this request raced another user holding the lock and chose to
-  // fetch its own S3 copy without acquiring the lock.  The lock holder is
-  // already committed to writing the parent object; this request must skip
-  // its own write_full and object_map update so the parent oid is populated
-  // exactly once.  Reads still get correct data from the in-memory bufferlist.
-  bool m_skip_parent_writeback = false;
-  uint32_t m_s3_retry_count = 0;
   ceph::bufferlist m_s3_data;
-  ceph::bufferlist m_lock_info_bl;  // buffer for async get_lock_info response
   std::string m_parent_oid;
-  std::string m_parent_lock_oid;  // separate sentinel object for cls lock
-  std::string m_lock_cookie;      // "<image_id>_<object_no>", set once on first lock attempt
   librados::IoCtx m_parent_ioctx;
   // Heap-allocated so its lifetime is tied to CopyupRequest, not the stack
-  // frame of fetch_from_s3_async(). The detached pthread writes into m_s3_data
-  // which is a member here, so both must outlive the in-flight fetch.
+  // frame of fetch_from_s3(). The S3 fetcher's worker thread writes into
+  // m_s3_data which is a member here, so both must outlive the in-flight
+  // fetch.
   std::shared_ptr<S3ObjectFetcher> m_s3_fetcher;
 
   // skip_s3_check==true bypasses the should_fetch_from_s3() branch — used
@@ -172,19 +162,21 @@ private:
   void compute_deep_copy_snap_ids();
 
   // S3 back-fill methods
+  //
+  // Client critical path = aio_stat(parent_oid) → S3 GET if missing →
+  // merge with client write → write CHILD oid → finish.  No cls_lock
+  // on the parent on the critical path; the parent cache populate
+  // runs off-path via AsyncWritebackThrottler in fire_parent_s3_writeback.
+  // Old design's cls_lock-acquire/preempt/skip-writeback dance (~250
+  // LOC) deleted along with its members above; cross-process write
+  // dedup is preserved because the throttler's WritebackRequest still
+  // acquires the same sentinel cls_lock — just off the critical path.
   bool should_fetch_from_s3();
   void check_parent_object_exists(std::string parent_oid,
                                    librados::IoCtx parent_ioctx);
   void handle_check_parent_object_exists(int r);
-  void fetch_from_s3_with_lock();
-  void handle_lock_parent_object(int r);
-  void try_preempt_backfill_lock();
-  void handle_list_lock_holders(int r);
-  void handle_break_backfill_lock(int r);
-  void retry_read_from_parent();
-  void fetch_from_s3_async();
+  void fetch_from_s3();
   void handle_s3_fetch(int r);
-  void unlock_parent_object();
   void fire_parent_s3_writeback();
 };
 
