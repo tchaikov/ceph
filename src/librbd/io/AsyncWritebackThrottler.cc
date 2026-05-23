@@ -323,8 +323,26 @@ bool AsyncWritebackThrottler::try_submit(librados::IoCtx& ioctx,
   // Construct outside m_lock to keep critical section tight.  The SM
   // owns its own lifetime (delete this on finish); throttler counters
   // decrement via on_writeback_complete() called from finish().
-  auto req = new WritebackRequest(m_cct, this, ioctx, parent_oid,
-                                  object_no, std::move(data), image_id);
+  //
+  // Roll back the counter bumps if construction throws (bad_alloc, or
+  // an internal allocation in the stringify/concat in the ctor).
+  // Without rollback, m_in_flight monotonically drifts up; eventually
+  // every try_submit hits the cap, and wait_for_idle blocks forever
+  // because no SM exists to call on_writeback_complete.
+  WritebackRequest *req = nullptr;
+  try {
+    req = new WritebackRequest(m_cct, this, ioctx, parent_oid,
+                               object_no, std::move(data), image_id);
+  } catch (...) {
+    Mutex::Locker locker(m_lock);
+    ceph_assert(m_in_flight > 0);
+    --m_in_flight;
+    m_bytes_in_flight -= data_bytes;
+    if (m_in_flight == 0) {
+      m_idle_cond.Signal();
+    }
+    throw;
+  }
   req->send();
   return true;
 }

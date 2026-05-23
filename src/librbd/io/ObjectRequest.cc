@@ -213,6 +213,11 @@ ObjectReadRequest<I>::ObjectReadRequest(I *ictx, const std::string &oid,
 }
 
 template <typename I>
+ObjectReadRequest<I>::~ObjectReadRequest() {
+  m_cancelled->store(true);
+}
+
+template <typename I>
 void ObjectReadRequest<I>::send() {
   I *image_ctx = this->m_ictx;
   ldout(image_ctx->cct, 20) << dendl;
@@ -473,10 +478,19 @@ void ObjectReadRequest<I>::read_from_s3() {
     m_s3_fetcher = image_ctx->s3_fetcher;
   }
 
-  using klass = ObjectReadRequest<I>;
-  Context *ctx = util::create_context_callback<klass, &klass::handle_read_from_s3>(this);
+  // Guard the callback against ImageCtx teardown: if the owning
+  // ImageCtx is destroyed before the S3 worker fires our completion,
+  // the cancel flag (captured by shared_ptr value) stays alive and
+  // tells the worker's lambda to bail before dereferencing `this`,
+  // which now points at freed memory.  Mirrors CopyupRequest.cc.
+  auto cancelled = m_cancelled;
+  auto ctx = new FunctionContext([this, cancelled](int r) {
+    if (cancelled->load()) return;
+    handle_read_from_s3(r);
+  });
 
-  m_s3_fetcher->fetch_url(s3_url, m_read_data, ctx, byte_start, byte_length);
+  m_s3_fetcher->fetch_url(s3_url, m_read_data, ctx, byte_start, byte_length,
+                          m_cancelled);
 }
 
 template <typename I>
@@ -503,8 +517,14 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
       this->finish(-ENOENT);
       return;
     }
-    lderr(cct) << "failed to fetch from S3: " << cpp_strerror(r) << dendl;
-    this->finish(r);
+    // Transient S3 failure (5xx, network blip, TLS reset).  Try one
+    // RADOS read of m_oid before surfacing EIO to the caller — a peer's
+    // throttler-owned writeback may have populated the parent oid
+    // during our failure window.  Leaf path: never re-enters S3.
+    lderr(cct) << "failed to fetch from S3: " << cpp_strerror(r)
+               << "; attempting one RADOS fallback read of " << this->m_oid
+               << dendl;
+    try_rados_fallback_on_s3_error(r);
     return;
   }
 
@@ -573,6 +593,48 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
   }
 
   this->finish(0);
+}
+
+template <typename I>
+void ObjectReadRequest<I>::try_rados_fallback_on_s3_error(int s3_err) {
+  I *image_ctx = this->m_ictx;
+  m_s3_fallback_err = s3_err;
+
+  // Single bounded RADOS read of m_oid.  If a peer's throttler-owned
+  // writeback landed during our S3 failure window, this read returns
+  // the data and we surface success to the caller.  If RADOS misses
+  // too, handle_rados_fallback propagates the original S3 error.
+  m_read_data->clear();
+  librados::ObjectReadOperation op;
+  op.read(this->m_object_off, this->m_object_len, m_read_data, nullptr);
+  op.set_op_flags2(m_op_flags);
+
+  using klass = ObjectReadRequest<I>;
+  librados::AioCompletion *rados_completion =
+    util::create_rados_callback<klass, &klass::handle_rados_fallback>(this);
+  int flags = image_ctx->get_read_flags(this->m_snap_id);
+  int r = image_ctx->data_ctx.aio_operate(
+      this->m_oid, rados_completion, &op, flags, nullptr,
+      (this->m_trace.valid() ? this->m_trace.get_info() : nullptr));
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+template <typename I>
+void ObjectReadRequest<I>::handle_rados_fallback(int r) {
+  I *image_ctx = this->m_ictx;
+  auto cct = image_ctx->cct;
+  if (r >= 0) {
+    ldout(cct, 10) << "RADOS fallback recovered " << m_read_data->length()
+                   << " bytes after S3 fetch error "
+                   << cpp_strerror(m_s3_fallback_err) << dendl;
+    this->finish(0);
+    return;
+  }
+  ldout(cct, 5) << "RADOS fallback also failed (" << cpp_strerror(r)
+                << "); surfacing original S3 error "
+                << cpp_strerror(m_s3_fallback_err) << dendl;
+  this->finish(m_s3_fallback_err);
 }
 
 /** write **/

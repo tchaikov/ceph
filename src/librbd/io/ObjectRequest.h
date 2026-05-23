@@ -117,7 +117,10 @@ public:
                     ceph::bufferlist* read_data, ExtentMap* extent_map,
                     Context *completion);
 
-  ~ObjectReadRequest() override = default;
+  // Set m_cancelled BEFORE the base ~ObjectRequest runs so any
+  // still-pending S3 fetch worker callback (captured m_cancelled by
+  // shared_ptr value) bails before dereferencing `this`.
+  ~ObjectReadRequest() override;
 
   void send() override;
 
@@ -158,6 +161,15 @@ private:
   // is closed concurrently (e.g., during flatten).
   std::shared_ptr<S3ObjectFetcher> m_s3_fetcher;
 
+  // Cancellation flag passed to S3ObjectFetcher::fetch_url so that an
+  // in-flight S3 worker can bail before it dereferences this ObjectRead
+  // Request (or, transitively, image_ctx fields like perfcounter)
+  // after the owning ImageCtx has been closed.  Captured by value
+  // (shared_ptr) into the fetcher's worker context; survives this
+  // request's destruction.  Mirrors CopyupRequest::m_cancelled.
+  std::shared_ptr<std::atomic<bool>> m_cancelled{
+    std::make_shared<std::atomic<bool>>(false)};
+
   void read_object();
   void handle_read_object(int r);
 
@@ -175,6 +187,18 @@ private:
   bool should_read_from_s3();
   void read_from_s3();
   void handle_read_from_s3(int r);
+
+  // On a transient S3 fetch failure (5xx, network blip — anything not
+  // -ENOENT / -EINVAL which indicates a sparse-image legitimate miss),
+  // try ONE RADOS read of m_oid before propagating the error.  A peer's
+  // throttler-owned writeback may have populated the parent oid during
+  // our S3 failure window; if so we serve the peer's data instead of
+  // returning the S3 error to a guest VM as EIO.  Stashed S3 error
+  // surfaces only if RADOS also misses.  Leaf path: ALWAYS calls
+  // this->finish(); never re-enters S3.
+  int m_s3_fallback_err = 0;
+  void try_rados_fallback_on_s3_error(int s3_err);
+  void handle_rados_fallback(int r);
 };
 
 template <typename ImageCtxT = ImageCtx>

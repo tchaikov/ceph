@@ -781,13 +781,29 @@ void CopyupRequest<I>::fetch_from_s3() {
   // which means they share the curl connection pool (via the CURLSH* inside
   // the fetcher).  HTTP keep-alive connections are reused across COW requests
   // targeting the same S3 endpoint instead of paying TCP+TLS setup each time.
-  if (!m_image_ctx->parent->s3_fetcher) {
-    m_image_ctx->parent->s3_fetcher =
-      std::make_shared<S3ObjectFetcher>(cct, s3_config, m_image_ctx->parent->get_object_size());
-  }
-  // Take a shared ref so the fetcher stays alive even if the parent is
-  // detached (flatten) before the async pthread completes.
+  //
+  // Double-checked init: parent_locker is an RWLock R-locker (multiple
+  // CopyupRequests can hold it concurrently).  Mutating
+  // parent->s3_fetcher under only an R-lock raced non-atomic shared_ptr
+  // writes (two threads pass the null check, both make_shared, last
+  // write wins and the other shared_ptr leaks its refcount — UB).
+  // Mirror ObjectReadRequest's pattern: take the PARENT's snap_lock W
+  // for the slow path, re-check under W, then drop W.  Lock ordering:
+  // child.parent_lock(R) → parent.snap_lock(W); safe because nothing
+  // takes them in the reverse order (parent doesn't reach into its
+  // children's parent_lock).
   m_s3_fetcher = m_image_ctx->parent->s3_fetcher;
+  if (!m_s3_fetcher) {
+    RWLock::WLocker parent_snap_wlocker(m_image_ctx->parent->snap_lock);
+    if (!m_image_ctx->parent->s3_fetcher) {
+      m_image_ctx->parent->s3_fetcher = std::make_shared<S3ObjectFetcher>(
+          cct, s3_config, m_image_ctx->parent->get_object_size());
+    }
+    m_s3_fetcher = m_image_ctx->parent->s3_fetcher;
+  }
+  // m_s3_fetcher now holds an independent shared ref so the fetcher
+  // stays alive even if the parent is detached (flatten) before our
+  // async fetch completes.
 
   std::string s3_url = s3_config.build_url();
 

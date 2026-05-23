@@ -432,6 +432,18 @@ void S3ObjectFetcher::complete_and_destroy(FetchContext* ctx, int result) {
   curl_slist_free_all(ctx->headers);
   curl_easy_cleanup(ctx->curl_handle);
 
+  // Cache BEFORE removing from in-flight, so a concurrent fetch_url for
+  // the same key sees AT LEAST ONE of the two maps populated for the
+  // entire transition.  Pre-fix order (erase-then-cache) had a window
+  // where neither map had the entry; a fetch_url in that window would
+  // become primary and issue a redundant S3 GET, defeating the dedup
+  // ceiling that perf_test_concurrent_read_dedup enforces.  The cache
+  // entry is harmless even if no future read hits it; it just sits in
+  // the LRU until TTL/eviction.
+  if (result == 0) {
+    cache_recent(ctx->coalesce_key, *ctx->out_bl);
+  }
+
   std::vector<std::pair<bufferlist*, Context*>> waiters;
   {
     std::lock_guard<std::mutex> lock(m_inflight_mutex);
@@ -440,13 +452,6 @@ void S3ObjectFetcher::complete_and_destroy(FetchContext* ctx, int result) {
       waiters = std::move(ctx->waiters);
       m_inflight.erase(it);
     }
-  }
-
-  // Recent-cache the result BEFORE firing callbacks.  Doing it before
-  // means a callback's continuation (e.g., ObjectReadRequest::finish ->
-  // delete this -> another read of the same object) can hit the cache.
-  if (result == 0) {
-    cache_recent(ctx->coalesce_key, *ctx->out_bl);
   }
 
   // Copy bytes to ALL waiters BEFORE firing ANY callback.  Critical
