@@ -161,11 +161,20 @@ int execute_list(const po::variables_map &vm,
     bufferlist out_bl;
   };
 
+  // Per-image cap on backfill_* keys to read.  Today only two keys exist
+  // (BACKFILL_SCHEDULED_KEY, BACKFILL_STATUS_KEY); 16 leaves headroom for
+  // future additions (priority, retries, progress, etc.) without requiring
+  // every reader of this code to revisit the cap.  The cap is a prefix-
+  // scan limit, not a hard schema constraint, so under-reading silently
+  // drops trailing keys -- watch this if backfill_ ever grows past 16.
+  constexpr int MAX_BACKFILL_KEYS_PER_IMAGE = 16;
   std::vector<PendingRead> pending(images.size());
   for (size_t i = 0; i < images.size(); ++i) {
     pending[i].image_name = images[i].name;
     pending[i].c = librados::Rados::aio_create_completion();
-    librbd::cls_client::metadata_list_start(&pending[i].op, rbd::backfill::BACKFILL_META_NS, 5);
+    librbd::cls_client::metadata_list_start(
+        &pending[i].op, rbd::backfill::BACKFILL_META_NS,
+        MAX_BACKFILL_KEYS_PER_IMAGE);
     io_ctx.aio_operate(std::string(RBD_HEADER_PREFIX) + images[i].id,
                        pending[i].c, &pending[i].op, &pending[i].out_bl);
   }
@@ -209,10 +218,19 @@ int execute_list(const po::variables_map &vm,
       continue;
     }
 
-    std::string status_value = "unknown";
+    // Fall back to the scheduled-key value when backfill_status is absent.
+    // Normal flow (execute_schedule) sets both keys atomically, but direct
+    // image-meta manipulation (or a future tool that bumps the scheduled
+    // key without setting status) can leave one without the other.
+    // Showing "unknown" in that case confused operators -- the image IS in
+    // a known scheduled/in_progress state, just missing the explicit
+    // status mirror.
+    std::string status_value;
     auto status_it = pairs.find(rbd::backfill::BACKFILL_STATUS_KEY);
     if (status_it != pairs.end()) {
       status_value = status_it->second.to_str();
+    } else {
+      status_value = sched_value;
     }
 
     if (formatter.get()) {

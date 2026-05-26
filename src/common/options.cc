@@ -7752,7 +7752,11 @@ static std::vector<Option> get_rbd_mirror_options() {
                           "hottest object refetched 120 times because evicted "
                           "entries were re-fetched from S3 instead of in-process "
                           "cache.  A value of 512 (2 GB cap) fits typical VM-boot "
-                          "working sets and eliminates the refetch amplification."),
+                          "working sets and eliminates the refetch amplification.  "
+                          "NOTE: takes effect on the next ImageCtx open -- existing "
+                          "S3ObjectFetcher instances cache the value at construction "
+                          "time, so `ceph config set` on a running process does not "
+                          "resize existing caches."),
 
     Option("rbd_s3_readahead_objects", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(2)

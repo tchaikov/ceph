@@ -521,6 +521,11 @@ void CloneRequest<I>::handle_metadata_list(int r) {
         ldout(m_cct, 10) << "skipping S3 metadata key: " << key << dendl;
         continue;
       }
+      // Literal must stay in sync with rbd::backfill::BACKFILL_META_NS in
+      // src/tools/rbd_backfill/Types.h.  We can't include that header
+      // here -- the rbd_backfill tool tree depends on librbd, not the
+      // reverse -- so this is duplicated by design.  If the constant is
+      // ever renamed there, update this filter to match.
       if (boost::starts_with(key, "backfill_")) {
         ldout(m_cct, 10) << "skipping backfill metadata key: " << key << dendl;
         continue;

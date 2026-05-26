@@ -198,17 +198,25 @@ void BackfillDaemon::shutdown() {
   }
 
   // Destroy the ImageBackfillers BEFORE m_threads.reset() / m_rados.shutdown().
-  // ~ImageBackfiller calls m_image_ctx->state->close(), which in turn fires
-  // ManagedLock::complete_shutdown asynchronously onto librbd's ThreadPool
-  // (the tp_librbd worker).  That callback ends up in Watcher::unregister_watch
-  // → Mutex::lock on a Watcher mutex that lives inside the ImageCtx.  If we
-  // let `to_stop` go out of scope at function-end (i.e. AFTER m_rados.shutdown
-  // disconnects the IoCtx the image_ctx was opened against), the in-flight
-  // callback runs against a half-destroyed image and Mutex::lock fails its
-  // ceph_assert(r == 0) — the daemon then hangs forever in abort()'s event
-  // dump because m_rados is already torn down.  Closing here (synchronously,
-  // since ImageState::close blocks until its SaferCond fires) drains all
-  // librbd async cleanup before we yank the rados connection out from under it.
+  // For mid-flight backfillers that have NOT yet reached run_backfill's
+  // proactive close, ~ImageBackfiller -> close_image_if_open() does the
+  // close here.  For backfillers that ran to completion, the close
+  // already happened in run_backfill so close_image_if_open() is a no-op.
+  // In both cases the close path fires ManagedLock::complete_shutdown
+  // asynchronously onto librbd's ThreadPool (tp_librbd) -- the callback
+  // ends up in Watcher::unregister_watch -> Mutex::lock on a Watcher
+  // mutex inside the ImageCtx.  If we let `to_stop` go out of scope at
+  // function-end (AFTER m_rados.shutdown disconnects the IoCtx the
+  // image_ctx was opened against), the in-flight callback runs against
+  // a half-destroyed image and Mutex::lock fails its ceph_assert -- the
+  // daemon then hangs forever in abort()'s event dump because m_rados
+  // is already torn down.  Closing here (synchronously, since
+  // ImageState::close blocks until its SaferCond fires) drains all
+  // librbd async cleanup before we yank the rados connection out from
+  // under it.  Both classes of backfiller go through to_stop.clear()
+  // for that ordering invariant -- the post-completion path just
+  // happens to find m_image_ctx null and short-circuit, which is
+  // still the same teardown order.
   to_stop.clear();
 
   if (m_throttler) {
