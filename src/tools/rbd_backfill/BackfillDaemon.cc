@@ -358,21 +358,40 @@ int BackfillDaemon::discover_scheduled_images(std::vector<ImageSpec>* new_specs)
         }
         std::string scheduled_value = sched_it->second.to_str();
 
-        if (scheduled_value == BACKFILL_SCHED_IN_PROGRESS) {
-          // Another daemon instance already claimed this image — skip it.
-          dout(10) << "image "
-                   << format_image_path(pool_name, ns, p.image_spec->name)
-                   << " is already claimed by another daemon instance, skipping" << dendl;
+        // Adopt images at "in_progress" in addition to "true".  Two ways
+        // an image gets stuck at in_progress with no live owner: (a) the
+        // previously running daemon crashed mid-backfill, (b) the daemon
+        // completed but metadata_remove(BACKFILL_SCHEDULED_KEY) at
+        // ImageBackfiller.cc:228 failed -- the warning is logged but the
+        // image is left at {status=complete, scheduled=in_progress}.
+        // Pre-fix discover_scheduled_images unconditionally skipped
+        // in_progress, permanently orphaning these images.  Now we re-
+        // adopt them.  The already_running.count(spec) check below
+        // handles dedup against in-process backfillers we already
+        // started; the per-object stat-skip at ImageBackfiller.cc:275
+        // makes re-backfilling an already-complete image cheap (no S3
+        // re-fetches); the metadata transition at the end of
+        // run_backfill self-corrects the failed metadata_remove on the
+        // next pass.  Multi-daemon caveat: this design assumes one
+        // daemon per cluster (the pseudo-CAS at line 385 has always
+        // been racy); two concurrent daemons would both adopt and
+        // duplicate work for orphaned in_progress images.
+        if (scheduled_value != BACKFILL_SCHED_TRUE &&
+            scheduled_value != BACKFILL_SCHED_IN_PROGRESS) {
           continue;
         }
-
-        if (scheduled_value != BACKFILL_SCHED_TRUE) {
-          continue;
+        if (scheduled_value == BACKFILL_SCHED_IN_PROGRESS) {
+          dout(5) << "found orphaned in_progress image "
+                  << format_image_path(pool_name, ns, p.image_spec->name)
+                  << " (previous daemon crashed or metadata_remove failed); "
+                  << "will adopt if not already running" << dendl;
         }
 
         // Claim the image: open it and transition "true" → "in_progress" so
         // a second daemon instance starting concurrently sees "in_progress".
         // This is not a true CAS but the race window is negligible in practice.
+        // For an image already at "in_progress" this transition is a no-op
+        // write (idempotent re-adoption).
         librbd::Image image;
         r = rbd.open(ioctx, image, p.image_spec->name.c_str());
         if (r < 0) {
@@ -456,9 +475,31 @@ int BackfillDaemon::start_image_backfillers(const std::vector<ImageSpec>& specs)
     }
 
     backfiller->create("img_backfill");
+    bool shutting_down = false;
     {
       Mutex::Locker locker(m_lock);
-      m_image_backfillers[spec] = std::move(backfiller);
+      // Re-check m_shutdown UNDER m_lock so the insert is atomic with
+      // the check.  Without this, shutdown() can flip m_shutdown and
+      // clear m_image_backfillers between rescan_tick's pre-check and
+      // this insert; we'd then leave a stray entry that
+      // ~BackfillDaemon's ceph_assert(m_image_backfillers.empty())
+      // would catch and abort the process.
+      if (m_shutdown.load()) {
+        shutting_down = true;
+      } else {
+        m_image_backfillers[spec] = std::move(backfiller);
+      }
+    }
+    if (shutting_down) {
+      // Thread already created above; stop()+join before backfiller
+      // unique_ptr destructs.  ~ImageBackfiller releases the
+      // proactively-opened ImageCtx; on_finish fires (and self-deletes)
+      // via run_backfill's idle loop on the way out of stop().
+      dout(10) << "shutdown in progress; aborting backfiller insert for "
+               << format_image_path(spec.pool_name, spec.namespace_name,
+                                    spec.image_name) << dendl;
+      backfiller->stop();
+      continue;
     }
 
     dout(5) << "started backfiller for "
@@ -554,6 +595,22 @@ void BackfillDaemon::rescan_tick() {
   }
 
   // Step 2: discover newly scheduled images and start backfillers for them.
+  //
+  // Re-check m_shutdown HERE before touching m_image_backfillers again.
+  // The schedule_rescan FunctionContext checks m_shutdown ONCE before
+  // calling rescan_tick (BackfillDaemon.cc schedule_rescan body); if
+  // shutdown() runs while step 1 is in flight, the daemon's main thread
+  // takes m_lock, moves all backfillers out, clears the map, drops the
+  // lock, then resets m_throttler.  Without this re-check, step 2's
+  // start_image_backfillers would insert a NEW backfiller (constructed
+  // with the now-dangling m_throttler.get() at start_image_backfillers
+  // line 443) into the just-cleared map -- and ~BackfillDaemon's
+  // ceph_assert(m_image_backfillers.empty()) would abort the process.
+  if (m_shutdown.load()) {
+    dout(10) << "rescan: shutdown in progress, skipping step 2" << dendl;
+    return;
+  }
+
   std::vector<ImageSpec> new_specs;
   int r = discover_scheduled_images(&new_specs);
   if (r < 0) {
