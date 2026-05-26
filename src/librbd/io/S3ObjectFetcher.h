@@ -202,11 +202,16 @@ private:
   // Throttler's RADOS-populate window (~100-300 ms), so once the cache
   // entry expires the natural RADOS read path is warm.
   //
-  // Entry cap of 32 × 4 MB = 128 MB worst case per process; bufferlist's
-  // shallow copy means real memory is typically much less (refcounted
-  // buffer sharing with curl's response buffers).
-  static constexpr size_t RECENT_FETCH_MAX_ENTRIES = 32;
+  // Entry cap is read from rbd_s3_lru_max_entries at construction
+  // (default 32: 32 * 4 MB = 128 MB worst case per process).  Tune up
+  // for high-fanout VM-boot workloads with random access patterns:
+  // 14-VM concurrent boot logs showed a single VM touching 251 unique
+  // 4 MB objects, with the hot object refetched 120 times because LRU
+  // evictions defeated the dedup.  Operators with available memory
+  // can set this to fit the working set (e.g., 512 for a 2 GB cap)
+  // and eliminate the refetch amplification.
   static constexpr uint32_t RECENT_FETCH_TTL_MS = 2000;
+  size_t m_recent_max_entries;
   struct CachedEntry {
     // shared_ptr so multiple concurrent readers can copy out of the same
     // underlying bufferlist without holding the cache mutex.

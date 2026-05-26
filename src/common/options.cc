@@ -7738,6 +7738,22 @@ static std::vector<Option> get_rbd_mirror_options() {
                           "Set to 0 for the legacy unbounded wait — only safe if all "
                           "your OSDs are reliably responsive."),
 
+    Option("rbd_s3_lru_max_entries", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(32)
+    .set_min_max(1, 4096)
+    .set_description("max entries in the in-process S3 fetch LRU cache")
+    .set_long_description("Each entry holds one fetched object (typically 4 MB). "
+                          "Default 32 = 128 MB worst case per process; safe for "
+                          "single-VM workloads.  Raise for high-fanout VM-boot "
+                          "scenarios on large parents where random read patterns "
+                          "evict LRU entries that are about to be revisited.  In "
+                          "14-VM concurrent boot tests against a 16 GB parent, "
+                          "individual VMs touched 251 unique 4 MB objects with the "
+                          "hottest object refetched 120 times because evicted "
+                          "entries were re-fetched from S3 instead of in-process "
+                          "cache.  A value of 512 (2 GB cap) fits typical VM-boot "
+                          "working sets and eliminates the refetch amplification."),
+
     Option("rbd_s3_readahead_objects", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(2)
     .set_min_max(0, 32)

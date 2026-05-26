@@ -64,7 +64,8 @@ S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config,
                                       s3_config.region, "s3")),
     m_object_size(object_size),
     m_verify_ssl(cct->_conf.get_val<bool>("rbd_s3_verify_ssl")),
-    m_max_download_bps(cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps")) {
+    m_max_download_bps(cct->_conf.get_val<int64_t>("rbd_s3_max_download_bps")),
+    m_recent_max_entries(cct->_conf.get_val<uint64_t>("rbd_s3_lru_max_entries")) {
   // Pre-compute URL, host, and URI once at construction — used on every fetch.
   m_cached_url  = m_s3_config.build_url();
   m_cached_host = extract_host_from_url(m_cached_url);
@@ -552,7 +553,7 @@ void S3ObjectFetcher::cache_recent(const std::string& key,
   m_recent_index[key] = std::prev(m_recent_lru.end());
 
   // Trim LRU to the cap.  Eviction is from the front (oldest).
-  while (m_recent_lru.size() > RECENT_FETCH_MAX_ENTRIES) {
+  while (m_recent_lru.size() > m_recent_max_entries) {
     m_recent_index.erase(m_recent_lru.front().first);
     m_recent_lru.pop_front();
   }
