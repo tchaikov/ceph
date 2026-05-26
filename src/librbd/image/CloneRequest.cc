@@ -505,13 +505,24 @@ void CloneRequest<I>::handle_metadata_list(int r) {
   }
 
   if (!metadata.empty()) {
-    // Filter out S3 metadata - child clones should not inherit S3 configuration
-    // from parent images. S3 metadata is specific to the parent's storage and
-    // should not be copied to child clones which read data through normal RBD CoW.
+    // Filter out namespaces that name per-image state rather than image data:
+    //   - S3 metadata ("s3.*"): identifies the parent's S3 backend; the child
+    //     reads data through normal RBD CoW, never directly from S3.
+    //   - Backfill metadata ("backfill_*"): keys like backfill_scheduled and
+    //     backfill_status (src/tools/rbd_backfill/Types.h) are state markers
+    //     for the rbd-backfill daemon's per-image work list.  Inheriting them
+    //     makes a freshly-created standalone clone get spuriously enqueued for
+    //     backfill the moment it's created on top of a parent that happens to
+    //     be mid-schedule, doubling daemon work and confusing `rbd backfill
+    //     list`.  Detected as bug 2 in the rbd-standalone-clone branch review.
     for (const auto& kv : metadata) {
       const std::string& key = kv.first;
       if (boost::starts_with(key, librbd::S3_META_NS)) {
         ldout(m_cct, 10) << "skipping S3 metadata key: " << key << dendl;
+        continue;
+      }
+      if (boost::starts_with(key, "backfill_")) {
+        ldout(m_cct, 10) << "skipping backfill metadata key: " << key << dendl;
         continue;
       }
       m_pairs.insert(kv);

@@ -194,8 +194,18 @@ int execute_list(const po::variables_map &vm,
     }
 
     auto sched_it = pairs.find(rbd::backfill::BACKFILL_SCHEDULED_KEY);
-    if (sched_it == pairs.end() ||
-        sched_it->second.to_str() != rbd::backfill::BACKFILL_SCHED_TRUE) {
+    if (sched_it == pairs.end()) {
+      continue;
+    }
+    // Accept both BACKFILL_SCHED_TRUE (pending discovery) and
+    // BACKFILL_SCHED_IN_PROGRESS (claimed by a daemon, currently backfilling).
+    // The daemon flips "true" -> "in_progress" at claim time
+    // (BackfillDaemon.cc); filtering only on "true" hides an actively
+    // backfilling image from `rbd backfill list` and confuses operators
+    // about whether the daemon picked up their request.
+    const std::string sched_value = sched_it->second.to_str();
+    if (sched_value != rbd::backfill::BACKFILL_SCHED_TRUE &&
+        sched_value != rbd::backfill::BACKFILL_SCHED_IN_PROGRESS) {
       continue;
     }
 
