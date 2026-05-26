@@ -516,6 +516,44 @@ void BackfillDaemon::schedule_rescan() {
 // Must be called WITHOUT timer_lock held — pool_list2 / discover do RADOS
 // ops that can take seconds.
 void BackfillDaemon::rescan_tick() {
+  // Step 1: prune completed backfillers from m_image_backfillers.
+  //
+  // Each ImageBackfiller proactively closes its ImageCtx after backfill
+  // work finishes (releasing the RADOS watcher) but keeps its thread
+  // alive in an idle loop waiting for stop().  Without this prune, the
+  // map grows monotonically and rescheduling the same image gets
+  // silently skipped by discover_scheduled_images (which treats every
+  // map entry as already-running).  Cleanup runs on the rescan thread
+  // -- a different thread context than the backfiller's own thread --
+  // so the stop()/join() pair below is UAF-safe.
+  std::vector<std::unique_ptr<ImageBackfiller>> to_destroy;
+  {
+    Mutex::Locker locker(m_lock);
+    for (auto it = m_image_backfillers.begin();
+         it != m_image_backfillers.end(); ) {
+      if (it->second->is_done()) {
+        dout(10) << "rescan: pruning completed backfiller for "
+                 << format_image_path(it->first.pool_name,
+                                      it->first.namespace_name,
+                                      it->first.image_name) << dendl;
+        to_destroy.push_back(std::move(it->second));
+        it = m_image_backfillers.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (auto& backfiller : to_destroy) {
+    // stop() signals the idle loop, joins the thread, and fires m_on_finish.
+    // m_on_finish -> handle_image_complete acquires m_lock, finds the entry
+    // missing (we already erased it above), logs "already removed", and
+    // returns.  Then unique_ptr destruction runs ~ImageBackfiller, whose
+    // close_image_if_open() is a no-op because we already closed in
+    // run_backfill.
+    backfiller->stop();
+  }
+
+  // Step 2: discover newly scheduled images and start backfillers for them.
   std::vector<ImageSpec> new_specs;
   int r = discover_scheduled_images(&new_specs);
   if (r < 0) {

@@ -44,7 +44,10 @@ ImageBackfiller::ImageBackfiller(CephContext *cct,
 
 ImageBackfiller::~ImageBackfiller() {
   dout(10) << dendl;
+  close_image_if_open();
+}
 
+void ImageBackfiller::close_image_if_open() {
   if (m_image_ctx) {
     // librbd::ImageState<I>::close() takes ownership of the ImageCtx and
     // deletes it via `delete m_image_ctx` after the close completes (see
@@ -232,6 +235,22 @@ void ImageBackfiller::run_backfill() {
               << cpp_strerror(mr) << dendl;
     }
   }
+
+  // Release the ImageCtx (and its RADOS watcher on the image header)
+  // RIGHT NOW, before idling.  Without this, the watcher lives until the
+  // daemon shuts down — `rbd rm base` after backfill completes (with or
+  // without a subsequent `rbd backfill cancel`) fails because RADOS
+  // refuses removal while a watcher is registered.  Bug 1 in the
+  // rbd-standalone-clone branch user-report set.
+  //
+  // The backfiller's thread continues running (the idle loop below
+  // remains, waiting for stop() so the existing per-image completion
+  // callback chain stays intact).  Only m_image_ctx is freed; m_lock,
+  // m_cond, m_stopping, and the counters used by m_on_finish below are
+  // members and remain valid.  Mark m_done so BackfillDaemon::rescan_tick
+  // can prune us from m_image_backfillers and reclaim the map slot.
+  close_image_if_open();
+  m_done.store(true);
 
   // Keep daemon running - enter idle state waiting for shutdown signal
   // Don't call m_on_finish->complete() - that would trigger daemon shutdown

@@ -46,6 +46,16 @@ public:
   // Thread interface
   void *entry() override;
 
+  // True iff run_backfill has finished its object-copy loop AND closed
+  // the open ImageCtx (releasing the RADOS watcher on the header).  The
+  // backfiller thread is still alive (idling for stop()), but the daemon
+  // can safely prune it from m_image_backfillers and join+destroy it on
+  // the next rescan tick.  Required for the cancel-after-completion
+  // scenario: without proactive image close, `rbd rm base` after
+  // `rbd backfill cancel base` fails because the daemon's watcher
+  // outlives the backfill work.
+  bool is_done() const { return m_done.load(); }
+
 private:
   void run_backfill();
   void backfill_object(uint64_t object_no);
@@ -64,12 +74,19 @@ private:
   std::unique_ptr<librbd::io::S3ObjectFetcher> m_s3_fetcher;
 
   std::atomic<bool> m_stopping{false};
+  std::atomic<bool> m_done{false};
   Mutex m_lock;
   Cond m_cond;
 
   uint64_t m_num_objects = 0;
   std::atomic<uint64_t> m_completed_objects{0};
   std::atomic<uint64_t> m_failed_objects{0};
+
+  // Close the open ImageCtx and unregister the RADOS watcher.  Idempotent --
+  // both proactive (post-backfill) close and the destructor call this; the
+  // second call is a no-op because release()-then-close also nulls the
+  // unique_ptr's stored pointer.
+  void close_image_if_open();
 
 };
 
