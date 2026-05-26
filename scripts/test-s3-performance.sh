@@ -75,6 +75,7 @@ ALL_TESTS=(
     perf_test_daemon_throughput
     perf_test_vm_boot_scaling
     perf_test_scattered_random_reads_concurrent
+    perf_test_post_backfill_zero_no_s3
 )
 
 if [ "$LIST_ONLY" = "1" ]; then
@@ -732,6 +733,138 @@ perf_test_scattered_random_reads_concurrent() {
         return 1
     fi
     log_success "$name: per-read latency $per_read_ms ms within budget"
+    return 0
+}
+
+# ============================================================================
+# Test 9 — post-backfill perf on mostly-zero parent (user-reported scenario)
+# ============================================================================
+# Mimics the user's "VM image with allocated head + zero tail" workload.  A
+# typical cloud VM image has a small populated head (kernel, initrd, root
+# FS) and a large zero tail (allocated but unused disk).  After running
+# rbd-backfill to completion:
+#   - non-zero blocks were copied to the parent's RADOS pool
+#   - zero blocks were skipped by ObjectBackfillRequest's is_zero()
+#     optimization (no write_full, no object_map update)
+#   - backfill_status = "complete" -> ImageCtx::s3_backfill_complete = true
+#
+# Pre-fix (before commits 9a6d00e + 923f03b), random reads from a child
+# clone would still go to S3 for every zero-block read, because the
+# parent's read_object short-circuit was suppressed for S3-backed images
+# and handle_read_object's ENOENT branch unconditionally fell through to
+# should_read_from_s3 -> S3 GET.  Under N-VM concurrency this dominated
+# wall time as the throttler kept dropping over-cap writes, locking
+# clients into a refetch loop.
+#
+# Post-fix: zero-block reads short-circuit at handle_read_object's
+# ENOENT branch when s3_backfill_complete is set -- finish(-ENOENT) and
+# the upper librbd layer zero-fills the child read.  Zero S3 traffic.
+#
+# Asserts: s3_get_count == 0.  Wall time is recorded as a trend metric
+# (varies with host RADOS latency; not asserted).
+perf_test_post_backfill_zero_no_s3() {
+    local name="post_backfill_zero_no_s3"
+    local reads=200
+    local io_size=4096
+    local total_bytes=$((reads * io_size))
+
+    # SPARSE_40MB: 40 MB / 10 blocks; only the first 2 blocks are filled.
+    # 8 of 10 blocks (80%) are entirely zero -- close to the
+    # allocated/total ratio of a typical thin-provisioned VM image.
+    log_step "$name: $reads random ${io_size}B reads on backfilled sparse parent (80% zero)"
+
+    setup_fresh_image "$PERF_FIXTURE_SPARSE_40MB" "perf-sparse-40mb.raw"
+
+    # Run rbd-backfill to completion.  With 8 zero blocks skipped, the
+    # daemon only writes the 2 data blocks; should finish in seconds.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$POOL/$PERF_PARENT"
+    local blog
+    blog=$(mktemp /tmp/perf-bf-zero-XXXXXX.log)
+    run_backfill_daemon "$CEPH_CONF" "$blog"
+
+    # Wait for the trust signal (backfill_status=complete).  This is what
+    # ImageCtx::apply_metadata reads to set s3_backfill_complete=true; the
+    # fix's short-circuit depends on it.
+    local complete=0
+    local i
+    for i in $(seq 1 30); do
+        local s
+        s=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+            image-meta get "$POOL/$PERF_PARENT" backfill_status 2>/dev/null \
+            || echo "")
+        if [ "$s" = "complete" ]; then
+            complete=1
+            break
+        fi
+        sleep 1
+    done
+    stop_backfill_daemon
+    rm -f "$blog"
+
+    if [ "$complete" -ne 1 ]; then
+        log_fail "$name: backfill never reached complete within 30s"
+        return 1
+    fi
+
+    # Reset the minio trace AFTER backfill so we only count workload
+    # GETs, not setup GETs from the daemon.  rados_writes snapshot also
+    # taken here to isolate workload-triggered throttler writes (should
+    # be 0 since no S3 GETs -> no handle_read_from_s3 -> no throttler).
+    reset_trace
+    local rados_before
+    rados_before=$(perf_rados_snapshot "$CEPH_CONF" "$POOL")
+
+    local t0
+    t0=$(perf_time_ms)
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" bench \
+        --io-type read \
+        --io-size "$io_size" \
+        --io-total "$total_bytes" \
+        --io-pattern rand \
+        --io-threads 1 \
+        "$POOL/$PERF_CHILD" >/dev/null 2>&1 \
+        || log_warn "$name: bench reported failure (still recording metrics)"
+    local elapsed
+    elapsed=$(perf_time_elapsed_ms "$t0")
+
+    # Brief settle for any async accounting; the workload itself should
+    # not have triggered writebacks (zero S3 GETs -> zero handle_read_
+    # from_s3 -> zero try_submit calls).
+    sleep 1
+
+    local rados_after
+    rados_after=$(perf_rados_snapshot "$CEPH_CONF" "$POOL")
+    local rados_writes
+    rados_writes=$(perf_extract_field "$(perf_rados_delta "$rados_before" "$rados_after")" write_ops)
+
+    local s3_gets
+    s3_gets=$(perf_minio_get_count "$MINIO_TRACE_LOG" "$S3_BUCKET")
+
+    local per_read_ms
+    per_read_ms=$(awk "BEGIN{printf \"%.2f\", $elapsed / $reads}")
+
+    perf_record "$name" reads             "$reads"        count
+    perf_record "$name" io_size_bytes     "$io_size"      bytes
+    perf_record "$name" wall_time_ms      "$elapsed"      ms
+    perf_record "$name" s3_get_count      "$s3_gets"      count
+    perf_record "$name" rados_writes      "$rados_writes" count
+    perf_record "$name" per_read_ms       "$per_read_ms"  ms
+
+    log_info "$name: $elapsed ms wall, $s3_gets S3 GETs, $rados_writes RADOS writes, $per_read_ms ms/read"
+
+    # HARD assertion on the canonical post-backfill invariant.  The fix's
+    # whole point is that backfill+complete should END S3 traffic for the
+    # child -- whether the reads hit data blocks (RADOS HIT via aio_operate)
+    # or zero blocks (short-circuit via handle_read_object ENOENT branch +
+    # s3_backfill_complete).  Any non-zero count means the fix regressed.
+    if [ "$s3_gets" -ne 0 ]; then
+        log_fail "$name: $s3_gets S3 GETs after backfill complete (expected 0)"
+        log_fail "  post-backfill zero-block short-circuit (s3_backfill_complete)"
+        log_fail "  is not eliminating S3 traffic.  Check ImageCtx::s3_backfill_"
+        log_fail "  complete propagation and handle_read_object's ENOENT branch."
+        return 1
+    fi
+    log_success "$name: 0 S3 GETs after backfill complete"
     return 0
 }
 
