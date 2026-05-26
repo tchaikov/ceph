@@ -42,7 +42,9 @@ cleanup() {
     for img in lifecycle-parent integrity-parent naming-parent \
                cache-hit-child cache-hit-parent restart-parent \
                status-trans-parent status-fail-parent \
-               du-backfill-parent du-writeback-parent du-writeback-child; do
+               du-backfill-parent du-writeback-parent du-writeback-child \
+               watcher-release-parent clone-bf-parent clone-bf-child \
+               list-bf-true list-bf-inprog list-bf-done; do
         "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL/$img" 2>/dev/null || true
     done
     "$BUILD_DIR/bin/ceph" --conf "$CEPH_CONF" osd pool delete "$POOL" "$POOL" \
@@ -806,6 +808,228 @@ test_backfill_rescan_picks_up_new_image() {
 }
 
 # ============================================================================
+test_backfill_watcher_released_after_complete() {
+    # Regression for the user-reported bug 1: after backfill completes, the
+    # daemon used to cache the ImageBackfiller in its m_backfillers map
+    # forever, keeping the ImageCtx open with an active RADOS watcher.  The
+    # operator's `rbd rm <base>` then failed because RADOS refuses removal
+    # while a watcher is registered.
+    #
+    # Fix landed in 5fbd0384643: ImageBackfiller closes its ImageCtx
+    # PROACTIVELY right after the metadata update at the end of run_backfill,
+    # releasing the watcher even though the backfiller thread continues to
+    # idle waiting for stop().  This test verifies the watcher is gone
+    # while the daemon is STILL RUNNING.
+
+    local img="$POOL/watcher-release-parent"
+    local size_mb=8        # 2 objects — quick to backfill
+    local raw_file="/tmp/backfill-test-watcher-$$.raw"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
+
+    create_test_image_with_pattern $size_mb "$raw_file"
+    upload_to_s3 "$raw_file" "$S3_BUCKET" "watcher-release.raw"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$img" --size ${size_mb}M
+    set_s3_config "$img" "watcher-release.raw"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$img"
+
+    # Look up the header oid BEFORE the watcher races away so the rados
+    # listwatchers below references the right object.
+    local image_id
+    image_id=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" info "$img" 2>/dev/null \
+        | awk '/id:/ {print $2; exit}')
+    if [ -z "$image_id" ]; then
+        log_fail "could not extract image id from rbd info"
+        return 1
+    fi
+    local header_oid="rbd_header.${image_id}"
+
+    run_backfill_daemon "$CEPH_CONF" "$BACKFILL_LOG"
+
+    local prefix
+    prefix=$(get_block_prefix "$CEPH_CONF" "$POOL" "watcher-release-parent")
+    local expected=$(( (size_mb + 3) / 4 ))
+    if ! wait_for_backfill_complete "$CEPH_CONF" "$POOL" "$prefix" "$expected" 60; then
+        log_fail "backfill did not complete in 60s"
+        stop_backfill_daemon
+        return 1
+    fi
+
+    # Poll for backfill_scheduled cleared — this is the LAST metadata write
+    # done by run_backfill, and the proactive close fires immediately after.
+    local cleared=0
+    for i in $(seq 1 30); do
+        local sched
+        sched=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+            image-meta get "$img" backfill_scheduled 2>/dev/null || echo "")
+        if [ -z "$sched" ]; then
+            cleared=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "$cleared" -ne 1 ]; then
+        log_fail "backfill_scheduled not cleared within 30s of object backfill complete"
+        stop_backfill_daemon
+        return 1
+    fi
+
+    # Watcher should release within ~1s of close_image_if_open() returning.
+    # Poll up to 5s as a generous grace window.
+    local watchers=""
+    local empty=0
+    for i in $(seq 1 5); do
+        watchers=$("$BUILD_DIR/bin/rados" --conf "$CEPH_CONF" -p "$POOL" \
+            listwatchers "$header_oid" 2>/dev/null || true)
+        # Empty output (no watchers) means the daemon released its watcher.
+        # rados listwatchers prints "watcher=<addr>/...client.NNN ..." per watcher.
+        if [ -z "$(echo "$watchers" | grep -E '^watcher=')" ]; then
+            empty=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "$empty" -ne 1 ]; then
+        log_fail "RADOS watcher on $header_oid was not released after backfill complete"
+        log_fail "  (daemon still running; pre-fix behaviour kept watcher until shutdown)"
+        echo "$watchers" | sed 's/^/    /'
+        stop_backfill_daemon
+        return 1
+    fi
+    log_success "watcher on $header_oid released after backfill complete (daemon still running)"
+
+    # Belt-and-braces: rm must succeed even though daemon is still alive.
+    if ! "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null; then
+        log_fail "rbd rm $img failed even though listwatchers reported empty"
+        stop_backfill_daemon
+        return 1
+    fi
+    log_success "rbd rm $img succeeded with daemon still running"
+
+    stop_backfill_daemon
+    rm -f "$raw_file"
+}
+
+# ============================================================================
+test_clone_standalone_drops_backfill_metadata() {
+    # Regression for user-reported bug 2a: after `rbd backfill schedule
+    # basev11`, `rbd clone-standalone basev11 lazyv02-bv11` used to leave
+    # the new clone with the parent's backfill_* metadata keys.  The daemon's
+    # discovery loop then claimed the clone as a separate scheduled image
+    # and tried to backfill it — even though the clone has no S3 backing
+    # of its own.
+    #
+    # Fix landed in fc2a67d32ed (CloneRequest.cc): metadata filter now
+    # excludes both the "s3." and "backfill_" namespaces.  This test sets
+    # the marks on the parent directly (no daemon needed — we only exercise
+    # the clone metadata-copy path) and verifies the child has NO
+    # backfill_* keys after the clone.
+
+    local parent="$POOL/clone-bf-parent"
+    local child="$POOL/clone-bf-child"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child" 2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$parent" --size 4M --object-size 4M
+    # We do NOT need a working S3 config for this test -- only the metadata
+    # filter behaviour is under test.  Set the backfill_* keys directly.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta set "$parent" backfill_scheduled true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta set "$parent" backfill_status scheduled
+    # Sanity: also drop a non-backfill key so we can confirm the filter only
+    # affects backfill keys, not ALL metadata.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta set "$parent" user_marker hello
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" clone-standalone "$parent" "$child"
+
+    # Child must NOT have either backfill_* key.
+    for key in backfill_scheduled backfill_status; do
+        local v
+        v=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta get "$child" "$key" 2>/dev/null || echo "")
+        if [ -n "$v" ]; then
+            log_fail "child inherited $key='$v' from parent (filter regression)"
+            return 1
+        fi
+    done
+    log_success "child does not inherit backfill_scheduled or backfill_status"
+
+    # Non-backfill keys SHOULD still propagate — confirming we filter only
+    # the backfill namespace, not all metadata.  This catches a future
+    # over-eager filter that accidentally strips user metadata too.
+    local user_v
+    user_v=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta get "$child" user_marker 2>/dev/null || echo "")
+    if [ "$user_v" != "hello" ]; then
+        log_fail "child did NOT inherit user_marker (filter over-broad); got '$user_v'"
+        return 1
+    fi
+    log_success "child correctly inherits non-backfill user metadata"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child" 2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
+}
+
+# ============================================================================
+test_backfill_list_shows_in_progress() {
+    # Regression for user-reported bug 2b: `rbd backfill list` filtered on
+    # backfill_scheduled == "true" only, so once the daemon transitioned the
+    # value to "in_progress" (the second daemon claim race-guard), the list
+    # command stopped showing the image — operators saw zero entries while
+    # the daemon was actively backfilling, making them think their schedule
+    # request was lost.
+    #
+    # Fix landed in fc2a67d32ed (Backfill.cc execute_list): accept BOTH
+    # "true" and "in_progress" as visible-to-list.  This test exercises
+    # the filter path directly by setting backfill_scheduled to each value
+    # and verifying the image is enumerated.
+
+    local true_img="$POOL/list-bf-true"
+    local prog_img="$POOL/list-bf-inprog"
+    local done_img="$POOL/list-bf-done"
+
+    for i in "$true_img" "$prog_img" "$done_img"; do
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$i" 2>/dev/null || true
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$i" --size 4M --object-size 4M
+    done
+    # true: visible
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta set "$true_img" backfill_scheduled true
+    # in_progress: visible (the bug 2b fix)
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta set "$prog_img" backfill_scheduled in_progress
+    # complete (scheduled cleared, status=complete): NOT visible
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta set "$done_img" backfill_status complete
+
+    local list_out
+    list_out=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill list --pool "$POOL" 2>&1 \
+                | grep -v -E '^WARNING|^2026|^\*\*\*' || true)
+
+    if ! echo "$list_out" | grep -q "list-bf-true"; then
+        log_fail "image with backfill_scheduled=true MISSING from rbd backfill list"
+        echo "$list_out" | sed 's/^/    /'
+        return 1
+    fi
+    log_success "image with scheduled=true visible in rbd backfill list"
+
+    if ! echo "$list_out" | grep -q "list-bf-inprog"; then
+        log_fail "image with backfill_scheduled=in_progress MISSING from rbd backfill list"
+        log_fail "  (this is the bug 2b regression — pre-fix the filter only matched 'true')"
+        echo "$list_out" | sed 's/^/    /'
+        return 1
+    fi
+    log_success "image with scheduled=in_progress visible in rbd backfill list"
+
+    if echo "$list_out" | grep -q "list-bf-done"; then
+        log_fail "image with cleared backfill_scheduled was SHOWN in list — over-broad filter"
+        echo "$list_out" | sed 's/^/    /'
+        return 1
+    fi
+    log_success "image with cleared backfill_scheduled correctly excluded from list"
+
+    for i in "$true_img" "$prog_img" "$done_img"; do
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$i" 2>/dev/null || true
+    done
+}
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -821,5 +1045,8 @@ run_test "backfill_status_on_failure"  test_backfill_status_on_failure
 run_test "parent_du_after_backfill"         test_parent_du_after_backfill
 run_test "parent_du_after_child_writeback"  test_parent_du_after_child_writeback
 run_test "backfill_rescan_picks_up_new_image" test_backfill_rescan_picks_up_new_image
+run_test "backfill_watcher_released_after_complete" test_backfill_watcher_released_after_complete
+run_test "clone_standalone_drops_backfill_metadata" test_clone_standalone_drops_backfill_metadata
+run_test "backfill_list_shows_in_progress" test_backfill_list_shows_in_progress
 
 print_test_summary
