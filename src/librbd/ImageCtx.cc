@@ -931,6 +931,27 @@ public:
                      << ", format=" << s3_config.image_format << dendl;
     }
 
+    // Track whether rbd-backfill has fully populated this image's RADOS
+    // pool.  When complete, ObjectReadRequest::read_object can trust the
+    // object_map: a NONEXISTENT bit means "known-zero, return ENOENT
+    // without an S3 fetch" instead of "unknown, fall back to S3".  Look
+    // up the key explicitly (cheap O(log N) on the already-fetched map);
+    // we can't reuse the s3_config loop above because that loop filters
+    // on the s3. prefix.  Keep the string literal in sync with
+    // rbd::backfill::BACKFILL_STATUS_KEY / BACKFILL_STATUS_COMPLETE in
+    // src/tools/rbd_backfill/Types.h (librbd cannot include tool-tree
+    // headers).
+    auto backfill_status_it = meta.find("backfill_status");
+    if (backfill_status_it != meta.end()) {
+      const std::string val = backfill_status_it->second.to_str();
+      s3_backfill_complete = (val == "complete");
+      ldout(cct, 10) << __func__ << ": backfill_status=" << val
+                     << " (s3_backfill_complete=" << s3_backfill_complete
+                     << ")" << dendl;
+    } else {
+      s3_backfill_complete = false;
+    }
+
     alloc_hint_flags = 0;
     auto compression_hint = config.get_val<std::string>("rbd_compression_hint");
     if (compression_hint == "compressible") {

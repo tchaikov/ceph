@@ -135,6 +135,16 @@ namespace librbd {
     std::unique_ptr<librados::Rados> remote_parent_cluster;  // RADOS connection for remote parent
     S3Config s3_config;        // S3 configuration for S3-backed parent images
     bool s3_fetch_enabled = false;       // cached from rbd_s3_fetch_enabled config option
+    // True iff rbd-backfill has fully populated this image's parent RADOS
+    // pool (image metadata key backfill_status == "complete" at the last
+    // apply_metadata call).  When true, the object_map is authoritative:
+    // OBJECT_NONEXISTENT means "known zero, return zeros without S3 fetch",
+    // unlocking the read_object short-circuit for S3-backed parents that
+    // were previously forced through aio_operate -> S3 fallback for every
+    // zero-block read.  Refreshed only on apply_metadata; an in-flight
+    // backfill transitioning to complete during an image's lifetime won't
+    // flip this until the next metadata refresh.
+    bool s3_backfill_complete = false;
     uint32_t s3_parent_lock_timeout = 30; // cached from rbd_s3_parent_lock_timeout
     uint32_t s3_lock_retry_max = 5;       // cached from rbd_s3_lock_retry_max
     // Lazily-initialized S3 fetcher shared by all CopyupRequests for this

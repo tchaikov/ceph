@@ -232,7 +232,31 @@ void ObjectReadRequest<I>::read_object() {
   {
     RWLock::RLocker snap_locker(image_ctx->snap_lock);
     if (image_ctx->object_map != nullptr &&
-        !image_ctx->object_map->object_may_exist(this->m_object_no)) {
+        !image_ctx->object_map->object_may_exist(this->m_object_no) &&
+        // Trust the object_map (and short-circuit on NONEXISTENT) only
+        // when EITHER:
+        //   (a) the image isn't S3-backed at all (regular clone / plain
+        //       image -- existing behaviour), or
+        //   (b) the image IS S3-backed and rbd-backfill has reported
+        //       backfill_status=complete, meaning the object_map is the
+        //       authoritative source: NONEXISTENT = known-zero, return
+        //       -ENOENT and let the child layer zero-fill (standard
+        //       sparse-clone semantics).
+        //
+        // Without this gate, a stale-bit can drive an infinite refetch
+        // loop: handle_read_from_s3 sets the in-memory bit to OBJECT_
+        // EXISTS optimistically (before the throttler confirms), the
+        // throttler drops over-cap, RADOS doesn't get the object,
+        // subsequent reads see the bit say EXISTS -> aio_operate ->
+        // ENOENT -> should_read_from_s3 -> S3 fetch -> drop again ->
+        // repeat.  After backfill complete we trust the bit and
+        // short-circuit zero-blocks straight to ENOENT (no S3 fetch).
+        //
+        // For mid-backfill or never-backfilled S3-backed images we
+        // fall through to aio_operate so genuinely-unfetched objects
+        // can still be served via the S3 fallback path.
+        (!image_ctx->s3_config.is_valid() ||
+         image_ctx->s3_backfill_complete)) {
       image_ctx->op_work_queue->queue(new FunctionContext([this](int r) {
           read_parent();
         }), 0);
@@ -629,7 +653,21 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
   // object_may_exist=true skips the parent-read shortcut, aio_read
   // returns ENOENT, and we refetch from S3 on every read for that
   // object -- defeats the warm-cache invariant for sparse parents.
-  if (image_ctx->object_map != nullptr && !full_object_data.is_zero()) {
+  //
+  // SKIP after backfill complete: ImageCtx::s3_backfill_complete signals
+  // that rbd-backfill has already written every non-zero object to
+  // RADOS and marked the on-disk object_map authoritatively.  Setting
+  // the in-memory bit OPTIMISTICALLY here would create the same
+  // stale-bit divergence as the zero-block case if the current
+  // throttler submit happens to drop (over-cap, EBUSY, etc.): the bit
+  // says EXISTS, RADOS doesn't have the object, every subsequent read
+  // re-fetches from S3 in a loop.  After backfill complete the on-disk
+  // map is the source of truth, so trusting it (and leaving the
+  // in-memory bit alone for objects we did NOT genuinely populate) is
+  // both more correct AND avoids the loop.
+  if (image_ctx->object_map != nullptr &&
+      !full_object_data.is_zero() &&
+      !image_ctx->s3_backfill_complete) {
     RWLock::RLocker owner_locker(image_ctx->owner_lock);
     if (image_ctx->object_map != nullptr) {
       RWLock::WLocker object_map_locker(image_ctx->object_map_lock);
