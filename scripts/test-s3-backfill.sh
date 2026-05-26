@@ -44,7 +44,8 @@ cleanup() {
                status-trans-parent status-fail-parent \
                du-backfill-parent du-writeback-parent du-writeback-child \
                watcher-release-parent clone-bf-parent clone-bf-child \
-               list-bf-true list-bf-inprog list-bf-done; do
+               list-bf-true list-bf-inprog list-bf-done \
+               zero-trust-parent zero-trust-child; do
         "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL/$img" 2>/dev/null || true
     done
     "$BUILD_DIR/bin/ceph" --conf "$CEPH_CONF" osd pool delete "$POOL" "$POOL" \
@@ -1030,6 +1031,115 @@ test_backfill_list_shows_in_progress() {
 }
 
 # ============================================================================
+test_post_backfill_zero_region_no_s3() {
+    # Regression for the user-reported post-backfill random-read slowness.
+    # ObjectBackfillRequest skips RADOS write_full + object_map update for
+    # all-zero blocks (sparseness optimization).  Pre-fix, the parent's
+    # read_object short-circuit was suppressed for S3-backed parents (to
+    # keep cold-cache reads working), so reads of those backfilled-as-zero
+    # blocks ALWAYS went aio_operate -> ENOENT -> should_read_from_s3 ->
+    # S3 fetch, even though the read should have been a trivial zero-fill.
+    # Under 14-VM concurrency this drove infinite refetch loops via the
+    # throttler's over-cap drops.
+    #
+    # The fix (commit 9a6d00e5bda): after backfill_status=complete, the
+    # parent's in-memory object_map is trusted -- NONEXISTENT means
+    # known-zero, short-circuit to read_parent -> -ENOENT -> librbd
+    # zero-fills at the child level, no S3 traffic.
+    #
+    # Verify by stopping MinIO AFTER backfill complete and checking the
+    # child read still succeeds -- a successful read with MinIO down
+    # proves no S3 fetch happened.  Pre-fix the read would EIO on the
+    # zero blocks.  We use create_test_image_zero_alternating which
+    # produces blocks {data, zero, data, zero, ...} so the test
+    # exercises both the data-block path (RADOS hit) AND the zero-block
+    # path (short-circuit) in one read.
+
+    local parent="$POOL/zero-trust-parent"
+    local child="$POOL/zero-trust-child"
+    local size_mb=16   # 4 blocks: data, zero, data, zero
+    local raw_file="/tmp/backfill-test-zero-trust-orig-$$.raw"
+    local exp_file="/tmp/backfill-test-zero-trust-exp-$$.raw"
+    local blog="/tmp/rbd-backfill-zero-trust-$$.log"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child"  2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
+
+    # Alternating zero/data: blocks 1 and 3 are entirely zero and will be
+    # skipped by ObjectBackfillRequest::write_rados.
+    create_test_image_zero_alternating "$size_mb" "$raw_file"
+    upload_to_s3 "$raw_file" "$S3_BUCKET" "zero-trust.raw"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$parent" --size ${size_mb}M
+    set_s3_config "$parent" "zero-trust.raw"
+    create_standalone_clone "$POOL" "zero-trust-parent" "zero-trust-child"
+
+    # Run backfill to completion -- daemon will write blocks 0,2 to RADOS
+    # and SKIP blocks 1,3 (is_zero check).  backfill_status flips to
+    # "complete" at the end of run_backfill.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$parent"
+    run_backfill_daemon "$CEPH_CONF" "$blog"
+    local prefix
+    prefix=$(get_block_prefix "$CEPH_CONF" "$POOL" "zero-trust-parent")
+    # Only 2 RADOS objects expected (blocks 0 and 2; blocks 1 and 3 are zero).
+    if ! wait_for_backfill_complete "$CEPH_CONF" "$POOL" "$prefix" 2 60; then
+        log_fail "backfill did not write the expected 2 non-zero objects within 60s"
+        stop_backfill_daemon
+        rm -f "$raw_file" "$blog"
+        return 1
+    fi
+
+    # Wait for backfill_status=complete -- the trust signal for the fix.
+    local status_ok=0
+    for i in $(seq 1 15); do
+        local s
+        s=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+            image-meta get "$parent" backfill_status 2>/dev/null || echo "")
+        if [ "$s" = "complete" ]; then
+            status_ok=1
+            break
+        fi
+        sleep 1
+    done
+    stop_backfill_daemon
+    if [ "$status_ok" -ne 1 ]; then
+        log_fail "backfill_status never reached 'complete' within 15s"
+        rm -f "$raw_file" "$blog"
+        return 1
+    fi
+
+    # Stop MinIO.  Any S3 fetch the child triggers now will fail with
+    # EIO / connection refused.  If the fix is broken, reading the zero
+    # blocks will fail and the export below will produce mismatched data.
+    stop_minio $MINIO_PORT
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" export "$child" "$exp_file"
+    local export_rc=$?
+
+    # Restart MinIO so cleanup at the end of this test (and the broader
+    # cleanup trap) can talk to it again.
+    start_minio $MINIO_PORT $MINIO_CONSOLE_PORT "$MINIO_DATA_DIR"
+    setup_s3_bucket $MINIO_PORT "$S3_BUCKET"
+
+    if [ "$export_rc" -ne 0 ]; then
+        log_fail "rbd export of child failed with MinIO down -- zero-region path tried S3"
+        rm -f "$raw_file" "$exp_file" "$blog"
+        return 1
+    fi
+
+    if ! verify_checksum "$raw_file" "$exp_file"; then
+        log_fail "child export checksum mismatch with MinIO down -- zero blocks NOT served"
+        rm -f "$raw_file" "$exp_file" "$blog"
+        return 1
+    fi
+    log_success "child read of zero+data regions succeeded with MinIO down (no S3 fetch)"
+
+    rm -f "$raw_file" "$exp_file" "$blog"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child"  2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
+}
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -1048,5 +1158,6 @@ run_test "backfill_rescan_picks_up_new_image" test_backfill_rescan_picks_up_new_
 run_test "backfill_watcher_released_after_complete" test_backfill_watcher_released_after_complete
 run_test "clone_standalone_drops_backfill_metadata" test_clone_standalone_drops_backfill_metadata
 run_test "backfill_list_shows_in_progress" test_backfill_list_shows_in_progress
+run_test "post_backfill_zero_region_no_s3"  test_post_backfill_zero_region_no_s3
 
 print_test_summary

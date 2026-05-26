@@ -293,6 +293,28 @@ void ObjectReadRequest<I>::handle_read_object(int r) {
 
   if (r == -ENOENT) {
     if (should_read_from_s3()) {
+      // After backfill completes the parent's RADOS pool is authoritative:
+      // any object NOT present in RADOS was deliberately skipped by
+      // ObjectBackfillRequest::write_rados because is_zero() returned true.
+      // Going to S3 for these is wasted work -- we KNOW the object is
+      // all-zero.  Finish with -ENOENT and let ImageRequest::aio_read's
+      // sparse-clone semantics zero-fill at the higher layer, matching
+      // the regular-clone path's behaviour for "no parent at this offset".
+      //
+      // This is the post-backfill fast path that the read_object()
+      // object_map short-circuit can't reach for read-only parent opens
+      // (object_map is loaded only for snap or exclusive-lock owners --
+      // see send_v2_open_object_map at RefreshRequest.cc:1062-1071), so
+      // parent-via-read_parent chains were going aio_operate -> ENOENT
+      // -> S3 fetch on every zero-block read, defeating backfill.
+      if (image_ctx->s3_backfill_complete) {
+        ldout(image_ctx->cct, 10) << "object " << this->m_object_no
+                                  << " ENOENT after backfill complete; "
+                                  << "skipping S3 fetch (known-zero)"
+                                  << dendl;
+        this->finish(-ENOENT);
+        return;
+      }
       // No cls_lock on the critical path — see the design comment in
       // ObjectRequest.h.  read_from_s3() directly issues the S3 GET; on
       // success, handle_read_from_s3() finishes the client read AND
