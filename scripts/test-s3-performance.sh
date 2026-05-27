@@ -78,6 +78,7 @@ ALL_TESTS=(
     perf_test_post_backfill_zero_no_s3
     perf_test_partial_backfill_zero_no_s3
     perf_test_no_trust_zero_baseline
+    perf_test_snap_clone_zero_baseline
 )
 
 if [ "$LIST_ONLY" = "1" ]; then
@@ -1050,6 +1051,110 @@ perf_test_no_trust_zero_baseline() {
         return 1
     fi
     log_success "$name: baseline = $s3_gets S3 GETs (partial-backfill variant saves all of them)"
+    return 0
+}
+
+perf_test_snap_clone_zero_baseline() {
+    local name="snap_clone_zero_baseline"
+    local reads=200
+    local io_size=4096
+    local total_bytes=$((reads * io_size))
+
+    # "Speed of light" reference for the partial-backfill bitmap path: a
+    # traditional snapshot-based RBD clone of the SAME sparse content
+    # (10 x 4 MB blocks, 80% zero), running the SAME 200-random-4KB-read
+    # workload.  Compares to perf_test_partial_backfill_zero_no_s3 and
+    # perf_test_post_backfill_zero_no_s3.
+    #
+    # Expected gap: regular clone is faster than the S3-backed
+    # post-backfill case because read_parent opens the snapshot with
+    # snap_id != CEPH_NOSNAP, which loads the parent's object_map (per
+    # RefreshRequest::send_v2_open_object_map at line ~1062).  Reads of
+    # zero blocks short-circuit IN MEMORY at the read_object entry
+    # point (object_map[N] == NONEXISTENT) and never aio_operate to
+    # the OSD.  The S3-backed case has no object_map loaded (parent is
+    # read-only opened without exclusive_lock) so every zero-block read
+    # pays one RADOS RTT for aio_operate -> ENOENT before the
+    # s3_backfill_complete / bitmap short-circuit fires in
+    # handle_read_object.
+    log_step "$name: $reads random ${io_size}B reads on traditional snap-clone (reference)"
+
+    perf_pool_reset "$CEPH_CONF" "$POOL"
+
+    local parent="snap-perf-parent"
+    local snap="perf-snap"
+    local child="snap-perf-child"
+    local size_mb
+    size_mb=$(( $(stat -c%s "$PERF_FIXTURE_SPARSE_40MB") / 1024 / 1024 ))
+
+    # `rbd import` recognizes zero regions and skips writing them (sparse
+    # object_map entries) -- same RADOS shape as a post-backfill S3-backed
+    # parent: data blocks present, zero blocks NONEXISTENT.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" import \
+        --image-feature layering,exclusive-lock,object-map,fast-diff \
+        --object-size 4M \
+        "$PERF_FIXTURE_SPARSE_40MB" "$POOL/$parent" >/dev/null 2>&1
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" snap create "$POOL/$parent@$snap"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" snap protect "$POOL/$parent@$snap"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" clone "$POOL/$parent@$snap" \
+        "$POOL/$child"
+
+    reset_trace
+    local rados_before
+    rados_before=$(perf_rados_snapshot "$CEPH_CONF" "$POOL")
+
+    local t0
+    t0=$(perf_time_ms)
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" bench \
+        --io-type read \
+        --io-size "$io_size" \
+        --io-total "$total_bytes" \
+        --io-pattern rand \
+        --io-threads 1 \
+        "$POOL/$child" >/dev/null 2>&1 \
+        || log_warn "$name: bench reported failure (still recording metrics)"
+    local elapsed
+    elapsed=$(perf_time_elapsed_ms "$t0")
+
+    sleep 1
+
+    local rados_after
+    rados_after=$(perf_rados_snapshot "$CEPH_CONF" "$POOL")
+    local rados_reads
+    rados_reads=$(perf_extract_field "$(perf_rados_delta "$rados_before" "$rados_after")" read_ops)
+
+    local s3_gets
+    s3_gets=$(perf_minio_get_count "$MINIO_TRACE_LOG" "$S3_BUCKET")
+
+    local per_read_ms
+    per_read_ms=$(awk "BEGIN{printf \"%.2f\", $elapsed / $reads}")
+
+    perf_record "$name" reads             "$reads"        count
+    perf_record "$name" io_size_bytes     "$io_size"      bytes
+    perf_record "$name" wall_time_ms      "$elapsed"      ms
+    perf_record "$name" s3_get_count      "$s3_gets"      count
+    perf_record "$name" rados_reads       "$rados_reads"  count
+    perf_record "$name" per_read_ms       "$per_read_ms"  ms
+
+    log_info "$name: $elapsed ms wall, $s3_gets S3 GETs, $rados_reads RADOS reads, $per_read_ms ms/read"
+
+    # No hard assertion: this test is a reference number, not a regression
+    # gate.  S3 GETs MUST be 0 (no S3 config at all on the parent); if not,
+    # something is very wrong in the test harness (e.g., a previous test
+    # left the parent with S3 metadata that leaked through pool reset).
+    if [ "$s3_gets" -ne 0 ]; then
+        log_fail "$name: $s3_gets S3 GETs on a traditional clone -- pool reset leaked"
+        return 1
+    fi
+
+    # Cleanup snapshot so pool reset on next test works cleanly.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL/$child" 2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" snap unprotect "$POOL/$parent@$snap" 2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" snap rm "$POOL/$parent@$snap" 2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL/$parent" 2>/dev/null || true
+
+    log_success "$name: reference per_read_ms=$per_read_ms (compare to partial_backfill_zero_no_s3)"
     return 0
 }
 
