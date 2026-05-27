@@ -105,7 +105,38 @@ int ImageBackfiller::init() {
   // Load S3 configuration from image metadata
   load_s3_config();
 
+  // Eagerly create the per-image backfill-visited bitmap so concurrent
+  // readers can consult it from the moment backfill begins.  Only meaningful
+  // for S3-backed parents; non-S3 images never serve reads via the
+  // S3-fetch path and have nothing to short-circuit.
+  if (m_s3_fetcher) {
+    init_backfill_visited_bitmap();
+  }
+
   return 0;
+}
+
+void ImageBackfiller::init_backfill_visited_bitmap() {
+  std::string oid = backfill_visited_oid(m_spec.image_id);
+
+  // object_map_resize is idempotent at the same size (cls_rbd.cc:3441-3460):
+  // re-calling preserves existing bits.  Calling on a non-existent oid
+  // triggers the grow path (ENOENT tolerated at cls_rbd.cc:3437); the
+  // trailing cls_cxx_write_full then creates the object.  One call handles
+  // both fresh-create and re-init across daemon restarts.
+  librados::ObjectWriteOperation op;
+  librbd::cls_client::object_map_resize(&op, m_num_objects, VISITED_NO);
+
+  int r = m_ioctx.operate(oid, &op);
+  if (r < 0) {
+    dout(1) << "warning: failed to init backfill-visited bitmap at " << oid
+            << ": " << cpp_strerror(r) << " -- proceeding without per-object "
+            << "bitmap.  s3_backfill_complete will still fire on whole-image "
+            << "completion." << dendl;
+  } else {
+    dout(10) << "initialized backfill-visited bitmap at " << oid
+             << " for " << m_num_objects << " objects" << dendl;
+  }
 }
 
 void ImageBackfiller::stop() {

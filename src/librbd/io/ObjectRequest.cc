@@ -315,6 +315,39 @@ void ObjectReadRequest<I>::handle_read_object(int r) {
         this->finish(-ENOENT);
         return;
       }
+
+      // Per-object trust during PARTIAL backfill: even if the whole image
+      // isn't yet `backfill_status=complete`, rbd-backfill may have already
+      // visited THIS object and recorded its state in the per-image
+      // backfill-visited bitmap (rbd_backfill_visited.<id>).  A
+      // VISITED_ZERO bit means the daemon confirmed the source S3 object
+      // is all-zero and deliberately skipped writing it to RADOS -- going
+      // to S3 here would re-confirm "zero" at a 100+ ms RTT cost.
+      //
+      // Grab the bitmap atomically (shared_ptr) so a concurrent
+      // maybe_reload_backfill_visited() installing a new bitmap can't
+      // free this snapshot under us.  Bounds-check guards against
+      // rbd resize after the bitmap was sized: new objects (obj_no past
+      // end-of-bitmap) fall through to S3 as if no bit existed.
+      auto visited = std::atomic_load(&image_ctx->backfill_visited);
+      if (visited && this->m_object_no < visited->size() &&
+          (*visited)[this->m_object_no] == RBD_BACKFILL_VISITED_ZERO) {
+        ldout(image_ctx->cct, 10) << "object " << this->m_object_no
+                                  << " ENOENT with backfill_visited=ZERO; "
+                                  << "skipping S3 fetch (per-object trust)"
+                                  << dendl;
+        this->finish(-ENOENT);
+        return;
+      }
+
+      // Bitmap miss (or no bitmap, or out-of-bounds): kick a non-blocking
+      // background reload if our cached copy is older than
+      // rbd_s3_backfill_visited_reload_interval.  This read still falls
+      // through to S3; subsequent reads after the reload completes will
+      // see any newly-flipped bits.  Critical for the concurrent-VM-boot
+      // scenario where N ImageCtxs all snapshot the bitmap at open and
+      // must pick up bits the daemon flips while they remain open.
+      image_ctx->maybe_reload_backfill_visited();
       // No cls_lock on the critical path — see the design comment in
       // ObjectRequest.h.  read_from_s3() directly issues the S3 GET; on
       // success, handle_read_from_s3() finishes the client read AND

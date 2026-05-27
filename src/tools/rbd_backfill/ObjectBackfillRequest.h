@@ -56,6 +56,16 @@ private:
   void update_object_map();
   void handle_update_object_map(int r);
 
+  // Per-image backfill-visited bitmap update (rbd_backfill_visited.<id>).
+  // Called once per object on the success path of both the zero-block branch
+  // (state = VISITED_ZERO) and the data-block branch (state = VISITED_HAS_DATA)
+  // so the parent's reader-side ENOENT short-circuit can trust per-object
+  // state during partial backfill, not just the whole-image
+  // s3_backfill_complete flag.  Non-fatal on failure (bitmap is an
+  // optimization, not a correctness requirement).
+  void mark_visited(uint8_t state);
+  void handle_mark_visited(int r);
+
   void release_lock();
   void handle_release_lock(int r);
 

@@ -5,6 +5,7 @@
 #define CEPH_RBD_BACKFILL_TYPES_H
 
 #include <string>
+#include "include/rbd_types.h"
 
 namespace rbd {
 namespace backfill {
@@ -24,6 +25,20 @@ static constexpr const char* BACKFILL_SCHED_IN_PROGRESS = "in_progress";
 static constexpr const char* BACKFILL_STATUS_SCHEDULED = "scheduled";
 static constexpr const char* BACKFILL_STATUS_COMPLETE  = "complete";
 static constexpr const char* BACKFILL_STATUS_FAILED    = "failed";
+
+// State values for the per-image backfill-visited bitmap.  Canonical
+// numeric values are defined in src/include/rbd_types.h so librbd
+// (reader) and rbd_backfill (writer) share one source of truth without
+// librbd having to include this tool-tree header.  The names here are
+// short aliases for use within the rbd_backfill namespace.
+static constexpr uint8_t VISITED_NO       = RBD_BACKFILL_VISITED_NO;
+static constexpr uint8_t VISITED_HAS_DATA = RBD_BACKFILL_VISITED_HAS_DATA;
+static constexpr uint8_t VISITED_RESERVED = RBD_BACKFILL_VISITED_RESERVED;
+static constexpr uint8_t VISITED_ZERO     = RBD_BACKFILL_VISITED_ZERO;
+
+inline std::string backfill_visited_oid(const std::string& image_id) {
+  return std::string(RBD_BACKFILL_VISITED_PREFIX) + image_id;
+}
 
 // Render a `pool[/ns]/image` path consistently across BackfillDaemon and the
 // rbd backfill CLI.  Both files were open-coding two slightly different

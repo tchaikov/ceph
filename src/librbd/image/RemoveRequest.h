@@ -144,6 +144,9 @@ private:
   void send_object_map_remove();
   void handle_object_map_remove(int r);
 
+  void send_backfill_visited_remove();
+  void handle_backfill_visited_remove(int r);
+
   void mirror_image_remove();
   void handle_mirror_image_remove(int r);
 

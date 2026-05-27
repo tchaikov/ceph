@@ -129,7 +129,11 @@ void ObjectBackfillRequest::write_rados() {
   // RADOS space we save for VM images that are mostly zero on the tail).
   if (m_data_bl.is_zero()) {
     dout(10) << "object " << m_object_no << " is all-zero, skipping write_full + map update" << dendl;
-    release_lock();
+    // Mark VISITED_ZERO in the per-image backfill-visited bitmap so reader-side
+    // can skip a wasted S3 GET on this object during partial backfill.  No
+    // data was written to the parent RADOS object, so there is no ordering
+    // constraint between this and the zero-skip itself.
+    mark_visited(VISITED_ZERO);
     return;
   }
 
@@ -204,8 +208,56 @@ void ObjectBackfillRequest::handle_update_object_map(int r) {
     return;
   }
 
-  dout(10) << "object map updated, releasing lock" << dendl;
+  dout(10) << "object map updated, marking visited (has-data) and releasing lock" << dendl;
   m_ret_val = 0;
+  // Tail-call invariant: mark_visited(VISITED_HAS_DATA) runs ONLY after the
+  // RADOS write_full is durably acked above.  Setting the bit before the
+  // write would let a concurrent reader trust HAS_DATA -> RADOS while the
+  // data isn't yet there.  (The reader actually falls through to S3 on any
+  // RADOS ENOENT anyway -- correct but wasteful -- so this is the
+  // optimization-side ordering, not a correctness-critical one.)
+  mark_visited(VISITED_HAS_DATA);
+}
+
+void ObjectBackfillRequest::mark_visited(uint8_t state) {
+  dout(15) << "state=" << static_cast<int>(state) << dendl;
+
+  Context* ctx = librbd::util::create_context_callback<
+    ObjectBackfillRequest, &ObjectBackfillRequest::handle_mark_visited>(this);
+
+  librados::ObjectWriteOperation op;
+  librbd::cls_client::object_map_update(
+    &op, m_object_no, m_object_no + 1, state, boost::optional<uint8_t>());
+
+  std::string oid = backfill_visited_oid(m_image_id);
+  librados::AioCompletion* rados_completion =
+    librbd::util::create_rados_callback(ctx);
+
+  int r = m_parent_ioctx.aio_operate(oid, rados_completion, &op);
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+void ObjectBackfillRequest::handle_mark_visited(int r) {
+  dout(15) << "r=" << r << dendl;
+
+  if (r == -ENOENT) {
+    // Bitmap object does not exist -- init failed during ImageBackfiller::init,
+    // or the image was created without a bitmap (older daemon).  Not fatal:
+    // backfill continues, reader-side falls back to the pre-bitmap behavior
+    // for this object (try S3 on ENOENT).
+    dout(10) << "backfill-visited bitmap not present for image " << m_image_id
+             << ", skipping bit update" << dendl;
+  } else if (r < 0) {
+    // Other failure -- log at debug, do not propagate.  Worst case: one
+    // wasted S3 GET later when a reader hits this object.
+    dout(5) << "failed to update backfill-visited bitmap: " << cpp_strerror(r)
+            << " -- non-fatal" << dendl;
+  } else {
+    dout(15) << "bitmap bit updated for object " << m_object_no << dendl;
+  }
+
+  // Always proceed to release_lock; bitmap failure must never strand the lock.
   release_lock();
 }
 

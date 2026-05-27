@@ -45,7 +45,8 @@ cleanup() {
                du-backfill-parent du-writeback-parent du-writeback-child \
                watcher-release-parent clone-bf-parent clone-bf-child \
                list-bf-true list-bf-inprog list-bf-done \
-               zero-trust-parent zero-trust-child; do
+               zero-trust-parent zero-trust-child \
+               partial-trust-parent partial-trust-child; do
         "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL/$img" 2>/dev/null || true
     done
     "$BUILD_DIR/bin/ceph" --conf "$CEPH_CONF" osd pool delete "$POOL" "$POOL" \
@@ -1139,6 +1140,109 @@ test_post_backfill_zero_region_no_s3() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
 }
 
+test_partial_backfill_zero_region_no_s3() {
+    # Companion to test_post_backfill_zero_region_no_s3, exercising the
+    # per-object backfill-visited bitmap (rbd_backfill_visited.<id>) added
+    # to handle the PARTIAL backfill case.  Even when backfill_status is
+    # NOT "complete" (so the whole-image s3_backfill_complete short-circuit
+    # is disabled), the parent's reader should still skip S3 GETs for zero
+    # blocks the daemon has already visited and marked VISITED_ZERO.
+    #
+    # Test strategy: run backfill to full completion (fills the bitmap),
+    # then DELETE the backfill_status metadata key.  This isolates the
+    # per-object bitmap path from the whole-image trust flag -- the next
+    # ImageCtx open sees s3_backfill_complete=false but a fully-populated
+    # bitmap.  With MinIO stopped, the export must still succeed: data
+    # blocks via RADOS hit, zero blocks via bitmap short-circuit.
+
+    local parent="$POOL/partial-trust-parent"
+    local child="$POOL/partial-trust-child"
+    local size_mb=16
+    local raw_file="/tmp/backfill-test-partial-trust-orig-$$.raw"
+    local exp_file="/tmp/backfill-test-partial-trust-exp-$$.raw"
+    local blog="/tmp/rbd-backfill-partial-trust-$$.log"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child"  2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
+
+    create_test_image_zero_alternating "$size_mb" "$raw_file"
+    upload_to_s3 "$raw_file" "$S3_BUCKET" "partial-trust.raw"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$parent" --size ${size_mb}M
+    set_s3_config "$parent" "partial-trust.raw"
+    create_standalone_clone "$POOL" "partial-trust-parent" "partial-trust-child"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$parent"
+    run_backfill_daemon "$CEPH_CONF" "$blog"
+    local prefix
+    prefix=$(get_block_prefix "$CEPH_CONF" "$POOL" "partial-trust-parent")
+    if ! wait_for_backfill_complete "$CEPH_CONF" "$POOL" "$prefix" 2 60; then
+        log_fail "backfill did not write the expected 2 non-zero objects within 60s"
+        stop_backfill_daemon
+        rm -f "$raw_file" "$blog"
+        return 1
+    fi
+
+    local status_ok=0
+    for i in $(seq 1 15); do
+        local s
+        s=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+            image-meta get "$parent" backfill_status 2>/dev/null || echo "")
+        if [ "$s" = "complete" ]; then
+            status_ok=1
+            break
+        fi
+        sleep 1
+    done
+    stop_backfill_daemon
+    if [ "$status_ok" -ne 1 ]; then
+        log_fail "backfill_status never reached 'complete' within 15s"
+        rm -f "$raw_file" "$blog"
+        return 1
+    fi
+
+    # Delete backfill_status so apply_metadata sets s3_backfill_complete=false
+    # on the next parent open.  The bitmap stays intact (it lives in its own
+    # RADOS object, not in image metadata).  This is the partial-backfill
+    # state from the reader's perspective: per-object bitmap exists, whole-
+    # image trust flag does not.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta remove "$parent" backfill_status
+    local sleft
+    sleft=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+            image-meta get "$parent" backfill_status 2>/dev/null || echo "")
+    if [ -n "$sleft" ]; then
+        log_fail "backfill_status still present after remove: '$sleft'"
+        rm -f "$raw_file" "$blog"
+        return 1
+    fi
+
+    # Stop MinIO.  Any S3 fetch the child triggers now will fail.
+    stop_minio $MINIO_PORT
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" export "$child" "$exp_file"
+    local export_rc=$?
+
+    start_minio $MINIO_PORT $MINIO_CONSOLE_PORT "$MINIO_DATA_DIR"
+    setup_s3_bucket $MINIO_PORT "$S3_BUCKET"
+
+    if [ "$export_rc" -ne 0 ]; then
+        log_fail "rbd export of child failed with MinIO down and backfill_status cleared -- bitmap short-circuit did not fire"
+        rm -f "$raw_file" "$exp_file" "$blog"
+        return 1
+    fi
+
+    if ! verify_checksum "$raw_file" "$exp_file"; then
+        log_fail "child export checksum mismatch with MinIO down (partial-backfill path)"
+        rm -f "$raw_file" "$exp_file" "$blog"
+        return 1
+    fi
+    log_success "child read via per-object bitmap (no s3_backfill_complete) succeeded with MinIO down"
+
+    rm -f "$raw_file" "$exp_file" "$blog"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child"  2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
+}
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -1159,5 +1263,6 @@ run_test "backfill_watcher_released_after_complete" test_backfill_watcher_releas
 run_test "clone_standalone_drops_backfill_metadata" test_clone_standalone_drops_backfill_metadata
 run_test "backfill_list_shows_in_progress" test_backfill_list_shows_in_progress
 run_test "post_backfill_zero_region_no_s3"  test_post_backfill_zero_region_no_s3
+run_test "partial_backfill_zero_region_no_s3"  test_partial_backfill_zero_region_no_s3
 
 print_test_summary

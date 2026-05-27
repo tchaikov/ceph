@@ -952,6 +952,44 @@ public:
       s3_backfill_complete = false;
     }
 
+    // Try to load the per-image backfill-visited bitmap (rbd_backfill_visited.<id>).
+    // Always attempt for S3-backed images, not just when backfill_status is set:
+    // a previously-canceled backfill may have left VISITED_ZERO bits that are
+    // still safe to trust.  ENOENT -> no bitmap exists, reader falls through
+    // to the pre-bitmap behavior.  Keep the OID prefix in sync with
+    // RBD_BACKFILL_VISITED_PREFIX in src/include/rbd_types.h.
+    if (s3_config.is_valid()) {
+      const std::string visited_oid =
+        std::string(RBD_BACKFILL_VISITED_PREFIX) + id;
+      auto loaded = std::make_shared<ceph::BitVector<2>>();
+      int r = cls_client::object_map_load(&data_ctx, visited_oid, loaded.get());
+      // Lock-free: shared_ptr via std::atomic_store, timestamp via
+      // std::atomic.  No md_lock required, so apply_metadata stays callable
+      // from RefreshRequest/OpenRequest without imposing a lock contract.
+      if (r == 0) {
+        std::atomic_store(&backfill_visited, loaded);
+        backfill_visited_loaded_at_sec.store(ceph_clock_now().sec(),
+                                             std::memory_order_release);
+        ldout(cct, 10) << __func__ << ": loaded backfill-visited bitmap from "
+                       << visited_oid << " (size=" << loaded->size()
+                       << ")" << dendl;
+      } else {
+        std::atomic_store(&backfill_visited,
+                          std::shared_ptr<ceph::BitVector<2>>{});
+        backfill_visited_loaded_at_sec.store(ceph_clock_now().sec(),
+                                             std::memory_order_release);
+        if (r != -ENOENT) {
+          ldout(cct, 5) << __func__ << ": failed to load backfill-visited "
+                        << "bitmap from " << visited_oid << ": "
+                        << cpp_strerror(r) << " -- proceeding without it"
+                        << dendl;
+        }
+      }
+    } else {
+      std::atomic_store(&backfill_visited,
+                        std::shared_ptr<ceph::BitVector<2>>{});
+    }
+
     alloc_hint_flags = 0;
     auto compression_hint = config.get_val<std::string>("rbd_compression_hint");
     if (compression_hint == "compressible") {
@@ -995,6 +1033,79 @@ public:
 
   ObjectMap<ImageCtx> *ImageCtx::create_object_map(uint64_t snap_id) {
     return new ObjectMap<ImageCtx>(*this, snap_id);
+  }
+
+  void ImageCtx::maybe_reload_backfill_visited() {
+    // Cheap pre-checks: no point reloading if this isn't an S3-backed image,
+    // or if the interval is set to 0 (disabled).
+    if (!s3_config.is_valid()) {
+      return;
+    }
+    uint64_t interval =
+      config.get_val<uint64_t>("rbd_s3_backfill_visited_reload_interval");
+    if (interval == 0) {
+      return;
+    }
+
+    uint64_t now_sec = static_cast<uint64_t>(ceph_clock_now().sec());
+    uint64_t loaded_sec =
+      backfill_visited_loaded_at_sec.load(std::memory_order_acquire);
+    // loaded_sec == 0 on a fresh ImageCtx that hasn't loaded yet; the
+    // subtraction yields ~now_sec, which is far above interval and
+    // correctly triggers a reload.  Underflow-safe via signed compare
+    // in the other direction: if loaded_sec > now_sec (clock skew),
+    // treat as fresh and return.
+    if (loaded_sec > now_sec || (now_sec - loaded_sec) < interval) {
+      return;
+    }
+    {
+      RWLock::RLocker locker(md_lock);
+      if (backfill_visited_reload_in_flight) {
+        return;
+      }
+    }
+
+    // Stale and no reload in flight.  Post a non-blocking work item that
+    // marks itself in-flight (under WLocker -- the read-then-write window
+    // above is a benign TOCTOU; if two callers race, the second simply
+    // returns from the if(in_flight) check below and the first does the
+    // reload alone).  We do not block the caller on the actual RADOS GET.
+    op_work_queue->queue(new FunctionContext([this](int r) {
+      {
+        RWLock::WLocker locker(md_lock);
+        if (backfill_visited_reload_in_flight) {
+          return;
+        }
+        backfill_visited_reload_in_flight = true;
+      }
+
+      const std::string visited_oid =
+        std::string(RBD_BACKFILL_VISITED_PREFIX) + id;
+      auto loaded = std::make_shared<ceph::BitVector<2>>();
+      int load_r = cls_client::object_map_load(&data_ctx, visited_oid,
+                                               loaded.get());
+
+      if (load_r == 0) {
+        std::atomic_store(&backfill_visited, loaded);
+        backfill_visited_loaded_at_sec.store(ceph_clock_now().sec(),
+                                             std::memory_order_release);
+        ldout(cct, 15) << "maybe_reload_backfill_visited: refreshed (size="
+                       << loaded->size() << ")" << dendl;
+      } else if (load_r == -ENOENT) {
+        std::atomic_store(&backfill_visited,
+                          std::shared_ptr<ceph::BitVector<2>>{});
+        backfill_visited_loaded_at_sec.store(ceph_clock_now().sec(),
+                                             std::memory_order_release);
+      } else {
+        ldout(cct, 5) << "maybe_reload_backfill_visited: load failed: "
+                      << cpp_strerror(load_r) << " -- keeping stale copy"
+                      << dendl;
+      }
+      {
+        RWLock::WLocker locker(md_lock);
+        backfill_visited_reload_in_flight = false;
+      }
+    }), 0);
   }
 
   Journal<ImageCtx> *ImageCtx::create_journal() {

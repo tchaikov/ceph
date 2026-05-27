@@ -7738,6 +7738,24 @@ static std::vector<Option> get_rbd_mirror_options() {
                           "Set to 0 for the legacy unbounded wait — only safe if all "
                           "your OSDs are reliably responsive."),
 
+    Option("rbd_s3_backfill_visited_reload_interval", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(30)
+    .set_min(0)
+    .set_description("seconds between background reloads of the per-image "
+                     "backfill-visited bitmap on an open parent ImageCtx")
+    .set_long_description("The bitmap is loaded at parent open and cached "
+                          "in-memory; new bits flipped by rbd-backfill while the "
+                          "ImageCtx remains open are not visible until the next "
+                          "reload.  This option bounds the staleness: each read "
+                          "that consults the bitmap also checks whether the "
+                          "cached copy is older than this interval and, if so, "
+                          "kicks off a non-blocking reload (the current read "
+                          "still falls through to S3 as if no bit).  Subsequent "
+                          "reads see the refreshed bits.  Set to 0 to disable "
+                          "periodic reload (bitmap only refreshes on full image "
+                          "refresh).  Cost per reload: one RADOS GET of the "
+                          "bitmap object (~64 KB per TB of image)."),
+
     Option("rbd_s3_lru_max_entries", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(32)
     .set_min_max(1, 4096)

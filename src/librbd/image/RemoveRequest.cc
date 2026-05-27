@@ -361,6 +361,39 @@ void RemoveRequest<I>::handle_object_map_remove(int r) {
     r = 0;
   }
 
+  send_backfill_visited_remove();
+}
+
+template<typename I>
+void RemoveRequest<I>::send_backfill_visited_remove() {
+  ldout(m_cct, 20) << dendl;
+
+  // The per-image backfill-visited bitmap (rbd_backfill_visited.<id>) is
+  // created by rbd-backfill only for S3-backed parent images.  Most images
+  // have no bitmap, in which case this aio_remove returns -ENOENT, which
+  // we tolerate the same way handle_object_map_remove does.
+  std::string oid = std::string(RBD_BACKFILL_VISITED_PREFIX) + m_image_id;
+
+  using klass = RemoveRequest<I>;
+  librados::AioCompletion *rados_completion =
+    create_rados_callback<klass, &klass::handle_backfill_visited_remove>(this);
+
+  int r = m_ioctx.aio_remove(oid, rados_completion);
+  ceph_assert(r == 0);
+  rados_completion->release();
+}
+
+template<typename I>
+void RemoveRequest<I>::handle_backfill_visited_remove(int r) {
+  ldout(m_cct, 20) << "r=" << r << dendl;
+
+  if (r < 0 && r != -ENOENT) {
+    lderr(m_cct) << "failed to remove backfill-visited bitmap: "
+                 << cpp_strerror(r) << dendl;
+    finish(r);
+    return;
+  }
+
   mirror_image_remove();
 }
 

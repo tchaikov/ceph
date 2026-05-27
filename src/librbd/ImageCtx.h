@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "common/bit_vector.hpp"
 #include "common/config_proxy.h"
 #include "common/event_socket.h"
 #include "common/Mutex.h"
@@ -145,6 +146,43 @@ namespace librbd {
     // backfill transitioning to complete during an image's lifetime won't
     // flip this until the next metadata refresh.
     bool s3_backfill_complete = false;
+    // Per-object backfill-visited bitmap (rbd_backfill_visited.<id>), loaded
+    // lazily into memory on parent ImageCtx apply_metadata and consulted by
+    // ObjectReadRequest::handle_read_object on every RADOS-miss for S3-backed
+    // parents during PARTIAL backfill.  Generalizes s3_backfill_complete from
+    // whole-image trust to per-object trust:
+    //   bitmap[N] == VISITED_ZERO     -> known zero, skip S3 fetch
+    //   bitmap[N] == VISITED_HAS_DATA -> backfill wrote data to RADOS; expect
+    //                                    aio_operate to hit on next attempt
+    //   bitmap[N] == VISITED_NO       -> unknown; reader falls through to S3
+    // nullptr when the bitmap does not exist in RADOS (image was never the
+    // target of rbd-backfill) -- reader behaves as before this feature.
+    //
+    // shared_ptr (not unique_ptr) so readers can grab a stable snapshot via
+    // std::atomic_load() without holding md_lock for the duration of their
+    // dereference.  A concurrent maybe_reload_backfill_visited() that
+    // installs a new bitmap drops the previous one only when no reader
+    // still references it.
+    std::shared_ptr<ceph::BitVector<2>> backfill_visited;
+    // Wall-clock seconds the bitmap was last loaded.  ObjectReadRequest uses
+    // this to bound staleness during partial backfill: if older than
+    // rbd_s3_backfill_visited_reload_interval, kick off a non-blocking async
+    // reload.  std::atomic to avoid torn-read of a utime_t between
+    // apply_metadata writers and maybe_reload_backfill_visited readers,
+    // since apply_metadata is called WITHOUT md_lock from RefreshRequest.cc:646
+    // and OpenRequest.cc:81 -- a lock here would force every caller to hold
+    // md_lock for backwards compatibility, breaking future refactors.
+    std::atomic<uint64_t> backfill_visited_loaded_at_sec{0};
+    // Single-in-flight guard for the async reload.  Guarded by md_lock.
+    bool backfill_visited_reload_in_flight = false;
+
+    // Check whether backfill_visited is older than
+    // rbd_s3_backfill_visited_reload_interval and, if so, post a non-blocking
+    // async reload onto op_work_queue.  Idempotent (TTL + in-flight guarded).
+    // Called by ObjectReadRequest on every parent-read RADOS miss.  Safe to
+    // call without holding md_lock.
+    void maybe_reload_backfill_visited();
+
     uint32_t s3_parent_lock_timeout = 30; // cached from rbd_s3_parent_lock_timeout
     uint32_t s3_lock_retry_max = 5;       // cached from rbd_s3_lock_retry_max
     // Lazily-initialized S3 fetcher shared by all CopyupRequests for this

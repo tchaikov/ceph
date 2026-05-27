@@ -62,6 +62,12 @@ private:
   void handle_object_complete(int r);
   void load_s3_config();
 
+  // Idempotent create+size of the per-image backfill-visited bitmap
+  // (rbd_backfill_visited.<image_id>).  Non-fatal on failure: the bitmap
+  // is an optimization for the reader's ENOENT short-circuit; backfill
+  // proceeds without it.
+  void init_backfill_visited_bitmap();
+
   CephContext *m_cct;
   librados::Rados& m_rados;
   ImageSpec m_spec;

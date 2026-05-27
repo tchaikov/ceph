@@ -76,6 +76,7 @@ ALL_TESTS=(
     perf_test_vm_boot_scaling
     perf_test_scattered_random_reads_concurrent
     perf_test_post_backfill_zero_no_s3
+    perf_test_partial_backfill_zero_no_s3
 )
 
 if [ "$LIST_ONLY" = "1" ]; then
@@ -865,6 +866,107 @@ perf_test_post_backfill_zero_no_s3() {
         return 1
     fi
     log_success "$name: 0 S3 GETs after backfill complete"
+    return 0
+}
+
+perf_test_partial_backfill_zero_no_s3() {
+    local name="partial_backfill_zero_no_s3"
+    local reads=200
+    local io_size=4096
+    local total_bytes=$((reads * io_size))
+
+    # Same sparse 40 MB fixture as perf_test_post_backfill_zero_no_s3, but
+    # this variant isolates the PER-OBJECT bitmap path from the whole-image
+    # s3_backfill_complete flag.  Run backfill to completion (populates the
+    # per-image rbd_backfill_visited.<id> bitmap), then delete the
+    # backfill_status metadata key so the next ImageCtx open sees
+    # s3_backfill_complete=false.  Reads must still hit zero S3 GETs --
+    # the short-circuit fires via the bitmap's VISITED_ZERO bits, not
+    # via the whole-image trust flag.
+    log_step "$name: $reads random ${io_size}B reads with bitmap-only trust (partial-backfill simulation)"
+
+    setup_fresh_image "$PERF_FIXTURE_SPARSE_40MB" "perf-sparse-40mb.raw"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$POOL/$PERF_PARENT"
+    local blog
+    blog=$(mktemp /tmp/perf-bf-partial-XXXXXX.log)
+    run_backfill_daemon "$CEPH_CONF" "$blog"
+
+    local complete=0
+    local i
+    for i in $(seq 1 30); do
+        local s
+        s=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+            image-meta get "$POOL/$PERF_PARENT" backfill_status 2>/dev/null \
+            || echo "")
+        if [ "$s" = "complete" ]; then
+            complete=1
+            break
+        fi
+        sleep 1
+    done
+    stop_backfill_daemon
+    rm -f "$blog"
+
+    if [ "$complete" -ne 1 ]; then
+        log_fail "$name: backfill never reached complete within 30s"
+        return 1
+    fi
+
+    # Clear backfill_status so the next parent ImageCtx open sets
+    # s3_backfill_complete=false.  The per-image bitmap stays intact (it
+    # lives in its own RADOS object).  This isolates the bitmap path.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+        image-meta remove "$POOL/$PERF_PARENT" backfill_status
+
+    reset_trace
+    local rados_before
+    rados_before=$(perf_rados_snapshot "$CEPH_CONF" "$POOL")
+
+    local t0
+    t0=$(perf_time_ms)
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" bench \
+        --io-type read \
+        --io-size "$io_size" \
+        --io-total "$total_bytes" \
+        --io-pattern rand \
+        --io-threads 1 \
+        "$POOL/$PERF_CHILD" >/dev/null 2>&1 \
+        || log_warn "$name: bench reported failure (still recording metrics)"
+    local elapsed
+    elapsed=$(perf_time_elapsed_ms "$t0")
+
+    sleep 1
+
+    local rados_after
+    rados_after=$(perf_rados_snapshot "$CEPH_CONF" "$POOL")
+    local rados_writes
+    rados_writes=$(perf_extract_field "$(perf_rados_delta "$rados_before" "$rados_after")" write_ops)
+
+    local s3_gets
+    s3_gets=$(perf_minio_get_count "$MINIO_TRACE_LOG" "$S3_BUCKET")
+
+    local per_read_ms
+    per_read_ms=$(awk "BEGIN{printf \"%.2f\", $elapsed / $reads}")
+
+    perf_record "$name" reads             "$reads"        count
+    perf_record "$name" io_size_bytes     "$io_size"      bytes
+    perf_record "$name" wall_time_ms      "$elapsed"      ms
+    perf_record "$name" s3_get_count      "$s3_gets"      count
+    perf_record "$name" rados_writes      "$rados_writes" count
+    perf_record "$name" per_read_ms       "$per_read_ms"  ms
+
+    log_info "$name: $elapsed ms wall, $s3_gets S3 GETs, $rados_writes RADOS writes, $per_read_ms ms/read"
+
+    if [ "$s3_gets" -ne 0 ]; then
+        log_fail "$name: $s3_gets S3 GETs with bitmap-only trust (expected 0)"
+        log_fail "  Per-object backfill_visited bitmap short-circuit is not"
+        log_fail "  firing.  Check ImageCtx::backfill_visited load in"
+        log_fail "  apply_metadata and the bounds-checked consult in"
+        log_fail "  ObjectReadRequest::handle_read_object."
+        return 1
+    fi
+    log_success "$name: 0 S3 GETs with bitmap-only trust"
     return 0
 }
 

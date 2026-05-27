@@ -25,10 +25,25 @@
  *   ...                     - data
  */
 
-#define RBD_HEADER_PREFIX      "rbd_header."
-#define RBD_OBJECT_MAP_PREFIX  "rbd_object_map."
-#define RBD_DATA_PREFIX        "rbd_data."
-#define RBD_ID_PREFIX          "rbd_id."
+#define RBD_HEADER_PREFIX            "rbd_header."
+#define RBD_OBJECT_MAP_PREFIX        "rbd_object_map."
+#define RBD_DATA_PREFIX              "rbd_data."
+#define RBD_ID_PREFIX                "rbd_id."
+#define RBD_BACKFILL_VISITED_PREFIX  "rbd_backfill_visited."
+
+/*
+ * Per-image backfill-visited bitmap state values
+ * (rbd_backfill_visited.<image_id>, stored as BitVector<2>).
+ *
+ * Shared between librbd (reader) and rbd_backfill (writer); kept in this
+ * header so librbd never has to include rbd_backfill tool-tree headers.
+ * Numeric values are constrained by BitVector<2>'s 2-bit mask: any new
+ * state must fit in [0, 3].  See src/common/bit_vector.hpp:32.
+ */
+#define RBD_BACKFILL_VISITED_NO        0  /* default, not yet visited */
+#define RBD_BACKFILL_VISITED_HAS_DATA  1  /* daemon wrote non-zero to RADOS */
+#define RBD_BACKFILL_VISITED_RESERVED  2  /* reserved for future use */
+#define RBD_BACKFILL_VISITED_ZERO      3  /* daemon confirmed zero, no RADOS write */
 
 /*
  * old-style rbd image 'foo' consists of objects
