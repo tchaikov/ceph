@@ -264,6 +264,43 @@ void ObjectReadRequest<I>::read_object() {
     }
   }
 
+  // Pre-aio short-circuit using the per-image backfill-visited bitmap.
+  // The object_map check above is unreachable for read-only parent opens
+  // (RefreshRequest::send_v2_open_object_map only loads object_map when
+  // exclusive_lock is held or the open is a snapshot read), so without
+  // this block every zero-block parent read pays a RADOS RTT to discover
+  // ENOENT before handle_read_object's ENOENT branch can trust the
+  // bitmap.  Trusting it here saves that RTT, bringing zero-block read
+  // latency on an S3-backed parent into parity with a regular RBD clone
+  // (whose object_map IS loaded for snap reads).
+  //
+  // Safety: this branch's design treats the S3 source as immutable --
+  // the parent's RADOS pool is purely a cache.  A bitmap bit marked
+  // VISITED_ZERO means the daemon observed S3[N] = zero; subsequent
+  // S3 mutation is not a supported in-place op (re-backfill required),
+  // so the bit cannot become stale relative to reality.  Note in
+  // particular that CopyupRequest from a child write to N is harmless:
+  // it would also observe S3[N] = zero (per the immutability
+  // assumption) and either skip or write zero to RADOS; either way
+  // pre-aio returning zero is correct.  For VISITED_NO and
+  // VISITED_HAS_DATA we fall through to aio_operate as before --
+  // handle_read_object's post-aio bitmap check still serves as the
+  // partial-backfill fallback for objects the daemon hasn't visited.
+  if (image_ctx->s3_config.is_valid() &&
+      this->m_snap_id == CEPH_NOSNAP) {
+    auto visited = std::atomic_load(&image_ctx->backfill_visited);
+    if (visited && this->m_object_no < visited->size() &&
+        (*visited)[this->m_object_no] == RBD_BACKFILL_VISITED_ZERO) {
+      ldout(image_ctx->cct, 15) << "object " << this->m_object_no
+                                << " short-circuiting pre-aio via bitmap "
+                                << "(VISITED_ZERO)" << dendl;
+      image_ctx->op_work_queue->queue(new FunctionContext([this](int r) {
+          read_parent();
+        }), 0);
+      return;
+    }
+  }
+
   ldout(image_ctx->cct, 20) << dendl;
 
   librados::ObjectReadOperation op;
