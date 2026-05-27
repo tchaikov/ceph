@@ -103,9 +103,16 @@ void ObjectBackfillRequest::handle_acquire_lock(int r) {
       // object will be populated by the COW, so the daemon does not need to
       // write it.  Counting this as a failure would make the daemon report
       // -EIO for images that were correctly populated via COW.
+      //
+      // Mark VISITED_HAS_DATA in the bitmap so reader-side parent reads
+      // for this object skip the S3 fallback once the CopyupRequest's
+      // write_full lands.  If CopyupRequest itself fails, the bitmap bit
+      // is a false positive, but the reader's RADOS-ENOENT fall-through
+      // to S3 recovers correctly.  Bypasses release_lock (no lock held).
       dout(5) << "lock busy on object " << m_object_no
               << ", client I/O has preempted daemon backfill — treating as success" << dendl;
-      finish(0);
+      m_ret_val = 0;
+      mark_visited(VISITED_HAS_DATA);
     } else {
       derr << "failed to acquire lock: " << cpp_strerror(r) << dendl;
       finish(r);
@@ -129,11 +136,11 @@ void ObjectBackfillRequest::write_rados() {
   // RADOS space we save for VM images that are mostly zero on the tail).
   if (m_data_bl.is_zero()) {
     dout(10) << "object " << m_object_no << " is all-zero, skipping write_full + map update" << dendl;
-    // Mark VISITED_ZERO in the per-image backfill-visited bitmap so reader-side
-    // can skip a wasted S3 GET on this object during partial backfill.  No
-    // data was written to the parent RADOS object, so there is no ordering
-    // constraint between this and the zero-skip itself.
-    mark_visited(VISITED_ZERO);
+    // Record VISITED_ZERO for handle_release_lock to apply after the lock
+    // is released; keeps the cls_lock hold time tight.  m_ret_val stays 0
+    // (zero-skip is success).
+    m_pending_visited_state = VISITED_ZERO;
+    release_lock();
     return;
   }
 
@@ -208,15 +215,16 @@ void ObjectBackfillRequest::handle_update_object_map(int r) {
     return;
   }
 
-  dout(10) << "object map updated, marking visited (has-data) and releasing lock" << dendl;
+  dout(10) << "object map updated, releasing lock (mark_visited HAS_DATA deferred to post-release)" << dendl;
   m_ret_val = 0;
-  // Tail-call invariant: mark_visited(VISITED_HAS_DATA) runs ONLY after the
-  // RADOS write_full is durably acked above.  Setting the bit before the
-  // write would let a concurrent reader trust HAS_DATA -> RADOS while the
-  // data isn't yet there.  (The reader actually falls through to S3 on any
-  // RADOS ENOENT anyway -- correct but wasteful -- so this is the
-  // optimization-side ordering, not a correctness-critical one.)
-  mark_visited(VISITED_HAS_DATA);
+  // Order: release_lock first (keeps the cls_lock window tight even if the
+  // bitmap OSD is degraded), then handle_release_lock runs mark_visited.
+  // Safety: a reader that sees bitmap=HAS_DATA but RADOS=ENOENT (because
+  // this writer's data ack landed but mark_visited hasn't run yet) falls
+  // through to S3 -- correct but momentarily wasteful.  The HAS_DATA bit
+  // becomes truthful as soon as handle_release_lock -> mark_visited fires.
+  m_pending_visited_state = VISITED_HAS_DATA;
+  release_lock();
 }
 
 void ObjectBackfillRequest::mark_visited(uint8_t state) {
@@ -257,8 +265,18 @@ void ObjectBackfillRequest::handle_mark_visited(int r) {
     dout(15) << "bitmap bit updated for object " << m_object_no << dendl;
   }
 
-  // Always proceed to release_lock; bitmap failure must never strand the lock.
-  release_lock();
+  // Terminal step on the post-release path.  The cls_lock was released
+  // before mark_visited fired (or never acquired, in the EBUSY case), so
+  // we just propagate m_ret_val to the caller.
+  finish(m_ret_val);
+}
+
+void ObjectBackfillRequest::maybe_mark_then_finish() {
+  if (m_pending_visited_state != 0) {
+    mark_visited(m_pending_visited_state);
+  } else {
+    finish(m_ret_val);
+  }
 }
 
 void ObjectBackfillRequest::release_lock() {
@@ -297,13 +315,18 @@ void ObjectBackfillRequest::handle_release_lock(int r) {
     dout(10) << "lock released" << dendl;
   }
 
-  finish(m_ret_val);
+  // Post-release tail: write the bitmap bit if one is pending, otherwise
+  // just finish.  Errors in mark_visited are tolerated by handle_mark_visited
+  // (which still calls finish(m_ret_val)) so the bitmap update never strands
+  // the request.
+  maybe_mark_then_finish();
 }
 
 // Caller invariant: every code path that reaches finish() has either
 // (a) never acquired the cls_lock (handle_acquire_lock's EBUSY / error
-// branches call finish() before m_lock_acquired is set), or (b) released
-// it through release_lock() / handle_release_lock() before getting here.
+// branches call mark_visited then finish() before m_lock_acquired is set),
+// or (b) released it through release_lock() / handle_release_lock() before
+// getting here.
 // The state machine has no other entry, so finish() does not need a
 // fallback unlock — m_finished is the sole contract a duplicate caller
 // must respect.

@@ -307,47 +307,58 @@ void ObjectReadRequest<I>::handle_read_object(int r) {
       // see send_v2_open_object_map at RefreshRequest.cc:1062-1071), so
       // parent-via-read_parent chains were going aio_operate -> ENOENT
       // -> S3 fetch on every zero-block read, defeating backfill.
-      if (image_ctx->s3_backfill_complete) {
-        ldout(image_ctx->cct, 10) << "object " << this->m_object_no
-                                  << " ENOENT after backfill complete; "
-                                  << "skipping S3 fetch (known-zero)"
-                                  << dendl;
-        this->finish(-ENOENT);
-        return;
-      }
+      // The s3_backfill_complete flag and the backfill-visited bitmap both
+      // reflect HEAD state.  Snapshot reads must NOT consult them: a
+      // snapshot that was taken before backfill visited an object captures
+      // that object as it was at snap time, which may differ from the
+      // post-backfill HEAD truth.  E.g. a snap holding non-zero S3 data
+      // for object N, with HEAD bitmap saying VISITED_ZERO (the daemon
+      // confirmed the CURRENT S3 has zero there), would wrongly return
+      // zeros for the snap.  Let snapshot reads fall through to the
+      // normal S3 path; per-snap trust would need per-snap bitmaps, which
+      // we don't have today.
+      if (this->m_snap_id == CEPH_NOSNAP) {
+        if (image_ctx->s3_backfill_complete) {
+          ldout(image_ctx->cct, 10) << "object " << this->m_object_no
+                                    << " ENOENT after backfill complete; "
+                                    << "skipping S3 fetch (known-zero)"
+                                    << dendl;
+          this->finish(-ENOENT);
+          return;
+        }
 
-      // Per-object trust during PARTIAL backfill: even if the whole image
-      // isn't yet `backfill_status=complete`, rbd-backfill may have already
-      // visited THIS object and recorded its state in the per-image
-      // backfill-visited bitmap (rbd_backfill_visited.<id>).  A
-      // VISITED_ZERO bit means the daemon confirmed the source S3 object
-      // is all-zero and deliberately skipped writing it to RADOS -- going
-      // to S3 here would re-confirm "zero" at a 100+ ms RTT cost.
-      //
-      // Grab the bitmap atomically (shared_ptr) so a concurrent
-      // maybe_reload_backfill_visited() installing a new bitmap can't
-      // free this snapshot under us.  Bounds-check guards against
-      // rbd resize after the bitmap was sized: new objects (obj_no past
-      // end-of-bitmap) fall through to S3 as if no bit existed.
-      auto visited = std::atomic_load(&image_ctx->backfill_visited);
-      if (visited && this->m_object_no < visited->size() &&
-          (*visited)[this->m_object_no] == RBD_BACKFILL_VISITED_ZERO) {
-        ldout(image_ctx->cct, 10) << "object " << this->m_object_no
-                                  << " ENOENT with backfill_visited=ZERO; "
-                                  << "skipping S3 fetch (per-object trust)"
-                                  << dendl;
-        this->finish(-ENOENT);
-        return;
-      }
+        // Per-object trust during PARTIAL backfill: even if the whole image
+        // isn't yet `backfill_status=complete`, rbd-backfill may have
+        // already visited THIS object and recorded its state in the
+        // per-image bitmap (rbd_backfill_visited.<id>).  VISITED_ZERO
+        // means the daemon confirmed the source S3 object is all-zero
+        // and deliberately skipped writing it to RADOS -- going to S3
+        // here would re-confirm "zero" at a 100+ ms RTT cost.
+        //
+        // Atomic shared_ptr load so a concurrent maybe_reload_backfill_visited()
+        // swapping in a new bitmap can't free this snapshot under us.
+        // Bounds-check guards against rbd resize after the bitmap was
+        // sized: new objects past bitmap end fall through to S3.
+        auto visited = std::atomic_load(&image_ctx->backfill_visited);
+        if (visited && this->m_object_no < visited->size() &&
+            (*visited)[this->m_object_no] == RBD_BACKFILL_VISITED_ZERO) {
+          ldout(image_ctx->cct, 10) << "object " << this->m_object_no
+                                    << " ENOENT with backfill_visited=ZERO; "
+                                    << "skipping S3 fetch (per-object trust)"
+                                    << dendl;
+          this->finish(-ENOENT);
+          return;
+        }
 
-      // Bitmap miss (or no bitmap, or out-of-bounds): kick a non-blocking
-      // background reload if our cached copy is older than
-      // rbd_s3_backfill_visited_reload_interval.  This read still falls
-      // through to S3; subsequent reads after the reload completes will
-      // see any newly-flipped bits.  Critical for the concurrent-VM-boot
-      // scenario where N ImageCtxs all snapshot the bitmap at open and
-      // must pick up bits the daemon flips while they remain open.
-      image_ctx->maybe_reload_backfill_visited();
+        // Bitmap miss (or no bitmap, or out-of-bounds): kick a non-blocking
+        // background reload if our cached copy is older than
+        // rbd_s3_backfill_visited_reload_interval.  This read still falls
+        // through to S3; subsequent reads after the reload completes will
+        // see any newly-flipped bits.  Critical for the concurrent-VM-boot
+        // scenario where N ImageCtxs all snapshot the bitmap at open and
+        // must pick up bits the daemon flips while they remain open.
+        image_ctx->maybe_reload_backfill_visited();
+      }
       // No cls_lock on the critical path — see the design comment in
       // ObjectRequest.h.  read_from_s3() directly issues the S3 GET; on
       // success, handle_read_from_s3() finishes the client read AND

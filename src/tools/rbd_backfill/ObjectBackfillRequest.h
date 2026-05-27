@@ -57,14 +57,17 @@ private:
   void handle_update_object_map(int r);
 
   // Per-image backfill-visited bitmap update (rbd_backfill_visited.<id>).
-  // Called once per object on the success path of both the zero-block branch
-  // (state = VISITED_ZERO) and the data-block branch (state = VISITED_HAS_DATA)
-  // so the parent's reader-side ENOENT short-circuit can trust per-object
-  // state during partial backfill, not just the whole-image
-  // s3_backfill_complete flag.  Non-fatal on failure (bitmap is an
-  // optimization, not a correctness requirement).
+  // Runs AFTER release_lock completes (m_pending_visited_state set by the
+  // path that triggered the update) so the cls_lock window does not grow
+  // by an extra OSD round-trip.  EBUSY path calls this directly with no
+  // preceding release_lock (no lock was acquired).  Non-fatal on failure.
   void mark_visited(uint8_t state);
   void handle_mark_visited(int r);
+
+  // Tail dispatcher: if m_pending_visited_state is non-zero, run
+  // mark_visited; otherwise finish(m_ret_val).  Called from
+  // handle_release_lock so both branches converge on the same exit.
+  void maybe_mark_then_finish();
 
   void release_lock();
   void handle_release_lock(int r);
@@ -93,6 +96,15 @@ private:
 
   // Data buffer for RADOS write (pre-fetched from S3)
   ceph::bufferlist m_data_bl;
+
+  // Bitmap state to write AFTER release_lock completes.  0 means "nothing
+  // to mark" (e.g., a non-EBUSY error path that should not record a state).
+  // Set by write_rados (VISITED_ZERO), handle_update_object_map (HAS_DATA),
+  // and by the EBUSY branch of handle_acquire_lock (HAS_DATA, recording
+  // that a concurrent CopyupRequest will populate RADOS).  0 is reserved
+  // for the not-applicable case because VISITED_NO (also 0) is the
+  // bitmap's default and writing it explicitly is a no-op.
+  uint8_t m_pending_visited_state = 0;
 
   // Lock timeout configuration
   static constexpr uint32_t LOCK_TIMEOUT_SECONDS = 30;

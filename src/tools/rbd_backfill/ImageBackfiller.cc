@@ -326,6 +326,24 @@ void ImageBackfiller::backfill_object(uint64_t object_no) {
   if (stat_r == 0) {
     dout(15) << "object " << object_no << " already in RADOS (size=" << psize
              << "), skipping S3 fetch" << dendl;
+    // Update the bitmap so the reader's per-object trust check fires for
+    // this object too.  Without this, a daemon restart after writing
+    // objects 0..N would re-enter via stat-hit on 0..N and leave their
+    // bitmap bits at VISITED_NO -- defeating the entire per-object
+    // optimization for the prior run's work.  Synchronous because we
+    // are on the run_backfill thread and N stat-hits at restart cost
+    // O(N) OSD round-trips either way; folding them through the
+    // throttled ObjectBackfillRequest path would just add overhead.
+    librados::ObjectWriteOperation bm_op;
+    librbd::cls_client::object_map_update(
+      &bm_op, object_no, object_no + 1, VISITED_HAS_DATA,
+      boost::optional<uint8_t>());
+    int bm_r = m_ioctx.operate(backfill_visited_oid(m_spec.image_id),
+                               &bm_op);
+    if (bm_r < 0 && bm_r != -ENOENT) {
+      dout(5) << "stat-hit bitmap update failed for object " << object_no
+              << ": " << cpp_strerror(bm_r) << " -- non-fatal" << dendl;
+    }
     m_completed_objects++;
     return;
   }

@@ -958,26 +958,35 @@ public:
     // still safe to trust.  ENOENT -> no bitmap exists, reader falls through
     // to the pre-bitmap behavior.  Keep the OID prefix in sync with
     // RBD_BACKFILL_VISITED_PREFIX in src/include/rbd_types.h.
+    // Load the per-image backfill-visited bitmap synchronously here so the
+    // very first parent read after open can consult it without an extra
+    // round-trip.  Trade-off: apply_metadata may be invoked from a librados
+    // AIO finisher thread (RefreshRequest.cc:646), where a blocking GET
+    // stalls other completions for the OSD round-trip.  Acceptable here
+    // because the bitmap object is small (~64 KB per TB of image) and the
+    // typical GET is sub-ms; only a degraded OSD on the bitmap object
+    // produces a noticeable stall.  Periodic refreshes during the
+    // ImageCtx's lifetime go via maybe_reload_backfill_visited(), which
+    // uses async aio_operate to keep the finisher unblocked there.
+    //
+    // Pool: md_ctx (primary/metadata pool), matching where
+    // ImageBackfiller::init_backfill_visited_bitmap and
+    // RemoveRequest::send_backfill_visited_remove write/delete the
+    // bitmap.  data_ctx would be wrong for --data-pool images.
     if (s3_config.is_valid()) {
       const std::string visited_oid =
         std::string(RBD_BACKFILL_VISITED_PREFIX) + id;
       auto loaded = std::make_shared<ceph::BitVector<2>>();
-      int r = cls_client::object_map_load(&data_ctx, visited_oid, loaded.get());
-      // Lock-free: shared_ptr via std::atomic_store, timestamp via
-      // std::atomic.  No md_lock required, so apply_metadata stays callable
-      // from RefreshRequest/OpenRequest without imposing a lock contract.
+      int r = cls_client::object_map_load(&md_ctx, visited_oid, loaded.get());
+      RWLock::WLocker md_locker(md_lock);
       if (r == 0) {
         std::atomic_store(&backfill_visited, loaded);
-        backfill_visited_loaded_at_sec.store(ceph_clock_now().sec(),
-                                             std::memory_order_release);
         ldout(cct, 10) << __func__ << ": loaded backfill-visited bitmap from "
-                       << visited_oid << " (size=" << loaded->size()
-                       << ")" << dendl;
+                       << visited_oid << " (size=" << loaded->size() << ")"
+                       << dendl;
       } else {
         std::atomic_store(&backfill_visited,
                           std::shared_ptr<ceph::BitVector<2>>{});
-        backfill_visited_loaded_at_sec.store(ceph_clock_now().sec(),
-                                             std::memory_order_release);
         if (r != -ENOENT) {
           ldout(cct, 5) << __func__ << ": failed to load backfill-visited "
                         << "bitmap from " << visited_oid << ": "
@@ -985,9 +994,14 @@ public:
                         << dendl;
         }
       }
+      backfill_visited_loaded_at_sec.store(ceph_clock_now().sec(),
+                                           std::memory_order_release);
     } else {
+      RWLock::WLocker md_locker(md_lock);
       std::atomic_store(&backfill_visited,
                         std::shared_ptr<ceph::BitVector<2>>{});
+      backfill_visited_loaded_at_sec.store(ceph_clock_now().sec(),
+                                           std::memory_order_release);
     }
 
     alloc_hint_flags = 0;
@@ -1036,15 +1050,20 @@ public:
   }
 
   void ImageCtx::maybe_reload_backfill_visited() {
-    // Cheap pre-checks: no point reloading if this isn't an S3-backed image,
-    // or if the interval is set to 0 (disabled).
-    if (!s3_config.is_valid()) {
-      return;
+    // s3_config is written by apply_metadata under no lock; take snap_lock
+    // RLocker to make the is_valid() check race-free against a concurrent
+    // RefreshRequest that's mid-population of the s3_config struct.  This
+    // pairs with the WLocker apply_metadata takes around the bitmap block.
+    {
+      RWLock::RLocker snap_locker(snap_lock);
+      if (!s3_config.is_valid()) {
+        return;
+      }
     }
     uint64_t interval =
       config.get_val<uint64_t>("rbd_s3_backfill_visited_reload_interval");
     if (interval == 0) {
-      return;
+      return;  // periodic reload disabled
     }
 
     uint64_t now_sec = static_cast<uint64_t>(ceph_clock_now().sec());
@@ -1058,54 +1077,88 @@ public:
     if (loaded_sec > now_sec || (now_sec - loaded_sec) < interval) {
       return;
     }
+
+    // Set the in-flight flag under WLocker BEFORE submitting the aio.
+    // This is the single point that bounds concurrent reloads to one: a
+    // racing caller that also reaches this WLocker will see in_flight=true
+    // and bail without submitting a redundant RADOS GET.
     {
-      RWLock::RLocker locker(md_lock);
+      RWLock::WLocker md_locker(md_lock);
       if (backfill_visited_reload_in_flight) {
         return;
       }
+      backfill_visited_reload_in_flight = true;
     }
 
-    // Stale and no reload in flight.  Post a non-blocking work item that
-    // marks itself in-flight (under WLocker -- the read-then-write window
-    // above is a benign TOCTOU; if two callers race, the second simply
-    // returns from the if(in_flight) check below and the first does the
-    // reload alone).  We do not block the caller on the actual RADOS GET.
-    op_work_queue->queue(new FunctionContext([this](int r) {
-      {
-        RWLock::WLocker locker(md_lock);
-        if (backfill_visited_reload_in_flight) {
-          return;
+    // Lifetime: [this]-capture in the callback is safe because ~ImageCtx
+    // calls md_ctx.aio_flush() before tearing down (see ImageCtx.cc:192),
+    // which blocks until all in-flight aios on md_ctx complete -- including
+    // their callbacks.  This is why we use md_ctx and not op_work_queue
+    // (which has no destructor-time drain for this ImageCtx).  md_ctx is
+    // also the right pool for the bitmap: the daemon's
+    // ImageBackfiller::init_backfill_visited_bitmap writes via the
+    // primary/metadata pool too, and data_ctx may be retargeted away
+    // (OpenRequest.cc:473-474 retargets data_ctx to the data pool for
+    // --data-pool images, leaving md_ctx pointing at the primary pool).
+    const std::string visited_oid =
+      std::string(RBD_BACKFILL_VISITED_PREFIX) + id;
+    auto* out_bl = new bufferlist();
+
+    librados::ObjectReadOperation op;
+    cls_client::object_map_load_start(&op);
+
+    auto* on_finish = new FunctionContext(
+      [this, out_bl](int load_r) {
+        // Single in_flight = true / single submitted aio = one effective
+        // bitmap GET per TTL interval per ImageCtx.  Subsequent racing
+        // callers bail at the WLocker-guarded `if (in_flight) return`
+        // above without queuing redundant aios.
+        std::shared_ptr<ceph::BitVector<2>> new_bitmap;
+        if (load_r == 0) {
+          new_bitmap = std::make_shared<ceph::BitVector<2>>();
+          auto it = out_bl->cbegin();
+          int decode_r = cls_client::object_map_load_finish(&it,
+                                                            new_bitmap.get());
+          if (decode_r < 0) {
+            ldout(cct, 5) << "maybe_reload_backfill_visited: decode failed: "
+                          << cpp_strerror(decode_r) << dendl;
+            new_bitmap.reset();
+            load_r = decode_r;
+          }
         }
-        backfill_visited_reload_in_flight = true;
-      }
 
-      const std::string visited_oid =
-        std::string(RBD_BACKFILL_VISITED_PREFIX) + id;
-      auto loaded = std::make_shared<ceph::BitVector<2>>();
-      int load_r = cls_client::object_map_load(&data_ctx, visited_oid,
-                                               loaded.get());
+        {
+          // Single-critical-section update of (bitmap, timestamp,
+          // in_flight) so a reader observes a consistent triple.
+          RWLock::WLocker md_locker(md_lock);
+          if (load_r == 0) {
+            std::atomic_store(&backfill_visited, new_bitmap);
+            ldout(cct, 15) << "maybe_reload_backfill_visited: refreshed "
+                           << "(size=" << new_bitmap->size() << ")" << dendl;
+          } else if (load_r == -ENOENT) {
+            std::atomic_store(&backfill_visited,
+                              std::shared_ptr<ceph::BitVector<2>>{});
+          } else {
+            ldout(cct, 5) << "maybe_reload_backfill_visited: load failed: "
+                          << cpp_strerror(load_r) << " -- keeping stale copy"
+                          << dendl;
+          }
+          // Always update the timestamp (#9): without this, a sustained
+          // transient RADOS error (-ETIMEDOUT, -EIO) leaves the timestamp
+          // stale and every parent-read miss re-enqueues a fresh reload.
+          // On success we get the natural fresh timestamp; on error we
+          // wait one full TTL interval before retrying.
+          backfill_visited_loaded_at_sec.store(ceph_clock_now().sec(),
+                                               std::memory_order_release);
+          backfill_visited_reload_in_flight = false;
+        }
+        delete out_bl;
+      });
 
-      if (load_r == 0) {
-        std::atomic_store(&backfill_visited, loaded);
-        backfill_visited_loaded_at_sec.store(ceph_clock_now().sec(),
-                                             std::memory_order_release);
-        ldout(cct, 15) << "maybe_reload_backfill_visited: refreshed (size="
-                       << loaded->size() << ")" << dendl;
-      } else if (load_r == -ENOENT) {
-        std::atomic_store(&backfill_visited,
-                          std::shared_ptr<ceph::BitVector<2>>{});
-        backfill_visited_loaded_at_sec.store(ceph_clock_now().sec(),
-                                             std::memory_order_release);
-      } else {
-        ldout(cct, 5) << "maybe_reload_backfill_visited: load failed: "
-                      << cpp_strerror(load_r) << " -- keeping stale copy"
-                      << dendl;
-      }
-      {
-        RWLock::WLocker locker(md_lock);
-        backfill_visited_reload_in_flight = false;
-      }
-    }), 0);
+    auto* rados_completion = util::create_rados_callback(on_finish);
+    int r = md_ctx.aio_operate(visited_oid, rados_completion, &op, out_bl);
+    ceph_assert(r == 0);
+    rados_completion->release();
   }
 
   Journal<ImageCtx> *ImageCtx::create_journal() {
