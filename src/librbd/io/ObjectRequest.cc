@@ -279,25 +279,53 @@ void ObjectReadRequest<I>::read_object() {
   // VISITED_ZERO means the daemon observed S3[N] = zero; subsequent
   // S3 mutation is not a supported in-place op (re-backfill required),
   // so the bit cannot become stale relative to reality.  Note in
-  // particular that CopyupRequest from a child write to N is harmless:
-  // it would also observe S3[N] = zero (per the immutability
-  // assumption) and either skip or write zero to RADOS; either way
-  // pre-aio returning zero is correct.  For VISITED_NO and
-  // VISITED_HAS_DATA we fall through to aio_operate as before --
-  // handle_read_object's post-aio bitmap check still serves as the
-  // partial-backfill fallback for objects the daemon hasn't visited.
-  if (image_ctx->s3_config.is_valid() &&
-      this->m_snap_id == CEPH_NOSNAP) {
-    auto visited = std::atomic_load(&image_ctx->backfill_visited);
-    if (visited && this->m_object_no < visited->size() &&
-        (*visited)[this->m_object_no] == RBD_BACKFILL_VISITED_ZERO) {
-      ldout(image_ctx->cct, 15) << "object " << this->m_object_no
-                                << " short-circuiting pre-aio via bitmap "
-                                << "(VISITED_ZERO)" << dendl;
-      image_ctx->op_work_queue->queue(new FunctionContext([this](int r) {
-          read_parent();
-        }), 0);
-      return;
+  // particular that no code path can populate parent RADOS for a
+  // VISITED_ZERO object: CopyupRequest::fire_parent_s3_writeback
+  // returns early when m_copyup_data.length() == 0; AsyncWritebackThrottler::
+  // write_full short-circuits on is_zero(); handle_read_from_s3 skips
+  // the throttler when the fetched data is zero.  Under that invariant
+  // pre-aio finishing with -ENOENT is correct: the upper layer zero-
+  // fills, equivalent to what aio_operate -> ENOENT -> handle_read_object's
+  // bitmap-trust branch would have produced after one extra RADOS RTT.
+  //
+  // Finish with -ENOENT directly (rather than calling read_parent()
+  // like the object_map short-circuit above) because: (a) it mirrors
+  // the post-aio bitmap-trust branch in handle_read_object, which also
+  // calls finish(-ENOENT); (b) it skips the snap_lock + parent_lock +
+  // Striper work read_parent performs only to land at the same
+  // finish(-ENOENT) for an S3-backed parent (S3-backed parents are
+  // always terminal in the clone chain in this design -- they have no
+  // grandparent of their own, so read_parent's parent_overlap check
+  // always falls through to -ENOENT).
+  //
+  // s3_config.is_valid() is read inside snap_lock to pair with the
+  // documented "apply_metadata populates s3_config without snap_lock"
+  // hazard (see ImageCtx.cc maybe_reload_backfill_visited).  Without
+  // snap_lock a concurrent RefreshRequest mid-populating the S3Config's
+  // std::string members could produce a torn is_valid() read.
+  //
+  // For VISITED_NO and VISITED_HAS_DATA we fall through to aio_operate
+  // as before; handle_read_object's post-aio bitmap check still serves
+  // as the partial-backfill fallback for objects the daemon hasn't
+  // visited.
+  if (image_ctx->s3_fetch_enabled && this->m_snap_id == CEPH_NOSNAP) {
+    bool s3_valid;
+    {
+      RWLock::RLocker snap_locker(image_ctx->snap_lock);
+      s3_valid = image_ctx->s3_config.is_valid();
+    }
+    if (s3_valid) {
+      auto visited = std::atomic_load(&image_ctx->backfill_visited);
+      if (visited && this->m_object_no < visited->size() &&
+          (*visited)[this->m_object_no] == RBD_BACKFILL_VISITED_ZERO) {
+        ldout(image_ctx->cct, 10) << "object " << this->m_object_no
+                                  << " short-circuiting pre-aio via bitmap "
+                                  << "(VISITED_ZERO)" << dendl;
+        image_ctx->op_work_queue->queue(new FunctionContext([this](int r) {
+            this->finish(-ENOENT);
+          }), 0);
+        return;
+      }
     }
   }
 
