@@ -46,6 +46,32 @@ check_prereqs() {
 }
 
 # Run a command inside a cluster container as the cephdev user
+# Upload a local file to a MinIO sidecar container through the S3 API.
+#
+# Cannot just drop the file at /data/<bucket>/<object> on the host volume:
+# current MinIO requires uploads through the S3 API so it writes the
+# .minio.sys/buckets/<bucket>/<object>/xl.meta indices that GET / Range
+# requests consult.  A file staged on disk without those indices is
+# silently invisible -- GET returns 404, but librbd's S3-backed-parent
+# semantics treat 404 as "sparse hole, zero", so tests that don't verify
+# content pass on all-zero reads.  This helper closes that gap.
+#
+# Args: container_name local_file bucket object
+upload_to_minio_sidecar() {
+    local container=$1
+    local local_file=$2
+    local bucket=$3
+    local object=$4
+
+    docker cp "$local_file" "$container":/tmp/upload-staging
+    docker exec "$container" sh -c "
+        mc alias set local http://127.0.0.1:9000 minioadmin minioadmin >/dev/null 2>&1 &&
+        mc mb local/$bucket 2>/dev/null || true
+        mc cp /tmp/upload-staging local/$bucket/$object &&
+        rm /tmp/upload-staging
+    " >/dev/null
+}
+
 exec_on() {
     local cluster=$1; shift
     docker exec -u cephdev "ceph-${cluster}" bash -c \
@@ -226,14 +252,10 @@ run_s3_cross_cluster() {
     # IP-allocation step with "ip address ... is already allocated".
     trap "docker rm -f $minio_name >/dev/null 2>&1; rm -rf $minio_data" RETURN
 
-    # Pre-place the parent data in MinIO's data dir so we don't need any
-    # host->container upload path (the host can't reach the container in
-    # rootless podman either, for the same pasta reason).  MinIO with the
-    # default fs backend treats /data/<bucket>/<object> as the S3 object
-    # store, which means we can stage the file on disk and avoid mc entirely.
-    mkdir -p "${minio_data}/${s3_bucket}"
-    dd if=/dev/urandom of="${minio_data}/${s3_bucket}/cross-parent-raw" \
-        bs=1M count=20 status=none
+    mkdir -p "$minio_data"
+    local tmp_raw
+    tmp_raw=$(mktemp /tmp/cross-parent-raw.XXXXXX)
+    dd if=/dev/urandom of="$tmp_raw" bs=1M count=20 status=none
 
     docker rm -f "$minio_name" 2>/dev/null || true
     docker run -d --name "$minio_name" --rm \
@@ -255,9 +277,13 @@ run_s3_cross_cluster() {
         "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
         log_error "MinIO sidecar didn't become reachable from cluster2"
         docker logs "$minio_name" 2>&1 | tail
+        rm -f "$tmp_raw"
         return 1
     fi
-    log_success "MinIO sidecar at ${container_s3} ready (20MB parent staged)"
+
+    upload_to_minio_sidecar "$minio_name" "$tmp_raw" "$s3_bucket" "cross-parent-raw"
+    rm -f "$tmp_raw"
+    log_success "MinIO sidecar at ${container_s3} ready (20MB parent uploaded via S3)"
 
     # Setup parent pool + image on cluster1 with S3 config pointing to host MinIO
     ceph_on cluster1 "osd pool create xcluster_pool 32" 2>&1 || true
@@ -559,6 +585,255 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
 }
 
 # ── Test: S3 cross-cluster concurrent COW ────────────────────────────────────
+# ── Test: cross-cluster partial-backfill bitmap path ─────────────────────────
+# Cross-cluster variant of test_partial_backfill_zero_region_no_s3 from
+# scripts/test-s3-backfill.sh.  Validates that the per-image
+# rbd_backfill_visited.<id> bitmap loaded by cluster2's child reader from
+# cluster1's RADOS pool (via the remote_parent_cluster connection) is
+# honored: zero blocks the daemon visited on cluster1 short-circuit on
+# cluster2 without an S3 fetch, even when the whole-image
+# s3_backfill_complete trust flag is cleared.
+#
+# Test isolation strategy: run backfill on cluster1 to full completion
+# (populates the bitmap), then DELETE backfill_status from cluster1's
+# parent metadata.  When cluster2 next opens the cross-cluster parent
+# ImageCtx, apply_metadata sees no backfill_status -> s3_backfill_complete=
+# false, but cls_client::object_map_load against the remote IoCtx still
+# returns the populated bitmap.  With MinIO stopped, the export must
+# succeed solely via the bitmap's VISITED_ZERO bits.
+run_s3_cross_cluster_partial_backfill() {
+    log_step "=== Test: S3-Backed Cross-Cluster Partial-Backfill Bitmap Path ==="
+
+    local minio_name="minio-xpartial-$$"
+    local minio_ip="172.20.0.32"   # distinct from .30 (xcluster) and .31 (xconcur)
+    local minio_port=9000
+    local minio_data="/tmp/${minio_name}-data"
+    local s3_bucket="xpartial-test"
+    local container_s3="http://${minio_ip}:${minio_port}"
+    local size_mb=16   # 4 blocks of 4MB: data, zero, data, zero
+
+    # Ensure the sidecar container is reaped on every return path -- same
+    # IP-collision concern as the other S3 sidecar tests in this file.
+    trap "docker rm -f $minio_name >/dev/null 2>&1; rm -rf $minio_data" RETURN
+
+    mkdir -p "$minio_data"
+
+    # Build a sparse parent file on the host: alternating 4MB random + 4MB zero.
+    # ObjectBackfillRequest's is_zero() check skips the zero blocks during
+    # backfill (no RADOS write, no object_map flag), so they are exactly
+    # the blocks that depend on the bitmap's VISITED_ZERO short-circuit.
+    local tmp_raw
+    tmp_raw=$(mktemp /tmp/xpartial-parent-raw.XXXXXX)
+    dd if=/dev/urandom bs=4M count=1 of="$tmp_raw"      status=none
+    truncate -s 8M "$tmp_raw"   # +4MB zero -> 8MB
+    dd if=/dev/urandom bs=4M count=1 of="$tmp_raw" \
+        oflag=append conv=notrunc status=none           # +4MB random -> 12MB
+    truncate -s ${size_mb}M "$tmp_raw"                  # +4MB zero -> 16MB
+
+    docker rm -f "$minio_name" 2>/dev/null || true
+    docker run -d --name "$minio_name" --rm \
+        --network ceph-nautilus_ceph-net \
+        --ip "$minio_ip" \
+        -v "${minio_data}:/data" \
+        -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+        minio/minio server /data --address "0.0.0.0:${minio_port}" >/dev/null
+
+    for i in $(seq 1 30); do
+        if docker exec ceph-cluster2 bash -c \
+            "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    if ! docker exec ceph-cluster2 bash -c \
+        "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+        log_error "MinIO sidecar didn't become reachable from cluster2"
+        docker logs "$minio_name" 2>&1 | tail
+        rm -f "$tmp_raw"
+        return 1
+    fi
+
+    upload_to_minio_sidecar "$minio_name" "$tmp_raw" "$s3_bucket" "xpartial-parent-raw"
+    # Keep tmp_raw around -- we sha256sum it below to verify the export.
+    log_success "MinIO sidecar at ${container_s3} ready (${size_mb}MB sparse parent uploaded via S3)"
+
+    # Setup parent on cluster1 (daemon will run here too -- daemon ALWAYS
+    # runs in the parent's home cluster, since the parent's RADOS pool is
+    # there).
+    ceph_on cluster1 "osd pool create xpartial_pool 32" 2>&1 || true
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf pool init xpartial_pool"
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf create \
+        --size ${size_mb}M xpartial_pool/xpartial-parent"
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf s3-config set \
+        xpartial_pool/xpartial-parent \
+        --s3-endpoint   '${container_s3}' \
+        --s3-bucket     '${s3_bucket}' \
+        --s3-image-name 'xpartial-parent-raw' \
+        --s3-access-key minioadmin \
+        --s3-secret-key minioadmin"
+    log_success "S3-backed sparse parent created on cluster1"
+
+    # Setup child pool on cluster2 + cluster1 access config (same idiom as
+    # run_s3_cross_cluster -- xpartial_pool must also exist on cluster2 for
+    # clone-standalone to validate the parent pool name locally before
+    # consulting --remote-cluster-conf).
+    ceph_on cluster2 "osd pool create xpartial_pool       32" 2>&1 || true
+    ceph_on cluster2 "osd pool create xpartial_child_pool 32" 2>&1 || true
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init xpartial_pool"
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init xpartial_child_pool"
+
+    local mon_addr key
+    mon_addr=$(docker exec ceph-cluster1 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; \
+         /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf mon dump --format json 2>/dev/null \
+         | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[\"mons\"][0][\"addr\"].split(\"/\")[0])'")
+    key=$(docker exec ceph-cluster1 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; \
+         /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf auth get-key client.admin")
+
+    docker exec -u cephdev ceph-cluster2 bash -c "mkdir -p /home/cephdev/.ceph
+cat > /home/cephdev/.ceph/xpartial1.conf << 'EOF'
+[global]
+mon_host = ${mon_addr}
+EOF
+cat > /home/cephdev/.ceph/xpartial1.keyring << 'EOF'
+[client.admin]
+key = ${key}
+EOF
+chmod 600 /home/cephdev/.ceph/xpartial1.keyring"
+
+    # Create the cross-cluster child on cluster2 pointing at the parent on cluster1.
+    docker exec -u cephdev ceph-cluster2 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+         ./bin/rbd --conf /tmp/cluster2/ceph.conf clone-standalone \
+             --remote-cluster-conf   /home/cephdev/.ceph/xpartial1.conf \
+             --remote-keyring        /home/cephdev/.ceph/xpartial1.keyring \
+             xpartial_pool/xpartial-parent \
+             xpartial_child_pool/xpartial-child"
+    log_success "Cross-cluster standalone clone created"
+
+    # Schedule + run rbd-backfill on cluster1.  Launch detached because the
+    # daemon does not reliably exit even with --rbd-backfill-rescan-interval=0
+    # (it processes all scheduled images, writes backfill_status=complete,
+    # then idles in the main loop instead of returning).  We poll for the
+    # completion signal in image metadata and then pkill the daemon
+    # explicitly -- same pattern as run_backfill_daemon + stop_backfill_daemon
+    # in scripts/test-s3-backfill.sh.
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf \
+        backfill schedule xpartial_pool/xpartial-parent"
+    log_info "Launching rbd-backfill on cluster1 (detached)..."
+    docker exec -u cephdev -d ceph-cluster1 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+         ./bin/rbd-backfill --conf /tmp/cluster1/ceph.conf \
+             --foreground --rbd-backfill-rescan-interval 5 \
+             > /tmp/rbd-backfill-xpartial.log 2>&1"
+
+    local status_ok=0
+    for i in $(seq 1 60); do
+        local s
+        s=$(docker exec -u cephdev ceph-cluster1 bash -c \
+            "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+             ./bin/rbd --conf /tmp/cluster1/ceph.conf \
+                 image-meta get xpartial_pool/xpartial-parent backfill_status 2>/dev/null" \
+            || echo "")
+        if [ "$s" = "complete" ]; then
+            status_ok=1
+            break
+        fi
+        sleep 1
+    done
+
+    # Always pkill the daemon, success or failure -- it does NOT self-exit.
+    docker exec ceph-cluster1 pkill -f rbd-backfill 2>/dev/null || true
+    sleep 1
+
+    if [ "$status_ok" -ne 1 ]; then
+        log_fail "backfill_status on cluster1 parent never reached 'complete' within 60s"
+        docker exec ceph-cluster1 cat /tmp/rbd-backfill-xpartial.log 2>/dev/null | tail -30
+        return 1
+    fi
+    log_success "Backfill on cluster1 reached complete (bitmap populated)"
+
+    # Delete backfill_status on cluster1's parent so the next cross-cluster
+    # ImageCtx open from cluster2 sees s3_backfill_complete=false.  The
+    # bitmap object (rbd_backfill_visited.<id>) is independent of this
+    # metadata key -- it lives in its own RADOS object -- so it stays
+    # populated.
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf \
+        image-meta remove xpartial_pool/xpartial-parent backfill_status"
+    local sleft
+    sleft=$(docker exec -u cephdev ceph-cluster1 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+         ./bin/rbd --conf /tmp/cluster1/ceph.conf \
+             image-meta get xpartial_pool/xpartial-parent backfill_status 2>/dev/null" \
+        || echo "")
+    if [ -n "$sleft" ]; then
+        log_fail "backfill_status on cluster1 still present after remove: '$sleft'"
+        return 1
+    fi
+    log_success "backfill_status removed -- next parent open will load bitmap only"
+
+    # Stop MinIO.  From this point ANY S3 fetch from cluster2's child read
+    # path will fail.  If the cross-cluster bitmap-load path is broken,
+    # the export below will EIO on the zero blocks.
+    docker rm -f "$minio_name" >/dev/null 2>&1
+    log_info "MinIO sidecar stopped -- any S3 fetch will now fail"
+
+    # Export the child from cluster2 to a temp file inside the container,
+    # then verify it round-trips by reading it back.  Using --no-progress
+    # keeps the log clean.
+    local export_inside_container="/tmp/xpartial-child-export-$$.raw"
+    if ! docker exec -u cephdev ceph-cluster2 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+         ./bin/rbd --conf /tmp/cluster2/ceph.conf export \
+             xpartial_child_pool/xpartial-child $export_inside_container"; then
+        log_fail "rbd export of cross-cluster child failed with MinIO down -- bitmap path broken"
+        # Bring MinIO back so cleanup at end can talk to it
+        docker run -d --name "$minio_name" --rm \
+            --network ceph-nautilus_ceph-net \
+            --ip "$minio_ip" \
+            -v "${minio_data}:/data" \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio server /data --address "0.0.0.0:${minio_port}" >/dev/null
+        return 1
+    fi
+
+    # Verify checksum of exported child equals the original parent file.
+    local src_sha export_sha
+    src_sha=$(sha256sum "$tmp_raw" | awk '{print $1}')
+    rm -f "$tmp_raw"
+    export_sha=$(docker exec -u cephdev ceph-cluster2 bash -c \
+        "sha256sum $export_inside_container | awk '{print \$1}'")
+
+    # Cleanup before assertion so cleanup runs even on mismatch.
+    docker exec -u cephdev ceph-cluster2 bash -c "rm -f $export_inside_container" 2>/dev/null || true
+
+    if [ "$src_sha" != "$export_sha" ]; then
+        log_fail "Cross-cluster child export checksum mismatch -- bitmap returned wrong data"
+        log_error "  expected (parent raw): $src_sha"
+        log_error "  got      (child export): $export_sha"
+        return 1
+    fi
+    log_success "Cross-cluster child export checksum matches (bitmap path served zero blocks correctly)"
+
+    # Cleanup: bring MinIO back so the lazy clones can be removed.
+    docker run -d --name "$minio_name" --rm \
+        --network ceph-nautilus_ceph-net \
+        --ip "$minio_ip" \
+        -v "${minio_data}:/data" \
+        -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+        minio/minio server /data --address "0.0.0.0:${minio_port}" >/dev/null
+    sleep 2
+
+    rbd_on cluster2 "rm xpartial_child_pool/xpartial-child" 2>/dev/null || true
+    rbd_on cluster1 "rm xpartial_pool/xpartial-parent"      2>/dev/null || true
+    ceph_on cluster1 "osd pool delete xpartial_pool       xpartial_pool       --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete xpartial_pool       xpartial_pool       --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete xpartial_child_pool xpartial_child_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+
+    log_success "=== Cross-Cluster Partial-Backfill Bitmap Test PASSED ==="
+}
+
 run_s3_cross_cluster_concurrent() {
     log_step "=== Test: S3-Backed Cross-Cluster Concurrent COW ($NUM_CONCURRENT clients) ==="
     # N clients on cluster2 simultaneously write to children of the same
@@ -584,18 +859,20 @@ run_s3_cross_cluster_concurrent() {
     local minio_data="/tmp/${minio_name}-data"
     local s3_bucket="xconcur-test"
     local container_s3="http://${minio_ip}:${minio_port}"
-    local parent_raw="${minio_data}/${s3_bucket}/xconcur-parent-raw"
+    # parent_raw is the host-side staging file used by the post-bench integrity
+    # check below.  Originally written into MinIO's data dir and served via the
+    # FS backend; that direct-staging trick stopped working in newer MinIO
+    # versions, so we now stage to a tmpfile, upload via the S3 API, and reuse
+    # the tmpfile for the integrity comparison.
+    local parent_raw
 
     # Ensure the sidecar container is reaped on EVERY return path (see
     # run_s3_cross_cluster for the same idiom and the IP-collision bug it
     # prevents).
     trap "docker rm -f $minio_name >/dev/null 2>&1; rm -rf $minio_data" RETURN
 
-    # Pre-stage the parent file in MinIO's fs backend so we don't need a
-    # host->container upload path (pasta blocks that too).  MinIO with the
-    # default fs backend treats /data/<bucket>/<object> as the S3 object
-    # store.
-    mkdir -p "${minio_data}/${s3_bucket}"
+    mkdir -p "$minio_data"
+    parent_raw=$(mktemp /tmp/xconcur-parent-raw.XXXXXX)
     dd if=/dev/urandom bs=1M count=$parent_size_mb of="$parent_raw" status=none
 
     docker rm -f "$minio_name" 2>/dev/null || true
@@ -617,9 +894,14 @@ run_s3_cross_cluster_concurrent() {
         "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
         log_error "MinIO sidecar didn't become reachable from cluster2"
         docker logs "$minio_name" 2>&1 | tail
+        rm -f "$parent_raw"
         return 1
     fi
-    log_success "MinIO sidecar at ${container_s3} ready (${parent_size_mb}MB parent staged)"
+
+    upload_to_minio_sidecar "$minio_name" "$parent_raw" "$s3_bucket" "xconcur-parent-raw"
+    # Keep parent_raw on disk for the post-bench integrity check (line ~1030);
+    # it's removed in the cleanup at end of function.
+    log_success "MinIO sidecar at ${container_s3} ready (${parent_size_mb}MB parent uploaded via S3)"
 
     # Setup parent on cluster1
     ceph_on cluster1 "osd pool create xconcur_pool 32" 2>&1 || true
@@ -779,6 +1061,7 @@ chmod 600 /home/cephdev/.ceph/xconcur1.keyring"
 
     docker rm -f "$minio_name" 2>/dev/null || true
     rm -rf "$minio_data" /tmp/xconcur-bench-*-$$.log
+    rm -f "$parent_raw"
 
     if [ $FAILED -gt 0 ]; then
         log_error "=== S3-Backed Cross-Cluster Concurrent COW Test FAILED ==="
@@ -802,6 +1085,7 @@ start_ceph_cluster cluster2
 [ $RUN_PLAIN      -eq 1 ] && run_plain_cross_cluster
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_rbd_children
+[ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_partial_backfill
 [ $RUN_S3         -eq 1 ] && [ $RUN_CONCURRENT -eq 1 ] && run_s3_cross_cluster_concurrent
 
 echo
