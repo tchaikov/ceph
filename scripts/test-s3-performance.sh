@@ -77,6 +77,7 @@ ALL_TESTS=(
     perf_test_scattered_random_reads_concurrent
     perf_test_post_backfill_zero_no_s3
     perf_test_partial_backfill_zero_no_s3
+    perf_test_no_trust_zero_baseline
 )
 
 if [ "$LIST_ONLY" = "1" ]; then
@@ -967,6 +968,88 @@ perf_test_partial_backfill_zero_no_s3() {
         return 1
     fi
     log_success "$name: 0 S3 GETs with bitmap-only trust"
+    return 0
+}
+
+perf_test_no_trust_zero_baseline() {
+    local name="no_trust_zero_baseline"
+    local reads=200
+    local io_size=4096
+    local total_bytes=$((reads * io_size))
+
+    # Baseline counterpart to perf_test_partial_backfill_zero_no_s3.  Same
+    # fixture and workload, but the parent has NEVER been backfilled:
+    #   - no rbd_backfill_visited.<id> bitmap object (apply_metadata's
+    #     synchronous load returns -ENOENT, ImageCtx::backfill_visited
+    #     stays nullptr)
+    #   - no backfill_status metadata key (s3_backfill_complete=false)
+    #
+    # Every read of a zero block must therefore fall through to S3.  The
+    # LRU dedup means each unique zero object hits S3 at most once for
+    # the duration of the workload, so the expected baseline is
+    # roughly (unique zero objects touched in 200 random 4KB reads).
+    # For PERF_FIXTURE_SPARSE_40MB (10 blocks, 8 zero), the upper bound
+    # is 8; the partial-backfill variant must beat this by short-circuiting
+    # all of them.
+    log_step "$name: $reads random ${io_size}B reads with NO trust (baseline for bitmap delta)"
+
+    setup_fresh_image "$PERF_FIXTURE_SPARSE_40MB" "perf-sparse-40mb.raw"
+
+    # Deliberately skip backfill -- no bitmap, no s3_backfill_complete.
+    reset_trace
+    local rados_before
+    rados_before=$(perf_rados_snapshot "$CEPH_CONF" "$POOL")
+
+    local t0
+    t0=$(perf_time_ms)
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" bench \
+        --io-type read \
+        --io-size "$io_size" \
+        --io-total "$total_bytes" \
+        --io-pattern rand \
+        --io-threads 1 \
+        "$POOL/$PERF_CHILD" >/dev/null 2>&1 \
+        || log_warn "$name: bench reported failure (still recording metrics)"
+    local elapsed
+    elapsed=$(perf_time_elapsed_ms "$t0")
+
+    sleep 1
+
+    local rados_after
+    rados_after=$(perf_rados_snapshot "$CEPH_CONF" "$POOL")
+    local rados_writes
+    rados_writes=$(perf_extract_field "$(perf_rados_delta "$rados_before" "$rados_after")" write_ops)
+
+    local s3_gets
+    s3_gets=$(perf_minio_get_count "$MINIO_TRACE_LOG" "$S3_BUCKET")
+
+    local per_read_ms
+    per_read_ms=$(awk "BEGIN{printf \"%.2f\", $elapsed / $reads}")
+
+    perf_record "$name" reads             "$reads"        count
+    perf_record "$name" io_size_bytes     "$io_size"      bytes
+    perf_record "$name" wall_time_ms      "$elapsed"      ms
+    perf_record "$name" s3_get_count      "$s3_gets"      count
+    perf_record "$name" rados_writes      "$rados_writes" count
+    perf_record "$name" per_read_ms       "$per_read_ms"  ms
+
+    log_info "$name: $elapsed ms wall, $s3_gets S3 GETs, $rados_writes RADOS writes, $per_read_ms ms/read"
+
+    # Diagnostic-only assertion: we EXPECT non-zero S3 GETs here (no trust
+    # signal, so zero-block reads must consult S3).  If we see 0, something
+    # is wrong with the test setup -- e.g., a previous run left a bitmap
+    # behind in the pool, or the parent's S3 endpoint isn't being hit at
+    # all.  A "zero baseline" would make the partial-backfill comparison
+    # meaningless: the bitmap can't save what wasn't being spent.
+    if [ "$s3_gets" -eq 0 ]; then
+        log_fail "$name: 0 S3 GETs without any trust signal -- unexpected"
+        log_fail "  Possible causes: stale rbd_backfill_visited.<id> from a"
+        log_fail "  prior test run, or rados ls/pool cleanup didn't reset"
+        log_fail "  the test pool.  Without S3 GETs as the baseline, the"
+        log_fail "  partial-backfill bitmap savings are unmeasurable."
+        return 1
+    fi
+    log_success "$name: baseline = $s3_gets S3 GETs (partial-backfill variant saves all of them)"
     return 0
 }
 
