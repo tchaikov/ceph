@@ -119,6 +119,7 @@ namespace librbd {
     Mutex async_ops_lock; // protects async_ops and async_requests
     Mutex copyup_list_lock; // protects copyup_waiting_list
     Mutex completed_reqs_lock; // protects completed_reqs
+    Mutex known_zero_lock; // protects known_zero_objects (P1 known-zero cache)
 
     unsigned extra_read_flags;
 
@@ -182,6 +183,26 @@ namespace librbd {
     // Called by ObjectReadRequest on every parent-read RADOS miss.  Safe to
     // call without holding md_lock.
     void maybe_reload_backfill_visited();
+
+    // P1 known-zero cache (in-memory, ImageCtx-scoped).  Object numbers whose
+    // S3 source a read on THIS ImageCtx observed to be all-zero.  Lets repeated
+    // reads of the same zero object short-circuit to a local zero-fill
+    // (read_object pre-aio + handle_read_object ENOENT) instead of re-fetching
+    // 4 MB of zeros from S3 every time -- the dominant waste on a cold,
+    // never-backfilled, mostly-zero S3-backed parent.  Complements
+    // backfill_visited: that bitmap is persistent + cross-process but only
+    // exists if rbd-backfill ran; this set is populated on first-touch even
+    // with no daemon, at the cost of evaporating on close and not being shared
+    // across ImageCtx instances.  Guarded by known_zero_lock.
+    std::set<uint64_t> known_zero_objects;
+
+    // Record object_no as known-zero: insert into the in-memory set AND, if the
+    // persistent backfill-visited bitmap already exists, fire a best-effort
+    // async object_map_update marking it VISITED_ZERO (ENOENT/EBUSY-tolerant;
+    // never creates the bitmap -- creation stays the daemon's job).
+    void note_known_zero_object(uint64_t object_no);
+    // True if object_no was previously recorded all-zero on this ImageCtx.
+    bool is_known_zero_object(uint64_t object_no);
 
     uint32_t s3_parent_lock_timeout = 30; // cached from rbd_s3_parent_lock_timeout
     uint32_t s3_lock_retry_max = 5;       // cached from rbd_s3_lock_retry_max

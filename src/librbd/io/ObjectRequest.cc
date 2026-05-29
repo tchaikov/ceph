@@ -326,6 +326,19 @@ void ObjectReadRequest<I>::read_object() {
           }), 0);
         return;
       }
+      // In-memory known-zero cache (P1): same pre-aio RTT saving as the
+      // bitmap branch above, but works even when no on-disk bitmap exists
+      // (cold, never-backfilled parent).  Populated by handle_read_from_s3
+      // on the first all-zero fetch of this object on this ImageCtx.
+      if (image_ctx->is_known_zero_object(this->m_object_no)) {
+        ldout(image_ctx->cct, 10) << "object " << this->m_object_no
+                                  << " short-circuiting pre-aio via in-memory "
+                                  << "known-zero cache" << dendl;
+        image_ctx->op_work_queue->queue(new FunctionContext([this](int r) {
+            this->finish(-ENOENT);
+          }), 0);
+        return;
+      }
     }
   }
 
@@ -411,6 +424,21 @@ void ObjectReadRequest<I>::handle_read_object(int r) {
                                     << " ENOENT with backfill_visited=ZERO; "
                                     << "skipping S3 fetch (per-object trust)"
                                     << dendl;
+          this->finish(-ENOENT);
+          return;
+        }
+
+        // Per-object trust from the in-memory known-zero cache (P1).  A prior
+        // read on THIS ImageCtx fetched object_no from S3, found it all-zero,
+        // and recorded it via ImageCtx::note_known_zero_object.  This covers
+        // the cold, never-backfilled parent where no on-disk bitmap exists
+        // (backfill_visited is null) -- without it, every read of a zero
+        // object re-fetches 4 MB of zeros from S3.  Same -ENOENT zero-fill
+        // semantics as the bitmap branch above.
+        if (image_ctx->is_known_zero_object(this->m_object_no)) {
+          ldout(image_ctx->cct, 10) << "object " << this->m_object_no
+                                    << " ENOENT with in-memory known-zero; "
+                                    << "skipping S3 fetch" << dendl;
           this->finish(-ENOENT);
           return;
         }
@@ -796,14 +824,35 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
   // map is the source of truth, so trusting it (and leaving the
   // in-memory bit alone for objects we did NOT genuinely populate) is
   // both more correct AND avoids the loop.
+  // Compute once: is_zero() scans the whole ~4 MB buffer, and we branch on it
+  // for the object_map update, the known-zero record, and the throttler skip.
+  const bool full_is_zero = full_object_data.is_zero();
+
   if (image_ctx->object_map != nullptr &&
-      !full_object_data.is_zero() &&
+      !full_is_zero &&
       !image_ctx->s3_backfill_complete) {
     RWLock::RLocker owner_locker(image_ctx->owner_lock);
     if (image_ctx->object_map != nullptr) {
       RWLock::WLocker object_map_locker(image_ctx->object_map_lock);
       (*image_ctx->object_map)[this->m_object_no] = OBJECT_EXISTS;
     }
+  }
+
+  if (full_is_zero) {
+    // All-zero S3 source (P1).  Record the object as known-zero so subsequent
+    // reads short-circuit locally (read_object pre-aio + handle_read_object
+    // ENOENT) instead of re-fetching 4 MB of zeros from S3 -- the dominant
+    // waste on a cold, mostly-zero parent.  Skip the throttler entirely:
+    // AsyncWritebackThrottler's WritebackRequest already short-circuits
+    // write_full on is_zero() (zeros are never written to the parent RADOS
+    // pool), so submitting only burns a .s3lk cls_lock acquire/release -- the
+    // EBUSY churn measured under concurrent boot.  Skip readahead too: a zero
+    // object carries no warm-the-next-block signal, and prefetching forward
+    // through a zero region would just S3-GET more zeros.  The caller's zero
+    // bytes are already sliced into m_read_data; finish with them.
+    image_ctx->note_known_zero_object(this->m_object_no);
+    this->finish(0);
+    return;
   }
 
   auto& throttler = AsyncWritebackThrottler::instance(cct);

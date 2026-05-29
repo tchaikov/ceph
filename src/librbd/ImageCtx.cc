@@ -117,6 +117,7 @@ public:
       async_ops_lock(util::unique_lock_name("librbd::ImageCtx::async_ops_lock", this)),
       copyup_list_lock(util::unique_lock_name("librbd::ImageCtx::copyup_list_lock", this)),
       completed_reqs_lock(util::unique_lock_name("librbd::ImageCtx::completed_reqs_lock", this)),
+      known_zero_lock(util::unique_lock_name("librbd::ImageCtx::known_zero_lock", this)),
       extra_read_flags(0),
       old_format(false),
       order(0), size(0), features(0),
@@ -1159,6 +1160,55 @@ public:
     int r = md_ctx.aio_operate(visited_oid, rados_completion, &op, out_bl);
     ceph_assert(r == 0);
     rados_completion->release();
+  }
+
+  void ImageCtx::note_known_zero_object(uint64_t object_no) {
+    // In-memory record: cheap, always available, ImageCtx-scoped.  This is the
+    // fast path that collapses repeated zero re-fetches within this process --
+    // subsequent reads of object_no short-circuit in read_object()'s pre-aio
+    // check and handle_read_object()'s ENOENT branch without touching S3.
+    {
+      Mutex::Locker locker(known_zero_lock);
+      known_zero_objects.insert(object_no);
+    }
+
+    // Persist to the on-disk backfill-visited bitmap IFF it already exists.
+    // A non-null backfill_visited means apply_metadata (or a reload) last
+    // observed the bitmap object on disk, so an object_map_update has a
+    // target.  We deliberately do NOT create/resize the bitmap here: a
+    // multi-reader create race could clobber bits, and creation is the
+    // daemon's job (ImageBackfiller::init_backfill_visited_bitmap).  When no
+    // bitmap exists the in-memory set above still delivers the in-process
+    // benefit.
+    auto visited = std::atomic_load(&backfill_visited);
+    if (!visited) {
+      return;
+    }
+    // Best-effort, fire-and-forget, ENOENT/EBUSY-tolerant -- mirrors the
+    // daemon's ObjectBackfillRequest::mark_visited but with no callback, since
+    // a failed bit update only costs one wasted S3 GET later (a reader on
+    // another ImageCtx re-discovers the zero).  md_ctx is the bitmap's pool
+    // (see apply_metadata + maybe_reload_backfill_visited); ~ImageCtx's
+    // md_ctx.aio_flush() drains this op before teardown.
+    const std::string visited_oid =
+      std::string(RBD_BACKFILL_VISITED_PREFIX) + id;
+    librados::ObjectWriteOperation op;
+    cls_client::object_map_update(&op, object_no, object_no + 1,
+                                  RBD_BACKFILL_VISITED_ZERO,
+                                  boost::optional<uint8_t>());
+    auto* comp = librados::Rados::aio_create_completion();
+    int r = md_ctx.aio_operate(visited_oid, comp, &op);
+    if (r < 0) {
+      ldout(cct, 10) << "note_known_zero_object: aio_operate failed for "
+                     << visited_oid << ": " << cpp_strerror(r)
+                     << " -- bitmap bit not persisted (non-fatal)" << dendl;
+    }
+    comp->release();
+  }
+
+  bool ImageCtx::is_known_zero_object(uint64_t object_no) {
+    Mutex::Locker locker(known_zero_lock);
+    return known_zero_objects.count(object_no) != 0;
   }
 
   Journal<ImageCtx> *ImageCtx::create_journal() {
