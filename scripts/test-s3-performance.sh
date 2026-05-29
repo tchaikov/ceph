@@ -76,6 +76,7 @@ ALL_TESTS=(
     perf_test_vm_boot_scaling
     perf_test_scattered_random_reads_concurrent
     perf_test_concurrent_fio_zero_parent
+    perf_test_reader_persists_visited_zero
     perf_test_post_backfill_zero_no_s3
     perf_test_partial_backfill_zero_no_s3
     perf_test_no_trust_zero_baseline
@@ -900,6 +901,154 @@ perf_test_concurrent_fio_zero_parent() {
         log_warn "  (GET bound held, but mechanism unverified -- check conf routing)"
     fi
     log_success "$name: $s3_gets S3 GETs within bound $max_expected; $short_circuits P1 short-circuits fired"
+    return 0
+}
+
+# ============================================================================
+# Test 8c — reader persists VISITED_ZERO to an existing bitmap (write-if-exists)
+# ============================================================================
+# Covers the P1 persistent path: when the rbd_backfill_visited.<id> bitmap
+# already exists, ImageCtx::note_known_zero_object fires a best-effort
+# object_map_update marking the just-discovered zero object VISITED_ZERO, so
+# the knowledge survives into a fresh ImageCtx (and across clients).  This is
+# the half the pure-in-memory fio test cannot reach (there backfill_visited is
+# null, so the persistent branch is skipped).
+#
+# Constructing the precondition deterministically without a bitmap decoder:
+#   - The bitmap must EXIST but with the target zero object's bit still
+#     VISITED_NO, so the reader's write is the ONLY thing that can set it.
+#   - The daemon creates the bitmap (all VISITED_NO) at init, THEN marks
+#     objects in order.  We start it, stop it the instant the bitmap object
+#     appears, and target the LAST object -- with a data-heavy prefix the
+#     daemon is still writing early data objects (slow 4 MB RADOS writes) and
+#     has not reached the trailing zeros.
+#
+# Assertions (no decoder needed -- inferred end-to-end via S3 GET counts):
+#   - Child A read of the target zero object: >= 1 S3 GET  (proves the bit was
+#     VISITED_NO so the reader had to fetch -- and per P1 then persists ZERO).
+#   - Fresh Child B read of the same object:  0 S3 GETs    (proves the write
+#     landed and a new ImageCtx loads it, short-circuiting via the bitmap).
+# Without the persistent write, Child B would re-fetch (GETs > 0).
+perf_test_reader_persists_visited_zero() {
+    local name="reader_persists_visited_zero"
+    local obj_size=$((4 * 1024 * 1024))
+    local data_objs=8           # objects 0..7 = data (32 MB of slow RADOS writes)
+    local total_objs=16         # objects 8..15 = zero
+    local target_obj=15         # LAST object: maximal margin before daemon reaches it
+    local target_off=$(( target_obj * obj_size ))
+    local img_mb=$(( total_objs * 4 ))
+
+    if ! command -v fio >/dev/null 2>&1 || \
+       ! fio --enghelp 2>/dev/null | grep -qw rbd; then
+        log_warn "$name: fio (with rbd ioengine) not available -- skipping"
+        return 0
+    fi
+
+    log_step "$name: persist VISITED_ZERO for object $target_obj via a child read, verify a fresh child short-circuits"
+
+    # Data-heavy sparse fixture: first $data_objs objects filled, trailing
+    # objects zero.  The filled prefix gives the daemon enough slow write work
+    # that we can stop it before it marks the trailing zeros.
+    local fix=/tmp/perf-persist-${img_mb}mb.raw
+    dd if=/dev/zero of="$fix" bs=1M count="$img_mb" status=none
+    local i
+    for i in $(seq 0 $((data_objs - 1))); do
+        printf "PARENT-BLOCK-%04d" "$i" | dd of="$fix" bs=4M seek="$i" conv=notrunc status=none
+    done
+
+    setup_fresh_image_n_children "$fix" "perf-persist.raw" 2
+
+    # Resolve the parent's bitmap oid (rbd_backfill_visited.<image_id>).
+    local parent_id
+    parent_id=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" info "$POOL/$PERF_PARENT" \
+        | sed -n 's/^[[:space:]]*block_name_prefix: rbd_data\.//p')
+    if [ -z "$parent_id" ]; then
+        log_fail "$name: could not resolve parent image id"
+        rm -f "$fix"
+        return 1
+    fi
+    local bitmap_oid="rbd_backfill_visited.${parent_id}"
+
+    # Schedule backfill, start the daemon directly (NOT run_backfill_daemon,
+    # which sleeps 2 s -- long enough for a small image to finish), and stop it
+    # the instant the bitmap object is created.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" backfill schedule "$POOL/$PERF_PARENT"
+    local blog
+    blog=$(mktemp /tmp/perf-persist-bf-XXXXXX.log)
+    "$BUILD_DIR/bin/rbd-backfill" --conf "$CEPH_CONF" --foreground >"$blog" 2>&1 &
+    local bf_pid=$!
+    local created=0
+    for i in $(seq 1 200); do
+        if "$BUILD_DIR/bin/rados" --conf "$CEPH_CONF" -p "$POOL" \
+                stat "$bitmap_oid" >/dev/null 2>&1; then
+            created=1
+            break
+        fi
+        kill -0 "$bf_pid" 2>/dev/null || break   # daemon exited early
+        sleep 0.05
+    done
+    kill "$bf_pid" 2>/dev/null || true
+    wait "$bf_pid" 2>/dev/null || true
+    rm -f "$blog"
+
+    if [ "$created" -ne 1 ]; then
+        log_fail "$name: backfill-visited bitmap $bitmap_oid was never created"
+        rm -f "$fix"
+        return 1
+    fi
+
+    export CEPH_CONF
+    local ld_path="$BUILD_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+    # Child A: read the target zero object.  Bit is VISITED_NO -> fetch from S3
+    # (>= 1 GET) and persist VISITED_ZERO.
+    reset_trace
+    env LD_LIBRARY_PATH="$ld_path" CEPH_CONF="$CEPH_CONF" \
+        fio --name=persistA --ioengine=rbd --pool="$POOL" \
+            --rbdname="${PERF_CHILD_BASE}-1" --rw=read --bs=4096 \
+            --offset="$target_off" --io_size=4096 --numjobs=1 --direct=1 \
+            >/dev/null 2>&1 || log_warn "$name: child A read reported failure"
+    local gets_a
+    gets_a=$(perf_minio_get_count "$MINIO_TRACE_LOG" "$S3_BUCKET")
+
+    # Let the fire-and-forget object_map_update land on disk before a fresh
+    # ImageCtx loads the bitmap.
+    sleep 2
+
+    # Child B: fresh ImageCtx (different child image), same object.  If the
+    # persistent write landed, its bitmap load sees VISITED_ZERO -> 0 GETs.
+    reset_trace
+    env LD_LIBRARY_PATH="$ld_path" CEPH_CONF="$CEPH_CONF" \
+        fio --name=persistB --ioengine=rbd --pool="$POOL" \
+            --rbdname="${PERF_CHILD_BASE}-2" --rw=read --bs=4096 \
+            --offset="$target_off" --io_size=4096 --numjobs=1 --direct=1 \
+            >/dev/null 2>&1 || log_warn "$name: child B read reported failure"
+    local gets_b
+    gets_b=$(perf_minio_get_count "$MINIO_TRACE_LOG" "$S3_BUCKET")
+
+    rm -f "$fix"
+
+    perf_record "$name" target_object   "$target_obj" count
+    perf_record "$name" child_a_s3_gets "$gets_a"     count
+    perf_record "$name" child_b_s3_gets "$gets_b"     count
+
+    log_info "$name: child A $gets_a S3 GETs (expect >=1), child B $gets_b S3 GETs (expect 0)"
+
+    if [ "$gets_a" -lt 1 ]; then
+        log_fail "$name: child A made $gets_a S3 GETs -- precondition not met"
+        log_fail "  the daemon marked object $target_obj before we stopped it"
+        log_fail "  (too fast); increase data_objs so the write prefix is longer."
+        return 1
+    fi
+    if [ "$gets_b" -ne 0 ]; then
+        log_fail "$name: child B made $gets_b S3 GETs (expected 0)"
+        log_fail "  the reader's persistent VISITED_ZERO write did not take"
+        log_fail "  effect: ImageCtx::note_known_zero_object's object_map_update"
+        log_fail "  on $bitmap_oid did not land, or a fresh ImageCtx is not"
+        log_fail "  consulting it.  write-if-exists path is broken."
+        return 1
+    fi
+    log_success "$name: reader persisted VISITED_ZERO (A=$gets_a GET, fresh B=0 GETs)"
     return 0
 }
 
