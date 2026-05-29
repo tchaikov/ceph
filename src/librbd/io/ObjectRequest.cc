@@ -842,15 +842,34 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
     // All-zero S3 source (P1).  Record the object as known-zero so subsequent
     // reads short-circuit locally (read_object pre-aio + handle_read_object
     // ENOENT) instead of re-fetching 4 MB of zeros from S3 -- the dominant
-    // waste on a cold, mostly-zero parent.  Skip the throttler entirely:
-    // AsyncWritebackThrottler's WritebackRequest already short-circuits
-    // write_full on is_zero() (zeros are never written to the parent RADOS
-    // pool), so submitting only burns a .s3lk cls_lock acquire/release -- the
-    // EBUSY churn measured under concurrent boot.  Skip readahead too: a zero
-    // object carries no warm-the-next-block signal, and prefetching forward
-    // through a zero region would just S3-GET more zeros.  The caller's zero
-    // bytes are already sliced into m_read_data; finish with them.
-    image_ctx->note_known_zero_object(this->m_object_no);
+    // waste on a cold, mostly-zero parent.
+    //
+    // Record ONLY for HEAD reads (m_snap_id == CEPH_NOSNAP).  Both consume
+    // sites gate the known-zero short-circuit on CEPH_NOSNAP (read_object and
+    // handle_read_object), for the reason spelled out at handle_read_object:
+    // a snapshot may capture an object as it was at snap time, which can
+    // differ from HEAD.  Recording a snapshot observation into the HEAD-
+    // trusted known-zero set / VISITED_ZERO bitmap would let a snap read
+    // poison HEAD (return zeros where HEAD has data) the moment per-snapshot
+    // S3 content diverges from HEAD.  Today the S3 fetcher is snap-blind so
+    // they agree, but gating here keeps record/consume symmetric and the
+    // invariant robust.
+    //
+    // Trusting a recorded zero forever relies on the S3 source being
+    // immutable (the project's contract: re-backfill required to change it).
+    // Unlike the in-process LRU's 2 s TTL, this cache never expires, so a
+    // mutated S3 object that became non-zero would not be re-fetched -- the
+    // same exposure as the daemon-written VISITED_ZERO bitmap.
+    if (this->m_snap_id == CEPH_NOSNAP) {
+      image_ctx->note_known_zero_object(this->m_object_no);
+    }
+    // Skip the throttler entirely: AsyncWritebackThrottler's WritebackRequest
+    // already short-circuits write_full on is_zero() (zeros are never written
+    // to the parent RADOS pool), so submitting only burns a .s3lk cls_lock
+    // acquire/release -- the EBUSY churn measured under concurrent boot.  Skip
+    // readahead too: a zero object carries no warm-the-next-block signal, and
+    // prefetching forward through a zero region would just S3-GET more zeros.
+    // The caller's zero bytes are already sliced into m_read_data; finish.
     this->finish(0);
     return;
   }
