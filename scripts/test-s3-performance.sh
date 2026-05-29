@@ -75,6 +75,7 @@ ALL_TESTS=(
     perf_test_daemon_throughput
     perf_test_vm_boot_scaling
     perf_test_scattered_random_reads_concurrent
+    perf_test_concurrent_fio_zero_parent
     perf_test_post_backfill_zero_no_s3
     perf_test_partial_backfill_zero_no_s3
     perf_test_no_trust_zero_baseline
@@ -736,6 +737,169 @@ perf_test_scattered_random_reads_concurrent() {
         return 1
     fi
     log_success "$name: per-read latency $per_read_ms ms within budget"
+    return 0
+}
+
+# ============================================================================
+# Test 8b — fio multi-child deep-queue random read on a COLD mostly-zero parent
+# ============================================================================
+# Faithfully reproduces the user's real workload (which the bash `rbd bench`
+# drivers above do NOT): N child clones, each driven by fio's rbd ioengine at
+# a DEEP queue depth, all random-reading a parent that is mostly zero and was
+# NEVER backfilled (no on-disk bitmap, no backfill_status).
+#
+# This is the case where the OLD code re-fetched 4 MB of zeros from S3 on
+# EVERY read of a zero object -- S3 GET count grew with the number of reads.
+# With the P1 in-memory known-zero cache (ImageCtx::note_known_zero_object,
+# consulted by read_object's pre-aio short-circuit and handle_read_object's
+# ENOENT branch), each zero object is fetched at most once per child ImageCtx;
+# subsequent reads short-circuit locally.  So S3 GETs become bounded by
+# (unique objects x children), INDEPENDENT of how many reads are issued.
+#
+# Assertion: s3_get_count <= unique_objects * children * SLOP.  total reads is
+# ~100x that bound, so a regression that reverts the short-circuit (every zero
+# read -> S3 GET) trips the test decisively.  Skipped (not failed) when fio or
+# its rbd engine is unavailable, so the suite stays portable.
+perf_test_concurrent_fio_zero_parent() {
+    local name="concurrent_fio_zero_parent"
+    local io_size=4096
+    # Defaults keep the committed test small + fast (works under the 32-entry
+    # LRU, so it asserts P1 *fires* via the mechanism check rather than out-
+    # scaling the LRU).  Override via env for a larger A/B stress run where the
+    # working set exceeds rbd_s3_lru_max_entries and P1's GET-reduction shows:
+    #   FIOZERO_FIXTURE=/tmp/sparse-512mb.raw FIOZERO_FIXTURE_MB=512 \
+    #   FIOZERO_UNIQUE_OBJECTS=128 FIOZERO_IO_MB=64 FIOZERO_N=4
+    local n="${FIOZERO_N:-4}"
+    local io_mb="${FIOZERO_IO_MB:-8}"
+    local fixture="${FIOZERO_FIXTURE:-$PERF_FIXTURE_SPARSE_40MB}"
+    local fixture_mb="${FIOZERO_FIXTURE_MB:-40}"
+    # SPARSE_40MB: 40 MB / 10 objects, only the first 2 filled -> 80% zero.
+    local unique_objects="${FIOZERO_UNIQUE_OBJECTS:-10}"
+    local per_child_io="${io_mb}M"
+
+    if ! command -v fio >/dev/null 2>&1 || \
+       ! fio --enghelp 2>/dev/null | grep -qw rbd; then
+        log_warn "$name: fio (with rbd ioengine) not available -- skipping"
+        return 0
+    fi
+
+    local reads_per_child=$(( io_mb * 1024 * 1024 / io_size ))
+    log_step "$name: $n fio children x ~$reads_per_child random ${io_size}B reads, cold ${fixture_mb}M mostly-zero parent"
+
+    setup_fresh_image_n_children "$fixture" "perf-fiozero.raw" "$n"
+
+    # Reset trace AFTER setup (parent upload + clone touch S3); count only
+    # workload GETs.  No backfill is run on purpose: backfill_visited is null,
+    # so the persistent write-if-exists path is a no-op and we exercise the
+    # pure in-memory P1 cache.
+    reset_trace
+
+    # fio's rbd ioengine uses librados, which honors $CEPH_CONF to find the
+    # vstart cluster + admin keyring (the CLI tools take --conf; this is the
+    # env equivalent).
+    export CEPH_CONF
+    # CRITICAL: the system /usr/bin/fio rbd engine links the SYSTEM librbd, not
+    # our freshly-built tree.  Force it to load $BUILD_DIR/lib so the test
+    # actually exercises the P1 code under review (same dev librbd/librados the
+    # $BUILD_DIR/bin/rbd CLI uses via rpath).  The librbd C API fio consumes is
+    # ABI-stable, so the soname override is safe.
+    local ld_path="$BUILD_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+    # Mechanism check (so a bounded GET count can't pass for the wrong reason --
+    # e.g. coalescing/LRU masking re-fetches instead of P1 actually firing):
+    # route child 1's librbd at debug 10 to a dedicated log via a debug copy of
+    # the conf, then assert our short-circuit line appears.  Only child 1 is
+    # instrumented to keep log volume + timing impact off the other children.
+    local dbgconf dbglog
+    dbgconf=$(mktemp /tmp/perf-fiozero-conf-XXXXXX)
+    dbglog=$(mktemp /tmp/perf-fiozero-dbg-XXXXXX.log)
+    cp "$CEPH_CONF" "$dbgconf"
+    printf '\n[client]\n  debug rbd = 10\n  log file = %s\n  log to stderr = false\n' \
+        "$dbglog" >> "$dbgconf"
+
+    local t0
+    t0=$(perf_time_ms)
+    local pids=() logs=() i
+    for i in $(seq 1 "$n"); do
+        local flog
+        flog=$(mktemp /tmp/perf-fiozero-XXXXXX.log)
+        logs+=("$flog")
+        local child_conf="$CEPH_CONF"
+        [ "$i" -eq 1 ] && child_conf="$dbgconf"
+        env LD_LIBRARY_PATH="$ld_path" CEPH_CONF="$child_conf" \
+            fio --name="fiozero-$i" \
+            --ioengine=rbd --pool="$POOL" --rbdname="${PERF_CHILD_BASE}-$i" \
+            --rw=randread --bs="${io_size}" --iodepth=64 --numjobs=1 \
+            --direct=1 --size="${fixture_mb}M" --io_size="$per_child_io" \
+            --randrepeat=0 --group_reporting \
+            >"$flog" 2>&1 &
+        pids+=("$!")
+    done
+    local failures=0
+    for i in "${!pids[@]}"; do
+        wait "${pids[$i]}" || { failures=$((failures + 1)); \
+            log_warn "$name: fio child $((i + 1)) failed; output:"; \
+            tail -5 "${logs[$i]}" | sed 's/^/    /'; }
+    done
+    local elapsed
+    elapsed=$(perf_time_elapsed_ms "$t0")
+    rm -f "${logs[@]}"
+
+    if [ "$failures" -ne 0 ]; then
+        log_fail "$name: $failures/$n fio children failed"
+        return 1
+    fi
+
+    # Let any in-flight cache-populate writebacks (data objects) settle.
+    sleep 3
+
+    local s3_gets
+    s3_gets=$(perf_minio_get_count "$MINIO_TRACE_LOG" "$S3_BUCKET")
+    local total_reads=$(( reads_per_child * n ))
+
+    # Bound: each of the 10 objects fetched at most once per child, with slop
+    # for concurrent cold misses that race ahead of the first recorded bit
+    # (in-process S3ObjectFetcher coalescing collapses most of these).
+    local slop=4
+    local max_expected=$(( unique_objects * n * slop ))
+
+    perf_record "$name" num_children    "$n"             count
+    perf_record "$name" total_reads     "$total_reads"   count
+    perf_record "$name" wall_time_ms    "$elapsed"       ms
+    perf_record "$name" s3_get_count    "$s3_gets"       count
+    perf_record "$name" max_expected    "$max_expected"  count
+
+    log_info "$name: ${elapsed}ms, $s3_gets S3 GETs over $total_reads reads (bound $max_expected)"
+
+    # Mechanism check: did the P1 short-circuit actually FIRE on child 1?  Both
+    # the pre-aio and ENOENT branches log "in-memory known-zero".  This guards
+    # against a bounded GET count passing for the wrong reason (in-process
+    # coalescing + 2 s LRU masking re-fetches instead of P1 doing the work).
+    local dbg_routed=0 short_circuits=0
+    [ -s "$dbglog" ] && dbg_routed=1
+    if [ "$dbg_routed" -eq 1 ]; then
+        short_circuits=$(grep -c "in-memory known-zero" "$dbglog" 2>/dev/null || echo 0)
+    fi
+    perf_record "$name" short_circuits "$short_circuits" count
+    rm -f "$dbgconf" "$dbglog"
+
+    if [ "$s3_gets" -gt "$max_expected" ]; then
+        log_fail "$name: $s3_gets S3 GETs exceeds bound of $max_expected"
+        log_fail "  zero objects appear to be re-fetched per-read -- the P1"
+        log_fail "  known-zero short-circuit (ImageCtx::note_known_zero_object +"
+        log_fail "  read_object/handle_read_object checks) has likely regressed."
+        return 1
+    fi
+    if [ "$dbg_routed" -eq 1 ] && [ "$short_circuits" -eq 0 ]; then
+        log_fail "$name: GET count bounded but P1 short-circuit never logged on"
+        log_fail "  child 1 -- low GETs may be coalescing/LRU masking, not P1."
+        return 1
+    fi
+    if [ "$dbg_routed" -eq 0 ]; then
+        log_warn "$name: debug-rbd log was empty; could not confirm P1 fired"
+        log_warn "  (GET bound held, but mechanism unverified -- check conf routing)"
+    fi
+    log_success "$name: $s3_gets S3 GETs within bound $max_expected; $short_circuits P1 short-circuits fired"
     return 0
 }
 
