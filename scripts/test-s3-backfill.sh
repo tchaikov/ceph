@@ -46,7 +46,8 @@ cleanup() {
                watcher-release-parent clone-bf-parent clone-bf-child \
                list-bf-true list-bf-inprog list-bf-done \
                zero-trust-parent zero-trust-child \
-               partial-trust-parent partial-trust-child; do
+               partial-trust-parent partial-trust-child \
+               clone-parent-opfeat-base clone-parent-opfeat-child; do
         "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL/$img" 2>/dev/null || true
     done
     "$BUILD_DIR/bin/ceph" --conf "$CEPH_CONF" osd pool delete "$POOL" "$POOL" \
@@ -972,6 +973,60 @@ test_clone_standalone_drops_backfill_metadata() {
 }
 
 # ============================================================================
+test_standalone_clone_rm_clears_clone_parent() {
+    # Regression for user-reported Bug #3: after removing the last standalone
+    # clone child, `rbd info <base>` still showed `op_features: clone-parent`.
+    # Root cause: child_detach must erase the child entry from the parent
+    # header AND trigger set_op_features(0, CLONE_PARENT) when the entry set
+    # becomes empty.  This test guards the same-cluster path.  The cross-cluster
+    # path is covered by run_plain_cross_cluster_direct_rm in
+    # test-s3-cross-cluster.sh (which tests that the base is removable, which
+    # requires CLONE_PARENT to be gone too).
+
+    local base="$POOL/clone-parent-opfeat-base"
+    local child="$POOL/clone-parent-opfeat-child"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child" 2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$base"  2>/dev/null || true
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$base" --size 4M --object-size 4M
+
+    local before
+    before=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" info "$base" 2>/dev/null \
+             | grep op_features || true)
+    if echo "$before" | grep -q "clone-parent"; then
+        log_fail "base shows clone-parent BEFORE any clone — unexpected state"
+        return 1
+    fi
+    log_success "base has no clone-parent before clone (as expected)"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" clone-standalone "$base" "$child"
+
+    local after_clone
+    after_clone=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" info "$base" 2>/dev/null \
+                  | grep op_features || true)
+    if ! echo "$after_clone" | grep -q "clone-parent"; then
+        log_fail "base does NOT show clone-parent after clone — child_attach regression"
+        return 1
+    fi
+    log_success "base shows clone-parent after clone (expected)"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child" 2>/dev/null
+
+    local after_rm
+    after_rm=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" info "$base" 2>/dev/null \
+               | grep op_features || true)
+    if echo "$after_rm" | grep -q "clone-parent"; then
+        log_fail "Bug #3 regression: base still shows clone-parent after last child rm"
+        log_error "  child_detach likely returned -ENOENT without updating parent"
+        return 1
+    fi
+    log_success "base no longer shows clone-parent after child rm — CLONE_PARENT cleared"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$base" 2>/dev/null || true
+}
+
+# ============================================================================
 test_backfill_list_shows_in_progress() {
     # Regression for user-reported bug 2b: `rbd backfill list` filtered on
     # backfill_scheduled == "true" only, so once the daemon transitioned the
@@ -1261,6 +1316,7 @@ run_test "parent_du_after_child_writeback"  test_parent_du_after_child_writeback
 run_test "backfill_rescan_picks_up_new_image" test_backfill_rescan_picks_up_new_image
 run_test "backfill_watcher_released_after_complete" test_backfill_watcher_released_after_complete
 run_test "clone_standalone_drops_backfill_metadata" test_clone_standalone_drops_backfill_metadata
+run_test "standalone_clone_rm_clears_clone_parent" test_standalone_clone_rm_clears_clone_parent
 run_test "backfill_list_shows_in_progress" test_backfill_list_shows_in_progress
 run_test "post_backfill_zero_region_no_s3"  test_post_backfill_zero_region_no_s3
 run_test "partial_backfill_zero_region_no_s3"  test_partial_backfill_zero_region_no_s3

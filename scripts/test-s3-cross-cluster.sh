@@ -222,6 +222,138 @@ chmod 600 /home/cephdev/.ceph/cluster1.keyring"
     log_success "=== Plain Cross-Cluster Test PASSED ==="
 }
 
+# ── Test: direct rm of cross-cluster standalone clone (Bug #1 direct-rm path) ─
+# Bug #1 (regression): after deleting a cross-cluster lazy clone *without*
+# flattening first, the base/parent should also be removable.  Pre-fix,
+# DetachChildRequest used the wrong cluster (local instead of remote) when
+# parent_type was not stored, so the child entry was never removed from the
+# remote parent header and `rbd rm <parent>` failed with "image has child
+# clone(s)".
+run_plain_cross_cluster_direct_rm() {
+    log_step "=== Test: Cross-Cluster Direct Rm (Bug #1 direct-rm path) ==="
+
+    local parent_pool="direct_rm_parent_pool"
+    local child_pool="direct_rm_child_pool"
+    local parent_img="direct-rm-parent"
+    local child_img="direct-rm-child"
+
+    ceph_on cluster1 "osd pool create $parent_pool 16" 2>&1 || true
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf pool init $parent_pool"
+    rbd_on cluster1 "create --size 4M $parent_pool/$parent_img"
+    log_info "Created $parent_pool/$parent_img on cluster1"
+
+    ceph_on cluster2 "osd pool create $child_pool 16" 2>&1 || true
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init $child_pool"
+
+    # Reuse the connection files written by run_plain_cross_cluster.
+    # (cluster1.conf and cluster1.keyring under /home/cephdev/.ceph/).
+    docker exec -u cephdev ceph-cluster2 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+         ./bin/rbd --conf /tmp/cluster2/ceph.conf clone-standalone \
+             --remote-cluster-conf   /home/cephdev/.ceph/cluster1.conf \
+             --remote-keyring        /home/cephdev/.ceph/cluster1.keyring \
+             $parent_pool/$parent_img \
+             $child_pool/$child_img"
+    log_success "Cross-cluster standalone clone created (no flatten will be done)"
+
+    # Remove the child directly — no flatten.  DetachChildRequest must connect
+    # to cluster1 and call child_detach on the parent header.
+    log_step "Removing child clone directly (no flatten)"
+    if ! rbd_on cluster2 "rm $child_pool/$child_img"; then
+        log_fail "Bug #1 direct-rm: child removal failed"
+        rbd_on cluster1 "children $parent_pool/$parent_img" 2>&1 || true
+        return 1
+    fi
+    log_success "Child removed"
+
+    # Now remove the parent — must succeed (no phantom child entry).
+    log_step "Removing parent after child rm (must succeed)"
+    if ! rbd_on cluster1 "rm $parent_pool/$parent_img"; then
+        log_fail "Bug #1 direct-rm regression: parent removal failed — phantom child entry"
+        log_error "  child_detach likely did not reach cluster1; check debug logs"
+        log_error "  for 'detaching from remote parent in cluster:' to confirm"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "Parent removed successfully after direct child rm — no phantom entry"
+
+    ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+
+    log_success "=== Cross-Cluster Direct Rm Test PASSED ==="
+}
+
+# ── Test: rename updates image_name in parent's children list (Bug #2 rename) ─
+# Bug #2: after renaming a cross-cluster lazy clone, `rbd children` on the
+# parent still showed the old name.  RenameRequest now updates the cached
+# image_name in the parent cluster's ChildImageSpec.
+run_plain_cross_cluster_rename() {
+    log_step "=== Test: Cross-Cluster Rename Updates rbd-children (Bug #2 rename) ==="
+
+    local parent_pool="rename_parent_pool"
+    local child_pool="rename_child_pool"
+    local parent_img="rename-parent"
+    local child_img_old="rename-child-before"
+    local child_img_new="rename-child-after"
+
+    ceph_on cluster1 "osd pool create $parent_pool 16" 2>&1 || true
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf pool init $parent_pool"
+    rbd_on cluster1 "create --size 4M $parent_pool/$parent_img"
+    log_info "Created $parent_pool/$parent_img on cluster1"
+
+    ceph_on cluster2 "osd pool create $child_pool 16" 2>&1 || true
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init $child_pool"
+
+    docker exec -u cephdev ceph-cluster2 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+         ./bin/rbd --conf /tmp/cluster2/ceph.conf clone-standalone \
+             --remote-cluster-conf   /home/cephdev/.ceph/cluster1.conf \
+             --remote-keyring        /home/cephdev/.ceph/cluster1.keyring \
+             $parent_pool/$parent_img \
+             $child_pool/$child_img_old"
+    log_success "Cross-cluster clone '$child_img_old' created"
+
+    # Rename the child on cluster2.
+    rbd_on cluster2 "mv $child_pool/$child_img_old $child_pool/$child_img_new"
+    log_success "Renamed child: $child_img_old -> $child_img_new"
+
+    # Check rbd children on the parent (cluster1) shows the NEW name.
+    local children_out
+    children_out=$(exec_on cluster1 \
+        "./bin/rbd --conf /tmp/cluster1/ceph.conf children $parent_pool/$parent_img 2>&1")
+    log_info "rbd children output after rename:"
+    echo "$children_out"
+
+    if echo "$children_out" | grep -q "$child_img_old"; then
+        log_fail "Bug #2 rename regression: rbd children still shows old name '$child_img_old'"
+        log_error "  children_update_image_name in RenameRequest did not fire or failed"
+        rbd_on cluster2 "rm $child_pool/$child_img_new" 2>/dev/null || true
+        rbd_on cluster1 "rm $parent_pool/$parent_img"   2>/dev/null || true
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    if ! echo "$children_out" | grep -q "$child_img_new"; then
+        log_fail "Bug #2 rename regression: rbd children does not show new name '$child_img_new'"
+        log_error "  Got: $children_out"
+        rbd_on cluster2 "rm $child_pool/$child_img_new" 2>/dev/null || true
+        rbd_on cluster1 "rm $parent_pool/$parent_img"   2>/dev/null || true
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "rbd children shows new name '$child_img_new' after rename"
+
+    # Cleanup
+    rbd_on cluster2 "rm $child_pool/$child_img_new" 2>/dev/null || true
+    rbd_on cluster1 "rm $parent_pool/$parent_img"   2>/dev/null || true
+    ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+
+    log_success "=== Cross-Cluster Rename Test PASSED ==="
+}
+
 # ── Test: S3-backed cross-cluster clone ──────────────────────────────────────
 run_s3_cross_cluster() {
     log_step "=== Test: S3-Backed Cross-Cluster Standalone Clone ==="
@@ -1083,6 +1215,8 @@ start_ceph_cluster cluster1
 start_ceph_cluster cluster2
 
 [ $RUN_PLAIN      -eq 1 ] && run_plain_cross_cluster
+[ $RUN_PLAIN      -eq 1 ] && run_plain_cross_cluster_direct_rm
+[ $RUN_PLAIN      -eq 1 ] && run_plain_cross_cluster_rename
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_rbd_children
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_partial_backfill
