@@ -272,6 +272,22 @@ run_plain_cross_cluster_direct_rm() {
     fi
     log_success "Child removed"
 
+    # Bug #3 check: child_detach's set_op_features call must clear the
+    # CLONE_PARENT op feature from the parent header when the last child is
+    # removed.  This is an atomic part of child_detach on the OSD — if
+    # child_detach reached cluster1 correctly (Bug #1 path), CLONE_PARENT
+    # must be gone too.
+    local parent_info
+    parent_info=$(exec_on cluster1 \
+        "./bin/rbd --conf /tmp/cluster1/ceph.conf info $parent_pool/$parent_img 2>&1")
+    if echo "$parent_info" | grep -q "clone-parent"; then
+        log_fail "Bug #3 regression: op_features: clone-parent still set on parent after child rm"
+        log_error "  child_detach reached cluster1 but set_op_features did not clear CLONE_PARENT"
+        echo "$parent_info"
+        return 1
+    fi
+    log_success "Parent op_features: clone-parent cleared after child rm (Bug #3)"
+
     # Now remove the parent — must succeed (no phantom child entry).
     log_step "Removing parent after child rm (must succeed)"
     if ! rbd_on cluster1 "rm $parent_pool/$parent_img"; then
