@@ -822,8 +822,22 @@ Context *RefreshRequest<I>::handle_v2_get_snapshots(int *result) {
       } else {
         std::optional<uint64_t> parent_overlap;
         *result = cls_client::parent_overlap_get_finish(&it, &parent_overlap);
-        if (*result == 0 && parent_overlap && m_parent_md.spec.pool_id > -1) {
-          m_snap_parents[i].spec = m_parent_md.spec;
+        if (*result == 0 && parent_overlap &&
+            m_parent_md.spec.exists_or_standalone()) {
+          // A standalone (incl. remote standalone) clone keeps the same parent
+          // across its own snapshots, so the snapshot's parent is the HEAD
+          // parent.  Copy the whole HEAD ParentImageInfo (spec, parent_type,
+          // and the remote-cluster spec), then set this snapshot's overlap.
+          // parent_type + remote must be carried so that opening the image AT a
+          // snapshot (SetSnapRequest then RefreshParentRequest) resolves a
+          // remote-standalone grandparent through its own cluster instead of
+          // defaulting to SNAPSHOT/local-pool and failing with ENOENT
+          // (cross-cluster lazy-volume snapshot clone).  Whole-struct copy
+          // mirrors the migration branch below and avoids silently dropping any
+          // ParentImageInfo field added later.  exists_or_standalone() matches
+          // is_open_required() and recognises remote parents whose pool_id is
+          // -1 but pool_name is set.
+          m_snap_parents[i] = m_parent_md;
           m_snap_parents[i].overlap = *parent_overlap;
         }
       }
