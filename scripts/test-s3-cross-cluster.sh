@@ -237,8 +237,14 @@ run_plain_cross_cluster_direct_rm() {
     local parent_img="direct-rm-parent"
     local child_img="direct-rm-child"
 
+    # clone-standalone opens a local IoCtx for pool_name, then uses the same
+    # pool name to look up the parent image on the remote cluster.  The parent
+    # pool must therefore exist on BOTH clusters (even though the parent image
+    # only lives on cluster1).
     ceph_on cluster1 "osd pool create $parent_pool 16" 2>&1 || true
+    ceph_on cluster2 "osd pool create $parent_pool 16" 2>&1 || true
     exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf pool init $parent_pool"
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init $parent_pool"
     rbd_on cluster1 "create --size 4M $parent_pool/$parent_img"
     log_info "Created $parent_pool/$parent_img on cluster1"
 
@@ -273,12 +279,14 @@ run_plain_cross_cluster_direct_rm() {
         log_error "  child_detach likely did not reach cluster1; check debug logs"
         log_error "  for 'detaching from remote parent in cluster:' to confirm"
         ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
         ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
         return 1
     fi
     log_success "Parent removed successfully after direct child rm — no phantom entry"
 
     ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
     ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
 
     log_success "=== Cross-Cluster Direct Rm Test PASSED ==="
@@ -297,8 +305,11 @@ run_plain_cross_cluster_rename() {
     local child_img_old="rename-child-before"
     local child_img_new="rename-child-after"
 
+    # clone-standalone needs the parent pool to exist on BOTH clusters.
     ceph_on cluster1 "osd pool create $parent_pool 16" 2>&1 || true
+    ceph_on cluster2 "osd pool create $parent_pool 16" 2>&1 || true
     exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf pool init $parent_pool"
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init $parent_pool"
     rbd_on cluster1 "create --size 4M $parent_pool/$parent_img"
     log_info "Created $parent_pool/$parent_img on cluster1"
 
@@ -318,6 +329,10 @@ run_plain_cross_cluster_rename() {
     rbd_on cluster2 "mv $child_pool/$child_img_old $child_pool/$child_img_new"
     log_success "Renamed child: $child_img_old -> $child_img_new"
 
+    # The rename schedules a fire-and-forget update to the parent's ChildImageSpec.
+    # Give the background op_work_queue task time to complete.
+    sleep 1
+
     # Check rbd children on the parent (cluster1) shows the NEW name.
     local children_out
     children_out=$(exec_on cluster1 \
@@ -331,6 +346,7 @@ run_plain_cross_cluster_rename() {
         rbd_on cluster2 "rm $child_pool/$child_img_new" 2>/dev/null || true
         rbd_on cluster1 "rm $parent_pool/$parent_img"   2>/dev/null || true
         ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
         ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
         return 1
     fi
@@ -340,6 +356,7 @@ run_plain_cross_cluster_rename() {
         rbd_on cluster2 "rm $child_pool/$child_img_new" 2>/dev/null || true
         rbd_on cluster1 "rm $parent_pool/$parent_img"   2>/dev/null || true
         ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
         ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
         return 1
     fi
@@ -349,6 +366,7 @@ run_plain_cross_cluster_rename() {
     rbd_on cluster2 "rm $child_pool/$child_img_new" 2>/dev/null || true
     rbd_on cluster1 "rm $parent_pool/$parent_img"   2>/dev/null || true
     ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
     ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
 
     log_success "=== Cross-Cluster Rename Test PASSED ==="
