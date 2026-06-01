@@ -88,7 +88,7 @@ run_matrix_q()   { run_suite "e2e-matrix-quick"   "test-s3-e2e-matrix.sh" "--sce
 run_backfill()   { run_suite "backfill"           "test-s3-backfill.sh"; }
 run_cow()        { run_suite "concurrent-cow"     "test-s3-concurrent-cow.sh"; }
 run_preemption() { run_suite "preemption"         "test-s3-preemption.sh"; }
-run_cross()      { run_suite "cross-cluster"      "test-s3-cross-cluster.sh"; }
+run_cross()      { run_suite "cross-cluster"      "test-s3-cross-cluster.sh" --skip-build; }
 run_perf()       { run_suite "performance"        "test-s3-performance.sh"; }
 # Strict regression tests — single-test slices of perf/dedup that assert the
 # specific invariants from the user-reported bug list.
