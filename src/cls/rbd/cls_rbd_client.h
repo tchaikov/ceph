@@ -282,6 +282,10 @@ int children_list_finish(bufferlist::const_iterator *it,
 int children_list(librados::IoCtx *ioctx, const std::string &oid,
                   snapid_t snap_id,
                   cls::rbd::ChildImageSpecs *child_images);
+void children_update_image_name(librados::ObjectWriteOperation *op,
+                                snapid_t snap_id,
+                                const cls::rbd::ChildImageSpec& child_image,
+                                const std::string& new_image_name);
 int migration_set(librados::IoCtx *ioctx, const std::string &oid,
                   const cls::rbd::MigrationSpec &migration_spec);
 void migration_set(librados::ObjectWriteOperation *op,

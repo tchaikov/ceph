@@ -1638,6 +1638,18 @@ int children_list(librados::IoCtx *ioctx, const std::string &oid,
   return 0;
 }
 
+void children_update_image_name(librados::ObjectWriteOperation *op,
+                                snapid_t snap_id,
+                                const cls::rbd::ChildImageSpec& child_image,
+                                const std::string& new_image_name)
+{
+  bufferlist bl;
+  encode(snap_id, bl);
+  encode(child_image, bl);
+  encode(new_image_name, bl);
+  op->exec("rbd", "children_update_image_name", bl);
+}
+
 int migration_set(librados::IoCtx *ioctx, const std::string &oid,
                   const cls::rbd::MigrationSpec &migration_spec) {
   librados::ObjectWriteOperation op;

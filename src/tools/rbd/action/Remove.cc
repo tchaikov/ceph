@@ -104,8 +104,12 @@ int execute(const po::variables_map &vm,
                   << " with 'rbd snap purge' before the image can be removed."
                   << std::endl;
       } else {
-        std::cerr << "rbd: image has snapshots with linked clones - these must "
-                  << "be deleted or flattened before the image can be removed."
+        // No snapshots, so the image has standalone child clones (use
+        // 'rbd children' to list them).
+        std::cerr << "rbd: image has child clone(s) that must be deleted or "
+                  << "flattened before the image can be removed."
+                  << std::endl
+                  << "Use 'rbd children' to list them."
                   << std::endl;
       }
     } else if (r == -EBUSY) {

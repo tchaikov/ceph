@@ -298,8 +298,15 @@ void PreRemoveRequest<I>::handle_check_children(int r) {
 
   if (!children.empty()) {
     lderr(cct) << "image has " << children.size()
-               << " child(ren) - not removing" << dendl;
-    finish(-EBUSY);
+               << " child clone(s) - not removing" << dendl;
+    for (const auto& child : children) {
+      lderr(cct) << "  child: cluster="
+                 << (child.cluster_name.empty() ? "(local)" : child.cluster_name)
+                 << " pool_id=" << child.pool_id
+                 << " image_id=" << child.image_id
+                 << " name=" << child.image_name << dendl;
+    }
+    finish(-ENOTEMPTY);
     return;
   }
 

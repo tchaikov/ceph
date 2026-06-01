@@ -79,6 +79,9 @@ private:
   void send_remove_source_header();
 
   void apply();
+  // Best-effort update of image_name in the remote parent's children list.
+  // Queued as fire-and-forget; failures are logged but do not fail the rename.
+  void schedule_parent_child_name_update();
 };
 
 } // namespace operation

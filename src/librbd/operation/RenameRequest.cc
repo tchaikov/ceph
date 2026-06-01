@@ -2,12 +2,16 @@
 // vim: ts=8 sw=2 smarttab
 
 #include "librbd/operation/RenameRequest.h"
+#include "cls/rbd/cls_rbd_client.h"
 #include "common/dout.h"
 #include "common/errno.h"
+#include "common/WorkQueue.h"
 #include "include/rados/librados.hpp"
 #include "librbd/ImageCtx.h"
-#include "librbd/internal.h"
+#include "librbd/RemoteClusterUtils.h"
+#include "librbd/Types.h"
 #include "librbd/Utils.h"
+#include "librbd/internal.h"
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
@@ -78,6 +82,11 @@ bool RenameRequest<I>::should_complete(int r) {
     // update in-memory name before removing source header
     apply();
   } else if (m_state == STATE_REMOVE_SOURCE_HEADER) {
+    // For cross-cluster standalone clones, update the image_name stored in
+    // the parent's children list.  The parent cluster cannot resolve the
+    // child-cluster's directory, so it caches the name at attach time —
+    // without this update, rbd-children on the base would show the old name.
+    schedule_parent_child_name_update();
     return true;
   }
 
@@ -198,6 +207,69 @@ void RenameRequest<I>::send_remove_source_header() {
   int r = image_ctx.md_ctx.aio_operate(m_source_oid, rados_completion, &op);
   ceph_assert(r == 0);
   rados_completion->release();
+}
+
+template <typename I>
+void RenameRequest<I>::schedule_parent_child_name_update() {
+  I &image_ctx = this->m_image_ctx;
+  CephContext *cct = image_ctx.cct;
+
+  ParentImageInfo parent_md;
+  {
+    RWLock::RLocker parent_locker(image_ctx.parent_lock);
+    parent_md = image_ctx.parent_md;
+  }
+
+  if (image_ctx.old_format ||
+      parent_md.parent_type != PARENT_TYPE_REMOTE_STANDALONE) {
+    return;
+  }
+
+  // Capture everything by value — image_ctx may be torn down before
+  // the queued task runs.
+  const std::string header_oid = util::header_name(parent_md.spec.image_id);
+  const std::string new_name = m_dest_name;
+  cls::rbd::ChildImageSpec child_spec(image_ctx.md_ctx.get_id(),
+                                      image_ctx.md_ctx.get_namespace(),
+                                      image_ctx.id);
+
+  const RemoteParentSpec remote = parent_md.remote;
+  const std::string pool_name = parent_md.spec.pool_name;
+  const int64_t pool_id = parent_md.spec.pool_id;
+  const std::string pool_ns = parent_md.spec.pool_namespace;
+
+  ldout(cct, 10) << "scheduling parent child-name update: "
+                 << header_oid << " new_name=" << new_name << dendl;
+
+  image_ctx.op_work_queue->queue(new FunctionContext(
+    [cct, header_oid, new_name, child_spec, remote,
+     pool_name, pool_id, pool_ns](int) {
+      // Rados and IoCtx go out of scope at lambda exit; Rados destructor calls
+      // rados_shutdown, so no explicit shutdown needed.
+      librados::Rados cluster;
+      librados::IoCtx ioctx;
+      int r = util::open_remote_parent_ioctx(cct, remote, pool_name,
+                                             pool_id, pool_ns,
+                                             cluster, ioctx);
+      if (r < 0) {
+        lderr(cct) << "rename: failed to open remote parent for child-name "
+                   << "update: " << cpp_strerror(r) << dendl;
+        return;
+      }
+
+      librados::ObjectWriteOperation op;
+      cls_client::children_update_image_name(&op, CEPH_NOSNAP,
+                                             child_spec, new_name);
+      r = ioctx.operate(header_oid, &op);
+      if (r < 0 && r != -ENOENT) {
+        lderr(cct) << "rename: failed to update child image_name in remote "
+                   << "parent (" << header_oid << "): " << cpp_strerror(r)
+                   << dendl;
+      } else {
+        ldout(cct, 10) << "rename: updated child image_name in remote parent "
+                       << header_oid << " to " << new_name << dendl;
+      }
+    }), 0);
 }
 
 template <typename I>

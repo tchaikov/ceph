@@ -4182,6 +4182,61 @@ int children_list(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 }
 
 /**
+ * Input:
+ * @param snap id (uint64_t) parent snapshot id
+ * @param child spec (cls::rbd::ChildImageSpec) child image identity to find
+ * @param new_image_name (std::string) replacement image name
+ *
+ * Output:
+ * @returns 0 on success, -ENOENT if no child entry found, negative on error
+ */
+int children_update_image_name(cls_method_context_t hctx, bufferlist *in,
+                               bufferlist *out)
+{
+  uint64_t snap_id;
+  cls::rbd::ChildImageSpec child_image;
+  std::string new_image_name;
+  try {
+    auto it = in->cbegin();
+    decode(snap_id, it);
+    decode(child_image, it);
+    decode(new_image_name, it);
+  } catch (const buffer::error &err) {
+    return -EINVAL;
+  }
+
+  CLS_LOG(20, "children_update_image_name snap_id=%" PRIu64
+              " image_id=%s new_name=%s",
+          snap_id, child_image.image_id.c_str(), new_image_name.c_str());
+
+  auto children_key = image::snap_children_key_from_snap_id(snap_id);
+  cls::rbd::ChildImageSpecs child_images;
+  int r = read_key(hctx, children_key, &child_images);
+  if (r < 0) {
+    return r;
+  }
+
+  auto it = child_images.find(child_image);
+  if (it == child_images.end()) {
+    return -ENOENT;
+  }
+
+  // std::set elements are const; update by erase + insert.
+  cls::rbd::ChildImageSpec updated = *it;
+  updated.image_name = new_image_name;
+  child_images.erase(it);
+  child_images.insert(updated);
+
+  r = write_key(hctx, children_key, child_images);
+  if (r < 0) {
+    CLS_ERR("error writing snapshot children: %s", cpp_strerror(r).c_str());
+    return r;
+  }
+
+  return 0;
+}
+
+/**
  * Set image migration.
  *
  * Input:
@@ -7596,6 +7651,7 @@ CLS_INIT(rbd)
   cls_method_handle_t h_child_attach;
   cls_method_handle_t h_child_detach;
   cls_method_handle_t h_children_list;
+  cls_method_handle_t h_children_update_image_name;
   cls_method_handle_t h_migration_set;
   cls_method_handle_t h_migration_set_state;
   cls_method_handle_t h_migration_get;
@@ -7789,6 +7845,10 @@ CLS_INIT(rbd)
   cls_register_cxx_method(h_class, "children_list",
                           CLS_METHOD_RD,
                           children_list, &h_children_list);
+  cls_register_cxx_method(h_class, "children_update_image_name",
+                          CLS_METHOD_RD | CLS_METHOD_WR,
+                          children_update_image_name,
+                          &h_children_update_image_name);
   cls_register_cxx_method(h_class, "migration_set",
                           CLS_METHOD_RD | CLS_METHOD_WR,
                           migration_set, &h_migration_set);
