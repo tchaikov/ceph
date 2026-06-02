@@ -47,7 +47,9 @@ cleanup() {
                list-bf-true list-bf-inprog list-bf-done \
                zero-trust-parent zero-trust-child \
                partial-trust-parent partial-trust-child \
-               clone-parent-opfeat-base clone-parent-opfeat-child; do
+               clone-parent-opfeat-base clone-parent-opfeat-child \
+               spill-offload-parent spill-offload-child \
+               spill-read-parent spill-read-child; do
         "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$POOL/$img" 2>/dev/null || true
     done
     "$BUILD_DIR/bin/ceph" --conf "$CEPH_CONF" osd pool delete "$POOL" "$POOL" \
@@ -1347,7 +1349,9 @@ test_flatten_offloads_backfill_on_spill() {
     fi
 
     local drops
-    drops=$(grep -c "throttler full; dropping" "$flog" 2>/dev/null || echo 0)
+    # grep -c prints "0" and exits 1 on no match; use `|| true` (not `|| echo 0`,
+    # which would append a SECOND "0" and break the `-eq 0` test below).
+    drops=$(grep -c "throttler full; dropping" "$flog" 2>/dev/null || true)
     if [ "$drops" -eq 0 ]; then
         log_fail "no writeback spills occurred -- throttler cap did not take effect;"
         log_fail "  cannot exercise the offload path (raise size_mb or lower the cap)"
@@ -1377,6 +1381,93 @@ test_flatten_offloads_backfill_on_spill() {
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
 }
 
+test_read_offloads_backfill_on_spill() {
+    # Companion to test_flatten_offloads_backfill_on_spill covering the READ
+    # path (ObjectRequest::handle_read_from_s3) rather than flatten/COW
+    # (CopyupRequest).  A cold read of the lazy clone fetches a parent object
+    # from S3 and writes it back to warm the parent's RADOS cache; if that
+    # writeback spills (AsyncWritebackThrottler at capacity) the client offloads
+    # completion by durably scheduling a backfill of the parent.  Read the whole
+    # child with the throttler capped tiny so the writebacks spill, then assert
+    # the parent ends up marked scheduled.  No daemon is started -- this checks
+    # only that a read-path spill triggers the schedule.
+
+    local parent="$POOL/spill-read-parent"
+    local child="$POOL/spill-read-child"
+    local size_mb=20   # 5 × 4 MiB objects, all non-zero -> every read warms cache
+    local raw_file="/tmp/backfill-test-spillrd-orig-$$.raw"
+    local rlog="/tmp/backfill-test-spillrd-read-$$.log"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child"  2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
+
+    create_test_image_with_pattern $size_mb "$raw_file"
+    upload_to_s3 "$raw_file" "$S3_BUCKET" "spill-read.raw"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$parent" --size ${size_mb}M --object-size 4M
+    set_s3_config "$parent" "spill-read.raw"
+    create_standalone_clone "$POOL" "spill-read-parent" "spill-read-child"
+
+    # Precondition: the parent is NOT scheduled before the reads.
+    if "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta get "$parent" \
+            backfill_scheduled >/dev/null 2>&1; then
+        log_fail "parent already has backfill_scheduled before reads"
+        rm -f "$raw_file"
+        return 1
+    fi
+
+    # Read the whole cold child with the writeback throttler capped to 1 op /
+    # 4 MiB.  Use 8 concurrent I/O threads so multiple S3 fetches land on the
+    # throttler at the same time — the burst causes spills.  `rbd bench` reads
+    # only one object by default; set io-total to the full image size so all
+    # objects are fetched.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+        --rbd_s3_async_writeback_max_concurrent 1 \
+        --rbd_s3_async_writeback_max_bytes_in_flight 4194304 \
+        --debug_rbd 10 bench "$child" \
+        --io-type read --io-size 4M --io-threads 8 \
+        --io-total "$((size_mb * 1024 * 1024))" >"$rlog" 2>&1
+    local read_rc=$?
+    if [ $read_rc -ne 0 ]; then
+        log_fail "bench (read) failed (rc=$read_rc)"
+        tail -5 "$rlog" | sed 's/^/    /'
+        rm -f "$raw_file" "$rlog"
+        return 1
+    fi
+
+    # The read-path spill logs "throttler full; dropping cache populate"
+    # (ObjectRequest.cc); the flatten/COW path logs "dropping PARENT cache
+    # populate" (CopyupRequest.cc).  Match the read-path string specifically.
+    local drops
+    drops=$(grep -c "throttler full; dropping cache populate" "$rlog" 2>/dev/null || true)
+    if [ "${drops:-0}" -eq 0 ]; then
+        log_fail "no read-path writeback spills — throttler cap did not take effect;"
+        log_fail "  cannot exercise the read-path offload (raise size_mb or lower the cap)"
+        rm -f "$raw_file" "$rlog"
+        return 1
+    fi
+    log_info "read spilled $drops cache-populate writeback(s) under the capped throttler"
+
+    # The offload must have set BOTH schedule keys on the parent.
+    local sched status
+    sched=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta get "$parent" \
+        backfill_scheduled 2>/dev/null || echo "")
+    status=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta get "$parent" \
+        backfill_status 2>/dev/null || echo "")
+    if [ "$sched" != "true" ] || [ "$status" != "scheduled" ]; then
+        log_fail "read spill did not schedule a backfill on the parent"
+        log_fail "  backfill_scheduled='$sched' (want 'true'), backfill_status='$status' (want 'scheduled')"
+        log_fail "  schedule_self_backfill log lines:"
+        grep "schedule_self_backfill" "$rlog" | sed 's/^/    /' | head
+        rm -f "$raw_file" "$exp_file" "$rlog"
+        return 1
+    fi
+    log_success "spilled read offloaded completion: parent marked scheduled for backfill"
+
+    rm -f "$raw_file" "$rlog"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child"  2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
+}
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -1400,5 +1491,6 @@ run_test "backfill_list_shows_in_progress" test_backfill_list_shows_in_progress
 run_test "post_backfill_zero_region_no_s3"  test_post_backfill_zero_region_no_s3
 run_test "partial_backfill_zero_region_no_s3"  test_partial_backfill_zero_region_no_s3
 run_test "flatten_offloads_backfill_on_spill"  test_flatten_offloads_backfill_on_spill
+run_test "read_offloads_backfill_on_spill"     test_read_offloads_backfill_on_spill
 
 print_test_summary
