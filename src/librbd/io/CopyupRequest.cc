@@ -945,6 +945,12 @@ void CopyupRequest<I>::fire_parent_s3_writeback() {
   std::string parent_oid;
   std::string parent_image_id;
   librados::IoCtx parent_ioctx;
+  // Captured under parent_lock for spill bookkeeping after the lock is
+  // released (see the throttler-full branch below).  The parent ImageCtx
+  // stays live for this synchronous call: flatten detaches the parent only
+  // after every CopyupRequest has finished.
+  I *spill_parent = nullptr;
+  uint64_t spill_object_size = 0;
 
   {
     RWLock::RLocker snap_locker(m_image_ctx->snap_lock);
@@ -962,6 +968,8 @@ void CopyupRequest<I>::fire_parent_s3_writeback() {
     parent_oid      = parent_image_ctx->get_object_name(m_object_no);
     parent_ioctx    = parent_image_ctx->data_ctx;
     parent_image_id = parent_image_ctx->id;
+    spill_parent      = parent_image_ctx;
+    spill_object_size = parent_image_ctx->get_object_size();
 
     // In-memory parent object_map mutation: keep the cached bitmap in
     // sync so readers of the parent's in-memory map see OBJECT_EXISTS
@@ -1005,6 +1013,11 @@ void CopyupRequest<I>::fire_parent_s3_writeback() {
   if (!submitted) {
     ldout(cct, 10) << "throttler full; dropping parent cache populate for "
                    << parent_oid << " (" << bytes << " bytes)" << dendl;
+    // Spilled: record the object-aligned range on the PARENT so a later drain
+    // can schedule a backfill to fill it.  spill_parent + spill_object_size
+    // were captured under parent_lock above.
+    spill_parent->note_spilled_range(m_object_no * spill_object_size,
+                                     spill_object_size);
   }
 }
 

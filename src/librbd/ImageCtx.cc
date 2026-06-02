@@ -118,6 +118,7 @@ public:
       copyup_list_lock(util::unique_lock_name("librbd::ImageCtx::copyup_list_lock", this)),
       completed_reqs_lock(util::unique_lock_name("librbd::ImageCtx::completed_reqs_lock", this)),
       known_zero_lock(util::unique_lock_name("librbd::ImageCtx::known_zero_lock", this)),
+      pending_backfill_lock(util::unique_lock_name("librbd::ImageCtx::pending_backfill_lock", this)),
       extra_read_flags(0),
       old_format(false),
       order(0), size(0), features(0),
@@ -1209,6 +1210,61 @@ public:
   bool ImageCtx::is_known_zero_object(uint64_t object_no) {
     Mutex::Locker locker(known_zero_lock);
     return known_zero_objects.count(object_no) != 0;
+  }
+
+  void ImageCtx::note_spilled_range(uint64_t off, uint64_t len) {
+    if (len == 0) {
+      return;
+    }
+    {
+      Mutex::Locker locker(pending_backfill_lock);
+      // union_insert, not insert: spills of the same object can overlap and
+      // interval_set::insert ceph_aborts on overlap.
+      pending_backfill.union_insert(off, len);
+    }
+    // First spill on this ImageCtx: offload cache completion to the
+    // rbd-backfill daemon (read, partial write, and flatten all funnel their
+    // spills through here).  Guarded by an atomic so the schedule metadata is
+    // written at most once per ImageCtx, regardless of how many objects spill.
+    bool expected = false;
+    if (backfill_offload_requested.compare_exchange_strong(expected, true)) {
+      schedule_self_backfill();
+    }
+  }
+
+  void ImageCtx::schedule_self_backfill() {
+    // Durably set the backfill schedule keys on this image's header so the
+    // rbd-backfill daemon adopts it and completes the cache: caches non-zero
+    // objects and hole-marks zeros (VISITED_ZERO), never writing zeros.
+    // Whole-image backfill is crash-safe (a restarted daemon re-adopts the
+    // in_progress image) and cheap on re-runs (per-object stat-skip); if the
+    // image is already scheduled/in_progress the daemon dedups, so an
+    // unconditional once-per-ImageCtx write is safe.
+    //
+    // String literals must stay in sync with rbd::backfill::
+    // BACKFILL_SCHEDULED_KEY / BACKFILL_STATUS_KEY and the "true"/"scheduled"
+    // values in src/tools/rbd_backfill/Types.h -- librbd cannot include
+    // tool-tree headers (same constraint as apply_metadata's "backfill_status"
+    // literal).  Metadata values are raw bytes (read back via to_str()), so
+    // append, do not encode.  Fire-and-forget on md_ctx (the header's pool);
+    // ~ImageCtx's md_ctx.aio_flush() drains it before teardown.
+    map<string, bufferlist> data;
+    data["backfill_scheduled"].append("true");
+    data["backfill_status"].append("scheduled");
+    librados::ObjectWriteOperation op;
+    cls_client::metadata_set(&op, data);
+    auto* comp = librados::Rados::aio_create_completion();
+    int r = md_ctx.aio_operate(header_oid, comp, &op);
+    if (r < 0) {
+      ldout(cct, 10) << "schedule_self_backfill: aio_operate failed for "
+                     << header_oid << ": " << cpp_strerror(r)
+                     << " -- backfill not scheduled (non-fatal)" << dendl;
+    } else {
+      ldout(cct, 10) << "schedule_self_backfill: marked " << header_oid
+                     << " scheduled for backfill (offloading spilled cache warm)"
+                     << dendl;
+    }
+    comp->release();
   }
 
   Journal<ImageCtx> *ImageCtx::create_journal() {

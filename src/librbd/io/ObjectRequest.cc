@@ -882,6 +882,12 @@ void ObjectReadRequest<I>::handle_read_from_s3(int r) {
   if (!submitted) {
     ldout(cct, 10) << "throttler full; dropping cache populate for "
                    << this->m_oid << " (" << bytes << " bytes)" << dendl;
+    // The cache populate was spilled.  Record the object-aligned range on this
+    // (S3-backed parent) image so a later drain can schedule a backfill to
+    // fill it.  image_ctx IS the parent here (read_parent created this request
+    // on the parent ImageCtx).
+    uint64_t osize = image_ctx->get_object_size();
+    image_ctx->note_spilled_range(this->m_object_no * osize, osize);
   }
 
   // Opportunistic readahead: spawn N more reads through the FULL pipeline

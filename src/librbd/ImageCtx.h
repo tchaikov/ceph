@@ -21,6 +21,7 @@
 #include "common/zipkin_trace.h"
 
 #include "include/buffer_fwd.h"
+#include "include/interval_set.h"
 #include "include/rbd/librbd.hpp"
 #include "include/rbd_types.h"
 #include "include/types.h"
@@ -120,6 +121,7 @@ namespace librbd {
     Mutex copyup_list_lock; // protects copyup_waiting_list
     Mutex completed_reqs_lock; // protects completed_reqs
     Mutex known_zero_lock; // protects known_zero_objects (P1 known-zero cache)
+    Mutex pending_backfill_lock; // protects pending_backfill (spilled ranges)
 
     unsigned extra_read_flags;
 
@@ -203,6 +205,35 @@ namespace librbd {
     void note_known_zero_object(uint64_t object_no);
     // True if object_no was previously recorded all-zero on this ImageCtx.
     bool is_known_zero_object(uint64_t object_no);
+
+    // Byte ranges of THIS S3-backed image whose copy-on-read cache writeback
+    // was spilled (AsyncWritebackThrottler at capacity).  Reads, partial
+    // writes, and flatten record the spilled object's (object-aligned) range
+    // here via note_spilled_range; the first spill durably schedules a
+    // whole-image backfill of this image (schedule_self_backfill) so the
+    // rbd-backfill daemon completes the cache off the client's path.  Spills
+    // are whole objects today, but kept as merged byte ranges (union_insert)
+    // for observability and as the foundation for a future range-aware
+    // backfill.  Guarded by pending_backfill_lock.  In-memory only; the durable
+    // completion signal is the schedule metadata, not this set.
+    interval_set<uint64_t> pending_backfill;
+
+    // Record a spilled (object-aligned) range and, on the first spill, offload
+    // cache completion to the backfill daemon.  Uses interval_set::union_insert
+    // (NOT insert, which ceph_aborts on overlap) so repeated/overlapping spills
+    // of the same object merge instead of crashing.
+    void note_spilled_range(uint64_t off, uint64_t len);
+
+    // Flipped once, when the first spill offloads cache completion to the
+    // rbd-backfill daemon (see note_spilled_range).  Keeps the schedule
+    // metadata write to at most once per ImageCtx, off the IO path.
+    std::atomic<bool> backfill_offload_requested{false};
+    // Durably mark THIS image scheduled for backfill so the daemon completes
+    // the RADOS cache (caches non-zero objects, hole-marks zeros).  Best-effort,
+    // async, fire-and-forget.  Precondition: only meaningful for S3-backed
+    // images, which is guaranteed by the only caller (note_spilled_range, reached
+    // only from the S3 writeback-spill paths).
+    void schedule_self_backfill();
 
     uint32_t s3_parent_lock_timeout = 30; // cached from rbd_s3_parent_lock_timeout
     uint32_t s3_lock_retry_max = 5;       // cached from rbd_s3_lock_retry_max
