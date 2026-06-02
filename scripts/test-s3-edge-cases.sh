@@ -262,12 +262,88 @@ PYEOF2
 }
 
 # ============================================================================
+test_snap_clone_of_standalone() {
+    # A snapshot of a standalone clone must carry the clone's parent_type (and,
+    # for cross-cluster clones, the remote spec) into the snapshot's own parent
+    # info.  This is the same-cluster companion to the cross-cluster issue-#5
+    # regression (test-s3-cross-cluster.sh run_s3_cross_cluster_snap_clone):
+    # cross-cluster, cloning the snapshot FAILS without the fix because the
+    # grandparent is remote; same-cluster it still succeeds (grandparent is
+    # local) but the snapshot's parent_type silently reverts to the SNAPSHOT
+    # default.  The visible, catchable effect here is `rbd info <lazy>@snap1`
+    # reporting parent_type: standalone.
+
+    local parent="$POOL/edge-snapparent"
+    local lazy="$POOL/edge-snaplazy"
+    local snap="$lazy@snap1"
+    local clone="$POOL/edge-snapclone"
+    local size_mb=20
+
+    for img in "$clone" "$lazy" "$parent"; do
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" snap purge "$img" 2>/dev/null || true
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$img" 2>/dev/null || true
+    done
+
+    if ! start_minio $MINIO_PORT $MINIO_CONSOLE_PORT "$MINIO_DATA_DIR"; then
+        log_error "Cannot start MinIO"; return 1
+    fi
+    setup_s3_bucket $MINIO_PORT "$S3_BUCKET"
+
+    create_s3_parent "$POOL" "edge-snapparent" "edge-snap.raw" $size_mb \
+        "$S3_ENDPOINT" "$S3_BUCKET" "$CEPH_CONF"
+    create_standalone_clone "$POOL" "edge-snapparent" "edge-snaplazy"
+
+    # Snapshot + protect the standalone clone so it can be classic-cloned.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" snap create  "$snap"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" snap protect "$snap"
+
+    # The fix's visible effect: the snapshot inherits parent_type from the
+    # standalone clone's HEAD parent.  Pre-fix it reverted to the SNAPSHOT
+    # default, which is what this assertion catches.
+    local snap_info
+    snap_info=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" info "$snap")
+    if ! echo "$snap_info" | grep -q "parent_type:.*standalone"; then
+        log_fail "snapshot parent_type is not 'standalone' (regression: not carried from HEAD)"
+        echo "$snap_info" | grep -E "parent:|parent_type:|overlap:"
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" snap unprotect "$snap" 2>/dev/null || true
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" snap rm "$snap" 2>/dev/null || true
+        stop_minio $MINIO_PORT
+        return 1
+    fi
+    log_success "snapshot parent_type inherited from the standalone clone (standalone)"
+
+    # Clone the snapshot, then read it back so the grandparent chain is exercised.
+    if ! "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" clone "$snap" "$clone"; then
+        log_fail "clone of standalone-clone snapshot failed"
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" snap unprotect "$snap" 2>/dev/null || true
+        "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" snap rm "$snap" 2>/dev/null || true
+        stop_minio $MINIO_PORT
+        return 1
+    fi
+    if ! "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" bench "$clone" \
+            --io-type read --io-size 4M --io-total 4M --io-threads 1 >/dev/null 2>&1; then
+        log_fail "reading the snapshot-clone failed (grandparent chain not resolvable)"
+        return 1
+    fi
+    log_success "snapshot-clone created and read back through the standalone grandparent"
+
+    # Cleanup
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$clone" 2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" snap unprotect "$snap" 2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" snap rm "$snap" 2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$lazy"   2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
+    stop_minio $MINIO_PORT
+}
+
+# ============================================================================
 # Main
 # ============================================================================
 
 run_test "metadata_no_inheritance"    test_metadata_no_inheritance
 run_test "s3_config_roundtrip"        test_s3_config_roundtrip
 run_test "rbd_info_standalone_child"  test_rbd_info_standalone_child
+run_test "snap_clone_of_standalone"   test_snap_clone_of_standalone
 run_test "s3_ranged_get"              test_s3_ranged_get
 
 print_test_summary

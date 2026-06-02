@@ -1237,6 +1237,163 @@ chmod 600 /home/cephdev/.ceph/xconcur1.keyring"
     log_success "=== S3-Backed Cross-Cluster Concurrent COW Test PASSED ($NUM_CONCURRENT clients, ${TOTAL_TIME}s) ==="
 }
 
+# ── Test: clone a snapshot of a cross-cluster lazy volume (issue #5) ──────────
+# Issue #5: snapshotting a cross-cluster (remote standalone) lazy clone and then
+# `rbd clone`-ing that snapshot failed with:
+#   rbd: clone error: (2) No such file or directory
+# Opening <lazy>@snap1 runs SetSnapRequest -> RefreshParentRequest to open the
+# snapshot's parent (the remote-standalone grandparent on cluster1).
+# handle_v2_get_snapshots built the snapshot's ParentImageInfo from only the
+# HEAD parent's spec+overlap, so parent_type defaulted to SNAPSHOT and the
+# remote spec was empty; send_open_parent then looked for the grandparent in
+# the LOCAL (cluster2) pool and returned ENOENT.  The fix carries parent_type
+# and the remote spec into the per-snapshot parent info.  Same-cluster clones
+# never hit this (the grandparent is local), so this needs a real dual-cluster
+# setup to reproduce.
+run_s3_cross_cluster_snap_clone() {
+    log_step "=== Test: Clone of Cross-Cluster Lazy Snapshot (issue #5) ==="
+
+    local minio_name="minio-xsnap-$$"
+    local minio_ip="172.20.0.33"   # distinct from the other sidecars (.30/.31/.32)
+    local minio_port=9000
+    local minio_data="/tmp/${minio_name}-data"
+    local s3_bucket="xsnap-cross-test"
+    local container_s3="http://${minio_ip}:${minio_port}"
+
+    trap "docker rm -f $minio_name >/dev/null 2>&1; rm -rf $minio_data" RETURN
+
+    mkdir -p "$minio_data"
+    local tmp_raw
+    tmp_raw=$(mktemp /tmp/xsnap-parent-raw.XXXXXX)
+    dd if=/dev/urandom of="$tmp_raw" bs=1M count=20 status=none
+
+    docker rm -f "$minio_name" 2>/dev/null || true
+    docker run -d --name "$minio_name" --rm \
+        --network ceph-nautilus_ceph-net \
+        --ip "$minio_ip" \
+        -v "${minio_data}:/data" \
+        -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+        minio/minio server /data --address "0.0.0.0:${minio_port}" >/dev/null
+
+    for i in $(seq 1 30); do
+        if docker exec ceph-cluster2 bash -c \
+            "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    if ! docker exec ceph-cluster2 bash -c \
+        "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+        log_error "MinIO sidecar didn't become reachable from cluster2"
+        docker logs "$minio_name" 2>&1 | tail
+        rm -f "$tmp_raw"
+        return 1
+    fi
+
+    upload_to_minio_sidecar "$minio_name" "$tmp_raw" "$s3_bucket" "xsnap-parent-raw"
+    rm -f "$tmp_raw"
+    log_success "MinIO sidecar at ${container_s3} ready (20MB parent uploaded via S3)"
+
+    # S3-backed parent on cluster1
+    ceph_on cluster1 "osd pool create xsnap_pool 32" 2>&1 || true
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf pool init xsnap_pool"
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf create \
+        --size 20M xsnap_pool/xsnap-parent"
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf s3-config set \
+        xsnap_pool/xsnap-parent \
+        --s3-endpoint   '${container_s3}' \
+        --s3-bucket     '${s3_bucket}' \
+        --s3-image-name 'xsnap-parent-raw' \
+        --s3-access-key minioadmin \
+        --s3-secret-key minioadmin"
+    log_success "S3-backed parent created on cluster1"
+
+    # Child pools on cluster2 + remote cluster1 access config
+    ceph_on cluster2 "osd pool create xsnap_pool 32" 2>&1 || true
+    ceph_on cluster2 "osd pool create xsnap_child_pool 32" 2>&1 || true
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init xsnap_pool"
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init xsnap_child_pool"
+
+    local mon_addr key
+    mon_addr=$(docker exec ceph-cluster1 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; \
+         /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf mon dump --format json 2>/dev/null \
+         | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[\"mons\"][0][\"addr\"].split(\"/\")[0])'")
+    key=$(docker exec ceph-cluster1 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; \
+         /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf auth get-key client.admin")
+
+    docker exec -u cephdev ceph-cluster2 bash -c "mkdir -p /home/cephdev/.ceph
+cat > /home/cephdev/.ceph/xsnap1.conf << 'EOF'
+[global]
+mon_host = ${mon_addr}
+EOF
+cat > /home/cephdev/.ceph/xsnap1.keyring << 'EOF'
+[client.admin]
+key = ${key}
+EOF
+chmod 600 /home/cephdev/.ceph/xsnap1.keyring"
+
+    # Cross-cluster lazy clone on cluster2 (parent on cluster1)
+    docker exec -u cephdev ceph-cluster2 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+         ./bin/rbd --conf /tmp/cluster2/ceph.conf clone-standalone \
+             --remote-cluster-conf /home/cephdev/.ceph/xsnap1.conf \
+             --remote-keyring      /home/cephdev/.ceph/xsnap1.keyring \
+             xsnap_pool/xsnap-parent \
+             xsnap_child_pool/xsnap-lazy"
+    log_success "Cross-cluster lazy clone created (remote-standalone parent)"
+
+    # Snapshot + protect the lazy volume
+    rbd_on cluster2 "snap create  xsnap_child_pool/xsnap-lazy@snap1"
+    rbd_on cluster2 "snap protect xsnap_child_pool/xsnap-lazy@snap1"
+    log_success "Snapshot xsnap-lazy@snap1 created and protected"
+
+    # The clone of the snapshot must resolve <lazy>@snap1's remote-standalone
+    # grandparent through cluster1.  No remote flags here on purpose: the remote
+    # spec must come from the snapshot's stored parent info (the fix).  This is
+    # the exact command that returned ENOENT before the fix.
+    log_step "Cloning the lazy snapshot (the operation that failed in issue #5)"
+    if ! docker exec -u cephdev ceph-cluster2 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+         ./bin/rbd --conf /tmp/cluster2/ceph.conf clone \
+             xsnap_child_pool/xsnap-lazy@snap1 \
+             xsnap_child_pool/xsnap-clone"; then
+        log_fail "Issue #5 regression: clone of cross-cluster lazy snapshot failed"
+        log_error "  Opening <lazy>@snap1 could not resolve its remote-standalone"
+        log_error "  grandparent.  The snapshot's parent_type/remote were not carried"
+        log_error "  from HEAD, so RefreshParentRequest took the local-pool path and"
+        log_error "  returned ENOENT.  See RefreshRequest::handle_v2_get_snapshots."
+        return 1
+    fi
+    log_success "Clone of cross-cluster lazy snapshot succeeded (issue #5 fixed)"
+
+    # Read the new clone end to end: it shares <lazy>@snap1, whose unwritten
+    # regions resolve through the remote grandparent's S3 source.  A clean read
+    # confirms the whole grandparent chain is wired, not just that clone create
+    # validated metadata.
+    if ! rbd_on cluster2 \
+        "bench xsnap_child_pool/xsnap-clone --io-type read --io-size 4M --io-total 4M --io-threads 1"; then
+        log_fail "Issue #5: reading the snapshot-clone failed (grandparent chain not resolvable)"
+        return 1
+    fi
+    log_success "Read from snapshot-clone resolved the remote grandparent chain"
+
+    # Cleanup
+    rbd_on cluster2 "rm xsnap_child_pool/xsnap-clone" 2>/dev/null || true
+    rbd_on cluster2 "snap unprotect xsnap_child_pool/xsnap-lazy@snap1" 2>/dev/null || true
+    rbd_on cluster2 "snap rm        xsnap_child_pool/xsnap-lazy@snap1" 2>/dev/null || true
+    rbd_on cluster2 "rm xsnap_child_pool/xsnap-lazy" 2>/dev/null || true
+    rbd_on cluster1 "rm xsnap_pool/xsnap-parent" 2>/dev/null || true
+    ceph_on cluster1 "osd pool delete xsnap_pool       xsnap_pool       --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete xsnap_pool       xsnap_pool       --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete xsnap_child_pool xsnap_child_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    docker rm -f "$minio_name" 2>/dev/null || true
+    rm -rf "$minio_data"
+
+    log_success "=== Cross-Cluster Lazy Snapshot Clone Test PASSED (issue #5) ==="
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 check_prereqs
 
@@ -1254,6 +1411,7 @@ start_ceph_cluster cluster2
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_rbd_children
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_partial_backfill
+[ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_snap_clone
 [ $RUN_S3         -eq 1 ] && [ $RUN_CONCURRENT -eq 1 ] && run_s3_cross_cluster_concurrent
 
 echo
