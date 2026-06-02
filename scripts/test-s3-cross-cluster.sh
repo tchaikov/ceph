@@ -591,13 +591,24 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
 # ── Test: cross-cluster `rbd children` lists remote child ─────────────────────
 # Bug #5: list_descendants used pool-name comparison alone to detect cross-
 # cluster children.  When both clusters happened to use the same pool name
-# (a common naming convention — e.g. both have "ebs_ceph_ssd"), the comparison
+# (a common naming convention, e.g. both have "ebs_ceph_ssd"), the comparison
 # collapsed and the iterator returned -ENOENT trying to find the remote
 # child id in the parent's local pool.  Fix records cluster_name in
 # ChildImageSpec at attach time and short-circuits remote children at
 # list time using that authoritative signal.
+#
+# Bug #6 (same-cluster-name regression): the bug #5 fix originally also
+# required child.cluster_name != cct->_conf->cluster.  Both vstart clusters
+# here are named "ceph" (the default), exactly like the two production
+# clusters where bug #6 surfaced, so that extra comparison re-localized the
+# genuinely remote child and `rbd children` on the parent's own cluster
+# ENOENTed again.  This test reproduces bug #6: with the pre-fix predicate it
+# fails with the same "error looking up name for image id ... in pool" error;
+# with the fix (non-empty cluster_name == remote) it lists the child as
+# "(remote)".  No separate same-name test is needed because both clusters
+# already share the "ceph" name.
 run_s3_cross_cluster_rbd_children() {
-    log_step "=== Test: rbd children on cross-cluster S3-backed parent (bug #5) ==="
+    log_step "=== Test: rbd children on cross-cluster S3-backed parent (bug #5, bug #6) ==="
 
     local s3_bucket="rbdchildren-test"
     # Use the SAME pool name on both clusters so we hit the pool_name-collision
@@ -698,10 +709,25 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
              $child_pool/rbdchildren-child"
     log_success "Cross-cluster clone created (parent and child both in pool '$shared_pool')"
 
-    # Run `rbd children` on cluster1 against the parent.  Pre-fix, this
-    # returned -ENOENT because the child id from cluster2 wasn't found in
-    # cluster1's same-named pool.  With the cluster_name fix, it should
-    # succeed and list the child as "(remote)".
+    # Bug #6 precondition: this test only exercises the same-cluster-name case
+    # if both clusters actually report the same cct->_conf->cluster.  vstart
+    # defaults both to "ceph" (matching the production clusters where bug #6
+    # surfaced), but assert it so the coverage can't silently degrade to the
+    # bug #5 (pool-name) case alone if the harness naming ever changes.
+    local cn1 cn2
+    cn1=$(exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf --show-config 2>/dev/null | awk '/^cluster =/{print \$3}'")
+    cn2=$(exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf --show-config 2>/dev/null | awk '/^cluster =/{print \$3}'")
+    if [ -z "$cn1" ] || [ "$cn1" != "$cn2" ]; then
+        log_fail "Bug #6 coverage degraded: clusters report different names ('$cn1' vs '$cn2'); same-name case not exercised"
+        return 1
+    fi
+    log_success "Both clusters share cluster name '$cn1' (bug #6 same-name precondition holds)"
+
+    # Run `rbd children` on cluster1 (the parent's OWN cluster) against the
+    # parent.  Pre-fix this returned -ENOENT: bug #5 (pool-name collision) and
+    # bug #6 (both clusters named "ceph", so cluster_name == local cluster name
+    # re-localized the remote child) both land here.  With the fix it succeeds
+    # and lists the child as "(remote)".
     log_step "Running rbd children on cluster1 (must succeed and show remote child)"
     local children_output children_exit=0
     children_output=$(exec_on cluster1 \
@@ -709,7 +735,7 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
         || children_exit=$?
 
     if [ "$children_exit" -ne 0 ]; then
-        log_fail "Bug #5 regression: rbd children FAILED with exit $children_exit"
+        log_fail "Bug #5/#6 regression: rbd children FAILED with exit $children_exit"
         echo "$children_output"
         return 1
     fi
@@ -717,7 +743,7 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
     echo "$children_output"
 
     if ! echo "$children_output" | grep -qi "remote"; then
-        log_fail "Bug #5 regression: child not marked '(remote)' — ChildImageSpec.cluster_name not consulted"
+        log_fail "Bug #5/#6 regression: child not marked '(remote)', cluster_name not consulted"
         return 1
     fi
     log_success "rbd children listed cross-cluster child as remote (cluster_name dispatch works)"
