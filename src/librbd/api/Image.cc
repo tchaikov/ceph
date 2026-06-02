@@ -445,9 +445,17 @@ int Image<I>::list_descendants(
   // alone is unreliable when both clusters use the same pool naming
   // convention (e.g. both have a pool called "ebs_ceph_ssd").
   std::set<std::pair<int64_t, std::string>> cross_cluster_ids;
-  const std::string& local_cluster = cct->_conf->cluster;
-  auto is_remote_child = [&local_cluster](const auto& child) {
-    return !child.cluster_name.empty() && child.cluster_name != local_cluster;
+  // AttachChildRequest::v2_child_attach records cluster_name only when the
+  // child is attached from a different cluster than the parent, so a non-empty
+  // value is itself the authoritative "remote child" signal.  Do NOT also
+  // require child.cluster_name != cct->_conf->cluster: cluster names are not
+  // unique (both clusters are commonly the default "ceph"), and that extra
+  // comparison wrongly re-localizes a genuinely remote child when the names
+  // happen to match, so list_descendants then ENOENTs looking the child id up
+  // in the local pool when `rbd children` runs on the base's own cluster.
+  // Matches PreRemoveRequest's cluster_name.empty() local/remote test.
+  auto is_remote_child = [](const auto& child) {
+    return !child.cluster_name.empty();
   };
 
   for (auto& child_image : child_images) {
