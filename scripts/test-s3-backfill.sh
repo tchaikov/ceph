@@ -1299,6 +1299,85 @@ test_partial_backfill_zero_region_no_s3() {
 }
 
 # ============================================================================
+test_flatten_offloads_backfill_on_spill() {
+    # When the copy-on-read writeback that warms the parent cache is spilled
+    # (AsyncWritebackThrottler at capacity), the client offloads completion to
+    # the backfill daemon by durably scheduling a backfill of the parent.
+    # Drive a flatten with the throttler capped tiny so writebacks spill, then
+    # assert the parent ends up marked scheduled (backfill_scheduled=true /
+    # backfill_status=scheduled).  No daemon is started -- this checks only that
+    # the spill triggers the schedule; the daemon's own behavior is covered by
+    # the other tests here.
+
+    local parent="$POOL/spill-offload-parent"
+    local child="$POOL/spill-offload-child"
+    local size_mb=64   # 16 objects, all non-zero -> every read warms the cache
+    local raw_file="/tmp/backfill-test-spill-orig-$$.raw"
+    local flog="/tmp/backfill-test-spill-flatten-$$.log"
+
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child"  2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
+
+    create_test_image_with_pattern $size_mb "$raw_file"
+    upload_to_s3 "$raw_file" "$S3_BUCKET" "spill-offload.raw"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" create "$parent" --size ${size_mb}M
+    set_s3_config "$parent" "spill-offload.raw"
+    create_standalone_clone "$POOL" "spill-offload-parent" "spill-offload-child"
+
+    # Precondition: the parent is NOT scheduled before the flatten.
+    if "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta get "$parent" \
+            backfill_scheduled >/dev/null 2>&1; then
+        log_fail "parent already has backfill_scheduled before flatten"
+        rm -f "$raw_file"
+        return 1
+    fi
+
+    # Flatten the child with the writeback throttler capped to 1 op / 4 MiB so
+    # the parent-cache writebacks spill during the burst.
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
+        --rbd_s3_async_writeback_max_concurrent 1 \
+        --rbd_s3_async_writeback_max_bytes_in_flight 4194304 \
+        --debug_rbd 10 flatten "$child" >"$flog" 2>&1
+    local flatten_rc=$?
+    if [ $flatten_rc -ne 0 ]; then
+        log_fail "flatten failed (rc=$flatten_rc)"
+        tail -5 "$flog" | sed 's/^/    /'
+        rm -f "$raw_file" "$flog"
+        return 1
+    fi
+
+    local drops
+    drops=$(grep -c "throttler full; dropping" "$flog" 2>/dev/null || echo 0)
+    if [ "$drops" -eq 0 ]; then
+        log_fail "no writeback spills occurred -- throttler cap did not take effect;"
+        log_fail "  cannot exercise the offload path (raise size_mb or lower the cap)"
+        rm -f "$raw_file" "$flog"
+        return 1
+    fi
+    log_info "flatten spilled $drops writeback(s) under the capped throttler"
+
+    # The offload must have set BOTH schedule keys on the parent.
+    local sched status
+    sched=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta get "$parent" \
+        backfill_scheduled 2>/dev/null || echo "")
+    status=$("$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" image-meta get "$parent" \
+        backfill_status 2>/dev/null || echo "")
+    if [ "$sched" != "true" ] || [ "$status" != "scheduled" ]; then
+        log_fail "spill did not schedule a backfill on the parent"
+        log_fail "  backfill_scheduled='$sched' (want 'true'), backfill_status='$status' (want 'scheduled')"
+        log_fail "  schedule_self_backfill log lines:"
+        grep "schedule_self_backfill" "$flog" | sed 's/^/    /' | head
+        rm -f "$raw_file" "$flog"
+        return 1
+    fi
+    log_success "spilled flatten offloaded completion: parent marked scheduled for backfill"
+
+    rm -f "$raw_file" "$flog"
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$child"  2>/dev/null || true
+    "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" rm "$parent" 2>/dev/null || true
+}
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -1320,5 +1399,6 @@ run_test "standalone_clone_rm_clears_clone_parent" test_standalone_clone_rm_clea
 run_test "backfill_list_shows_in_progress" test_backfill_list_shows_in_progress
 run_test "post_backfill_zero_region_no_s3"  test_post_backfill_zero_region_no_s3
 run_test "partial_backfill_zero_region_no_s3"  test_partial_backfill_zero_region_no_s3
+run_test "flatten_offloads_backfill_on_spill"  test_flatten_offloads_backfill_on_spill
 
 print_test_summary
