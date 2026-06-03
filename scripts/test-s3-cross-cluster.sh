@@ -880,6 +880,203 @@ chmod 600 /home/cephdev/.ceph/cluster1.keyring"
     log_success "=== S3-Backed Cross-Cluster Direct Rm Test PASSED ==="
 }
 
+# ── Test: cross-cluster lazy clone removal with rbd_move_to_trash_on_remove ────
+# Reproduces the production report: with rbd_move_to_trash_on_remove=true,
+# `rbd rm <lazy-clone>` does NOT delete the clone — it moves it to the trash
+# (RBD_TRASH_IMAGE_SOURCE_USER), so DetachChildRequest never runs and the base
+# still lists the clone as a child.  This is stock Ceph trash semantics (a clone
+# in the trash still references its parent), NOT a lazy-clone defect, and it
+# applies identically to same-cluster clones.
+#
+# The actual deletion + parent detach happens at `rbd trash rm` time.  This test
+# verifies the full lifecycle works for a CROSS-CLUSTER lazy clone:
+#   rm (-> trash) -> base still has child -> trash rm -> base detached -> rm base
+# If the trash-purge -> DetachChildRequest path were broken for cross-cluster
+# clones, the base would stay un-removable after `trash rm` (the real-bug branch).
+run_s3_cross_cluster_trash_rm() {
+    log_step "=== Test: Cross-Cluster Lazy Clone Trash Removal (rbd_move_to_trash_on_remove) ==="
+
+    local minio_name="minio-s3-trash-rm-$$"
+    local minio_ip="172.20.0.35"
+    local minio_port=9000
+    local minio_data="/tmp/${minio_name}-data"
+    local s3_bucket="s3-trash-rm-test"
+    local container_s3="http://${minio_ip}:${minio_port}"
+
+    local parent_pool="s3trash_parent_pool"
+    local child_pool="s3trash_child_pool"
+    local parent_img="s3-trash-parent"
+    local child_img="s3-trash-child"
+
+    trap "docker rm -f $minio_name >/dev/null 2>&1; rm -rf $minio_data" RETURN
+
+    mkdir -p "$minio_data"
+    local tmp_raw
+    tmp_raw=$(mktemp /tmp/s3-trash-rm-raw.XXXXXX)
+    dd if=/dev/urandom of="$tmp_raw" bs=1M count=4 status=none
+
+    docker rm -f "$minio_name" 2>/dev/null || true
+    docker run -d --name "$minio_name" --rm \
+        --network ceph-nautilus_ceph-net \
+        --ip "$minio_ip" \
+        -v "${minio_data}:/data" \
+        -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+        minio/minio server /data --address "0.0.0.0:${minio_port}" >/dev/null
+
+    for i in $(seq 1 30); do
+        if docker exec ceph-cluster2 bash -c \
+            "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    if ! docker exec ceph-cluster2 bash -c \
+        "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+        log_error "MinIO sidecar didn't become reachable from cluster2"
+        rm -f "$tmp_raw"
+        return 1
+    fi
+
+    upload_to_minio_sidecar "$minio_name" "$tmp_raw" "$s3_bucket" "s3-trash-rm-raw"
+    rm -f "$tmp_raw"
+    log_success "MinIO sidecar at ${container_s3} ready (4MB parent uploaded)"
+
+    ceph_on cluster1 "osd pool create $parent_pool 16" 2>&1 || true
+    ceph_on cluster2 "osd pool create $parent_pool 16" 2>&1 || true
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf pool init $parent_pool"
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init $parent_pool"
+
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf create \
+        --size 4M $parent_pool/$parent_img"
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf s3-config set \
+        $parent_pool/$parent_img \
+        --s3-endpoint   '${container_s3}' \
+        --s3-bucket     '${s3_bucket}' \
+        --s3-image-name 's3-trash-rm-raw' \
+        --s3-access-key minioadmin \
+        --s3-secret-key minioadmin"
+    log_success "S3-backed parent created on cluster1: $parent_pool/$parent_img"
+
+    ceph_on cluster2 "osd pool create $child_pool 16" 2>&1 || true
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init $child_pool"
+
+    if ! docker exec ceph-cluster2 test -f /home/cephdev/.ceph/cluster1.conf 2>/dev/null; then
+        local mon_addr key
+        mon_addr=$(docker exec ceph-cluster1 bash -c \
+            "source /home/cephdev/.ceph_env 2>/dev/null; \
+             /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf mon dump --format json 2>/dev/null \
+             | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[\"mons\"][0][\"addr\"].split(\"/\")[0])'")
+        key=$(docker exec ceph-cluster1 bash -c \
+            "source /home/cephdev/.ceph_env 2>/dev/null; \
+             /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf auth get-key client.admin")
+        docker exec -u cephdev ceph-cluster2 bash -c "mkdir -p /home/cephdev/.ceph
+cat > /home/cephdev/.ceph/cluster1.conf << 'EOF'
+[global]
+mon_host = ${mon_addr}
+EOF
+cat > /home/cephdev/.ceph/cluster1.keyring << 'EOF'
+[client.admin]
+key = ${key}
+EOF
+chmod 600 /home/cephdev/.ceph/cluster1.keyring"
+    fi
+
+    docker exec -u cephdev ceph-cluster2 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+         ./bin/rbd --conf /tmp/cluster2/ceph.conf clone-standalone \
+             --remote-cluster-conf   /home/cephdev/.ceph/cluster1.conf \
+             --remote-keyring        /home/cephdev/.ceph/cluster1.keyring \
+             $parent_pool/$parent_img \
+             $child_pool/$child_img"
+    log_success "Cross-cluster lazy clone created"
+
+    # Capture the child image id before removal (needed for `trash rm`).
+    local child_id
+    child_id=$(rbd_on cluster2 "info $child_pool/$child_img" 2>/dev/null \
+        | awk '/^\tid: /{print $2}')
+    log_info "child image id: $child_id"
+
+    # Step 1: rm with rbd_move_to_trash_on_remove=true — the production config.
+    # This MOVES the clone to the trash; it does NOT delete it.
+    log_step "rbd rm with rbd_move_to_trash_on_remove=true (expect move-to-trash)"
+    if ! rbd_on cluster2 "rm $child_pool/$child_img --rbd_move_to_trash_on_remove=true"; then
+        log_fail "trash-rm: rbd rm (move to trash) failed"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+
+    # Step 2: confirm the clone is in the trash (not deleted).
+    local trash_ls
+    trash_ls=$(rbd_on cluster2 "trash ls $child_pool" 2>/dev/null || true)
+    if ! echo "$trash_ls" | grep -q "$child_img"; then
+        log_fail "trash-rm: clone not found in trash after rm — expected move-to-trash"
+        log_error "  trash ls: $trash_ls"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "Clone moved to trash (RBD_TRASH_IMAGE_SOURCE_USER), not deleted"
+
+    # Step 3: the base legitimately still lists the clone as a child (it is in
+    # the trash but still references the parent — this is stock Ceph semantics
+    # and reproduces the user's `rbd children` output).  rm of the base must
+    # still fail here, exactly as the user saw.
+    if rbd_on cluster1 "rm $parent_pool/$parent_img" 2>/dev/null; then
+        log_fail "trash-rm: base removable while clone still in trash — unexpected"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_info "base correctly NOT removable while clone is in trash (expected)"
+
+    # Step 4: DISCRIMINATOR — purge the clone from trash.  This is the real
+    # deletion that runs RemoveRequest -> DetachChildRequest -> remote child_detach.
+    log_step "rbd trash rm (the real deletion + parent detach)"
+    if ! rbd_on cluster2 "trash rm $child_pool/$child_id"; then
+        log_fail "trash-rm: trash rm of cross-cluster lazy clone failed (REAL BUG: branch b)"
+        log_error "  the trash-purge -> DetachChildRequest path is broken for cross-cluster"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "Clone purged from trash"
+
+    # Step 5: after the purge, the base must be detached and removable.
+    local parent_info
+    parent_info=$(exec_on cluster1 \
+        "./bin/rbd --conf /tmp/cluster1/ceph.conf info $parent_pool/$parent_img 2>&1")
+    if echo "$parent_info" | grep -q "clone-parent"; then
+        log_fail "trash-rm: clone-parent still set after trash rm (REAL BUG: branch b)"
+        log_error "  trash-purge did not reach cluster1 to detach the child"
+        echo "$parent_info"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "clone-parent cleared after trash rm — cross-cluster detach works"
+
+    if ! rbd_on cluster1 "rm $parent_pool/$parent_img"; then
+        log_fail "trash-rm: base removal failed after trash rm (REAL BUG: branch b)"
+        log_error "  child: $(exec_on cluster1 ./bin/rbd --conf /tmp/cluster1/ceph.conf children $parent_pool/$parent_img 2>&1)"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "Base removed after trash rm — full lifecycle works (branch a: config)"
+
+    ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+
+    log_success "=== Cross-Cluster Lazy Clone Trash Removal Test PASSED ==="
+}
+
 # ── Test: cross-cluster `rbd children` lists remote child ─────────────────────
 # Bug #5: list_descendants used pool-name comparison alone to detect cross-
 # cluster children.  When both clusters happened to use the same pool name
@@ -1729,6 +1926,7 @@ start_ceph_cluster cluster2
 [ $RUN_PLAIN      -eq 1 ] && run_plain_cross_cluster_rename
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_direct_rm
+[ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_trash_rm
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_rbd_children
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_partial_backfill
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_snap_clone
