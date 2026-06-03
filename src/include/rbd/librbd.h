@@ -245,6 +245,11 @@ enum {
   RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF = 13,
   RBD_IMAGE_OPTION_REMOTE_KEYRING = 14,
   RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME = 15,
+  // Explicit pool name to open on the remote cluster.  When unset,
+  // the pool name is taken from the local p_ioctx (requires the parent
+  // pool to also exist on the child cluster).  Setting this option lets
+  // the parent pool name differ from the child pool name.
+  RBD_IMAGE_OPTION_REMOTE_PARENT_POOL_NAME = 16,
 };
 
 typedef enum {

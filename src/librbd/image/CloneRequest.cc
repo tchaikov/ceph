@@ -144,11 +144,21 @@ void CloneRequest<I>::connect_remote_parent() {
                    << m_remote_parent_spec.cluster_name << dendl;
   ceph_assert(!m_remote_parent_spec.empty());
 
+  // Prefer the explicit remote parent pool name option (set when the parent
+  // pool name differs from the child pool name) over m_parent_io_ctx's pool
+  // name (which may point to the child pool when the parent pool doesn't
+  // exist on the child cluster).
+  std::string parent_pool_name;
+  if (m_opts.get(RBD_IMAGE_OPTION_REMOTE_PARENT_POOL_NAME, &parent_pool_name) < 0 ||
+      parent_pool_name.empty()) {
+    parent_pool_name = m_parent_io_ctx.get_pool_name();
+  }
+
   m_remote_parent_cluster.reset(new librados::Rados());
   m_remote_parent_io_ctx.reset(new librados::IoCtx());
   int r = util::open_remote_parent_ioctx(
     m_cct, m_remote_parent_spec,
-    m_parent_io_ctx.get_pool_name(), m_parent_io_ctx.get_id(),
+    parent_pool_name, m_parent_io_ctx.get_id(),
     m_parent_io_ctx.get_namespace(),
     *m_remote_parent_cluster, *m_remote_parent_io_ctx);
   if (r < 0) {

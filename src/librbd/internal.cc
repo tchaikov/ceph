@@ -313,9 +313,10 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     {RBD_IMAGE_OPTION_DATA_POOL,             {STR,    "data_pool"}},
     {RBD_IMAGE_OPTION_FLATTEN,               {UINT64, "flatten"}},
     {RBD_IMAGE_OPTION_CLONE_FORMAT,          {UINT64, "clone_format"}},
-    {RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF,   {STR,    "remote_cluster_conf"}},
-    {RBD_IMAGE_OPTION_REMOTE_KEYRING,        {STR,    "remote_keyring"}},
-    {RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME,    {STR,    "remote_client_name"}},
+    {RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF,        {STR,    "remote_cluster_conf"}},
+    {RBD_IMAGE_OPTION_REMOTE_KEYRING,             {STR,    "remote_keyring"}},
+    {RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME,         {STR,    "remote_client_name"}},
+    {RBD_IMAGE_OPTION_REMOTE_PARENT_POOL_NAME,    {STR,    "remote_parent_pool_name"}},
   };
 
   std::string image_option_name(int optname) {
@@ -968,7 +969,8 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
   // Resolve remote-cluster image options into a connected RemoteParentSpec
   // and a parent image id looked up in the remote cluster.  Mutates parent_id
   // only on success; on failure the caller propagates the returned errno.
-  static int resolve_remote_parent(CephContext *cct, IoCtx& p_ioctx,
+  static int resolve_remote_parent(CephContext *cct,
+                                   const std::string& remote_parent_pool_name,
                                    const char *p_id, const char *p_name,
                                    const std::string& remote_cluster_conf,
                                    const std::string& remote_keyring,
@@ -1022,12 +1024,11 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
         remote_cluster.shutdown();
       } BOOST_SCOPE_EXIT_END;
 
-      const std::string parent_pool_name = p_ioctx.get_pool_name();
       librados::IoCtx remote_parent_ioctx;
-      r = remote_cluster.ioctx_create(parent_pool_name.c_str(), remote_parent_ioctx);
+      r = remote_cluster.ioctx_create(remote_parent_pool_name.c_str(), remote_parent_ioctx);
       if (r < 0) {
         lderr(cct) << "failed to create IoCtx for parent pool '"
-                   << parent_pool_name << "' in remote cluster: "
+                   << remote_parent_pool_name << "' in remote cluster: "
                    << cpp_strerror(r) << dendl;
         return r;
       }
@@ -1086,12 +1087,23 @@ int validate_pool(IoCtx &io_ctx, CephContext *cct) {
     const std::string remote_cluster_conf = consume(RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF);
     const std::string remote_keyring      = consume(RBD_IMAGE_OPTION_REMOTE_KEYRING);
     const std::string remote_client_name  = consume(RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME);
+    // Explicit remote parent pool name: set by clone-standalone when the parent
+    // pool name differs from the child pool name (the parent pool may not exist
+    // on the child cluster, so p_ioctx may not carry the right pool name).
+    // Falls back to p_ioctx.get_pool_name() when unset for backward compat.
+    // NOTE: intentionally NOT consumed (not unset) so that the option survives
+    // into CloneRequest::m_opts, where connect_remote_parent() reads it.
+    std::string remote_parent_pool_name;
+    if (c_opts.get(RBD_IMAGE_OPTION_REMOTE_PARENT_POOL_NAME, &remote_parent_pool_name) < 0 ||
+        remote_parent_pool_name.empty()) {
+      remote_parent_pool_name = p_ioctx.get_pool_name();
+    }
     const bool is_remote = !remote_cluster_conf.empty();
 
     std::string parent_id;
     RemoteParentSpec remote_parent_spec;
     if (is_remote) {
-      int r = resolve_remote_parent(cct, p_ioctx, p_id, p_name,
+      int r = resolve_remote_parent(cct, remote_parent_pool_name, p_id, p_name,
                                     remote_cluster_conf, remote_keyring,
                                     remote_client_name, parent_id,
                                     remote_parent_spec);

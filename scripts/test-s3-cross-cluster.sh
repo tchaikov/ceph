@@ -308,6 +308,89 @@ run_plain_cross_cluster_direct_rm() {
     log_success "=== Cross-Cluster Direct Rm Test PASSED ==="
 }
 
+# ── Test: cross-cluster clone with different parent/child pool names ───────────
+# Bug #7: clone-standalone required the parent pool to exist on the child
+# cluster.  When the parent pool name differed from the child pool name,
+# utils::init(parent_pool_name) failed on the child cluster with "pool not found".
+# Fix: for cross-cluster clones, open rados via the child pool and pass the
+# parent pool name explicitly via RBD_IMAGE_OPTION_REMOTE_PARENT_POOL_NAME.
+run_plain_cross_cluster_diff_pool_names() {
+    log_step "=== Test: Cross-Cluster Clone with Different Parent/Child Pool Names (Bug #7) ==="
+
+    local parent_pool="diffpool_parent"   # exists only on cluster1
+    local child_pool="diffpool_child"     # exists only on cluster2
+    local parent_img="diffpool-parent"
+    local child_img="diffpool-child"
+
+    ceph_on cluster1 "osd pool create $parent_pool 16" 2>&1 || true
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf pool init $parent_pool"
+    rbd_on cluster1 "create --size 4M $parent_pool/$parent_img"
+    log_info "Created $parent_pool/$parent_img on cluster1 (pool only on cluster1)"
+
+    ceph_on cluster2 "osd pool create $child_pool 16" 2>&1 || true
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init $child_pool"
+    # NOTE: $parent_pool is intentionally NOT created on cluster2.
+
+    # Reuse cluster1.conf / cluster1.keyring written by run_plain_cross_cluster.
+    if ! docker exec ceph-cluster2 test -f /home/cephdev/.ceph/cluster1.conf 2>/dev/null; then
+        local mon_addr key
+        mon_addr=$(docker exec ceph-cluster1 bash -c \
+            "source /home/cephdev/.ceph_env 2>/dev/null; \
+             /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf mon dump --format json 2>/dev/null \
+             | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[\"mons\"][0][\"addr\"].split(\"/\")[0])'")
+        key=$(docker exec ceph-cluster1 bash -c \
+            "source /home/cephdev/.ceph_env 2>/dev/null; \
+             /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf auth get-key client.admin")
+        docker exec -u cephdev ceph-cluster2 bash -c "mkdir -p /home/cephdev/.ceph
+cat > /home/cephdev/.ceph/cluster1.conf << 'EOF'
+[global]
+mon_host = ${mon_addr}
+EOF
+cat > /home/cephdev/.ceph/cluster1.keyring << 'EOF'
+[client.admin]
+key = ${key}
+EOF
+chmod 600 /home/cephdev/.ceph/cluster1.keyring"
+    fi
+
+    # This used to fail with "failed to open pool" because the parent pool
+    # didn't exist on cluster2 and clone-standalone tried to open it there.
+    log_step "Creating cross-cluster clone: parent in '$parent_pool', child in '$child_pool'"
+    if ! docker exec -u cephdev ceph-cluster2 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+         ./bin/rbd --conf /tmp/cluster2/ceph.conf clone-standalone \
+             --remote-cluster-conf   /home/cephdev/.ceph/cluster1.conf \
+             --remote-keyring        /home/cephdev/.ceph/cluster1.keyring \
+             $parent_pool/$parent_img \
+             $child_pool/$child_img"; then
+        log_fail "Bug #7: clone-standalone failed when parent pool name differs from child pool name"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "Clone created across different pool names"
+
+    # Remove child then parent to verify the full lifecycle.
+    if ! rbd_on cluster2 "rm $child_pool/$child_img"; then
+        log_fail "Bug #7: child removal failed"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    if ! rbd_on cluster1 "rm $parent_pool/$parent_img"; then
+        log_fail "Bug #7: parent removal failed after child rm (phantom child entry)"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "Child and parent both removed cleanly"
+
+    ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+
+    log_success "=== Cross-Cluster Different Pool Names Test PASSED (Bug #7) ==="
+}
+
 # ── Test: rename updates image_name in parent's children list (Bug #2 rename) ─
 # Bug #2: after renaming a cross-cluster lazy clone, `rbd children` on the
 # parent still showed the old name.  RenameRequest now updates the cached
@@ -1603,6 +1686,7 @@ start_ceph_cluster cluster2
 
 [ $RUN_PLAIN      -eq 1 ] && run_plain_cross_cluster
 [ $RUN_PLAIN      -eq 1 ] && run_plain_cross_cluster_direct_rm
+[ $RUN_PLAIN      -eq 1 ] && run_plain_cross_cluster_diff_pool_names
 [ $RUN_PLAIN      -eq 1 ] && run_plain_cross_cluster_rename
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_direct_rm

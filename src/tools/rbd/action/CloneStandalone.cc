@@ -77,7 +77,8 @@ int execute(const po::variables_map &vm,
   // c_opts so librbd::clone_standalone takes the remote path internally.
   // --remote-client-name carries default_value("client.admin") so vm always
   // has it once we know the user passed --remote-cluster-conf.
-  if (vm.count("remote-cluster-conf")) {
+  const bool is_remote = vm.count("remote-cluster-conf") > 0;
+  if (is_remote) {
     opts.set(RBD_IMAGE_OPTION_REMOTE_CLUSTER_CONF,
              vm["remote-cluster-conf"].as<std::string>());
     if (vm.count("remote-keyring")) {
@@ -86,19 +87,34 @@ int execute(const po::variables_map &vm,
     }
     opts.set(RBD_IMAGE_OPTION_REMOTE_CLIENT_NAME,
              vm["remote-client-name"].as<std::string>());
+    // The parent pool (pool_name) may not exist on the local (child) cluster.
+    // Pass it explicitly so librbd uses it for the remote connection instead
+    // of deriving it from p_ioctx (which would be wrong when pool names differ).
+    opts.set(RBD_IMAGE_OPTION_REMOTE_PARENT_POOL_NAME, pool_name);
   }
 
   librados::Rados rados;
   librados::IoCtx io_ctx;
-  r = utils::init(pool_name, namespace_name, &rados, &io_ctx);
+  if (is_remote && pool_name != dst_pool_name) {
+    // Parent pool may not exist on the child cluster; open rados using the
+    // destination (child) pool which is guaranteed to exist locally.
+    r = utils::init(dst_pool_name, dst_namespace_name, &rados, &io_ctx);
+  } else {
+    r = utils::init(pool_name, namespace_name, &rados, &io_ctx);
+  }
   if (r < 0) {
     return r;
   }
 
   librados::IoCtx dst_io_ctx;
-  r = utils::init_io_ctx(rados, dst_pool_name, dst_namespace_name, &dst_io_ctx);
-  if (r < 0) {
-    return r;
+  if (is_remote && pool_name != dst_pool_name) {
+    // rados is already on dst_pool — reuse it for dst_io_ctx too.
+    dst_io_ctx = io_ctx;
+  } else {
+    r = utils::init_io_ctx(rados, dst_pool_name, dst_namespace_name, &dst_io_ctx);
+    if (r < 0) {
+      return r;
+    }
   }
 
   librbd::RBD rbd;
