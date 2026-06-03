@@ -95,26 +95,31 @@ int execute(const po::variables_map &vm,
 
   librados::Rados rados;
   librados::IoCtx io_ctx;
-  if (is_remote && pool_name != dst_pool_name) {
-    // Parent pool may not exist on the child cluster; open rados using the
-    // destination (child) pool which is guaranteed to exist locally.
-    r = utils::init(dst_pool_name, dst_namespace_name, &rados, &io_ctx);
-  } else {
-    r = utils::init(pool_name, namespace_name, &rados, &io_ctx);
-  }
-  if (r < 0) {
-    return r;
-  }
-
   librados::IoCtx dst_io_ctx;
   if (is_remote && pool_name != dst_pool_name) {
-    // rados is already on dst_pool — reuse it for dst_io_ctx too.
-    dst_io_ctx = io_ctx;
-  } else {
-    r = utils::init_io_ctx(rados, dst_pool_name, dst_namespace_name, &dst_io_ctx);
+    // Parent pool may not exist on the child cluster; open rados via the
+    // destination (child) pool which is guaranteed to exist locally.
+    // Initialize dst_io_ctx and io_ctx independently (separate IoCtxImpl
+    // objects) so that namespace changes on one do not affect the other.
+    // io_ctx is opened with namespace_name (the parent's namespace) so that
+    // m_parent_io_ctx.get_namespace() returns the correct value for the remote
+    // parent connection (open_remote_parent_ioctx calls ioctx.set_namespace()
+    // with this value).  The actual remote pool is communicated via
+    // RBD_IMAGE_OPTION_REMOTE_PARENT_POOL_NAME.
+    r = utils::init(dst_pool_name, dst_namespace_name, &rados, &dst_io_ctx);
     if (r < 0) {
       return r;
     }
+    r = utils::init_io_ctx(rados, dst_pool_name, namespace_name, &io_ctx);
+  } else {
+    r = utils::init(pool_name, namespace_name, &rados, &io_ctx);
+    if (r < 0) {
+      return r;
+    }
+    r = utils::init_io_ctx(rados, dst_pool_name, dst_namespace_name, &dst_io_ctx);
+  }
+  if (r < 0) {
+    return r;
   }
 
   librbd::RBD rbd;

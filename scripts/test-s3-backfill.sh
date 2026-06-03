@@ -1352,7 +1352,7 @@ test_flatten_offloads_backfill_on_spill() {
     # grep -c prints "0" and exits 1 on no match; use `|| true` (not `|| echo 0`,
     # which would append a SECOND "0" and break the `-eq 0` test below).
     drops=$(grep -c "throttler full; dropping" "$flog" 2>/dev/null || true)
-    if [ "$drops" -eq 0 ]; then
+    if [ "${drops:-0}" -eq 0 ]; then
         log_fail "no writeback spills occurred -- throttler cap did not take effect;"
         log_fail "  cannot exercise the offload path (raise size_mb or lower the cap)"
         rm -f "$raw_file" "$flog"
