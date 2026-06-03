@@ -21,7 +21,7 @@
 #   8. dedup-writeback   — issue #4 strict regression: cross-process write dedup
 #                          (1 wrote, N-1 skipped invariant)
 #   9. dedup-read        — issue #4 strict regression: cross-process read dedup
-#  10. cross-cluster     — Docker dual-cluster (covers user issues #3 + #5)
+#  10. cross-cluster     — Docker dual-cluster (covers user issues #3 + #5 + S3 direct-rm)
 #   perf                 — Performance benchmarks (independent; not in --full)
 
 set -e

@@ -588,6 +588,176 @@ chmod 600 /home/cephdev/.ceph/xcluster1.keyring"
     log_success "=== S3-Backed Cross-Cluster Test PASSED ==="
 }
 
+# ── Test: S3-backed parent + direct rm of cross-cluster clone ─────────────────
+# Regression: the plain cross-cluster direct-rm test (run_plain_cross_cluster_direct_rm)
+# only covers a non-S3 parent.  The S3 test (run_s3_cross_cluster) only covers
+# flatten-first, which exercises DetachChildRequest during flatten rather than
+# during rm.  This test covers the missing quadrant: S3-backed parent on cluster1,
+# cross-cluster standalone clone on cluster2, direct rbd rm of the clone (no
+# flatten), then rbd rm of the parent — the parent must succeed with no phantom
+# child entry.
+#
+# If the OSD was not restarted after a rebuild, the old cls_rbd does not encode
+# parent_type in parent_attach / parent_get, so RefreshRequest falls back to
+# infer_parent_type(CEPH_NOSNAP) which returns STANDALONE instead of
+# REMOTE_STANDALONE.  DetachChildRequest then takes the local-cluster path,
+# which silently returns -ENOENT (header not on the child cluster) and the
+# phantom child entry is never cleaned up on cluster1.
+run_s3_cross_cluster_direct_rm() {
+    log_step "=== Test: S3-Backed Cross-Cluster Direct Rm (no flatten) ==="
+
+    local minio_name="minio-s3-direct-rm-$$"
+    local minio_ip="172.20.0.34"
+    local minio_port=9000
+    local minio_data="/tmp/${minio_name}-data"
+    local s3_bucket="s3-direct-rm-test"
+    local container_s3="http://${minio_ip}:${minio_port}"
+
+    local parent_pool="s3drm_parent_pool"
+    local child_pool="s3drm_child_pool"
+    local parent_img="s3-drm-parent"
+    local child_img="s3-drm-child"
+
+    trap "docker rm -f $minio_name >/dev/null 2>&1; rm -rf $minio_data" RETURN
+
+    mkdir -p "$minio_data"
+    local tmp_raw
+    tmp_raw=$(mktemp /tmp/s3-direct-rm-raw.XXXXXX)
+    dd if=/dev/urandom of="$tmp_raw" bs=1M count=4 status=none
+
+    docker rm -f "$minio_name" 2>/dev/null || true
+    docker run -d --name "$minio_name" --rm \
+        --network ceph-nautilus_ceph-net \
+        --ip "$minio_ip" \
+        -v "${minio_data}:/data" \
+        -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+        minio/minio server /data --address "0.0.0.0:${minio_port}" >/dev/null
+
+    for i in $(seq 1 30); do
+        if docker exec ceph-cluster2 bash -c \
+            "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    if ! docker exec ceph-cluster2 bash -c \
+        "timeout 1 bash -c '</dev/tcp/${minio_ip}/${minio_port}'" 2>/dev/null; then
+        log_error "MinIO sidecar didn't become reachable from cluster2"
+        rm -f "$tmp_raw"
+        return 1
+    fi
+
+    upload_to_minio_sidecar "$minio_name" "$tmp_raw" "$s3_bucket" "s3-direct-rm-raw"
+    rm -f "$tmp_raw"
+    log_success "MinIO sidecar at ${container_s3} ready (4MB parent uploaded)"
+
+    # Parent pool must exist on BOTH clusters (clone-standalone opens a local
+    # IoCtx for the pool_name to validate the child target, then uses the same
+    # pool_name to connect to the remote cluster for the parent).
+    ceph_on cluster1 "osd pool create $parent_pool 16" 2>&1 || true
+    ceph_on cluster2 "osd pool create $parent_pool 16" 2>&1 || true
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf pool init $parent_pool"
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init $parent_pool"
+
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf create \
+        --size 4M $parent_pool/$parent_img"
+    exec_on cluster1 "./bin/rbd --conf /tmp/cluster1/ceph.conf s3-config set \
+        $parent_pool/$parent_img \
+        --s3-endpoint   '${container_s3}' \
+        --s3-bucket     '${s3_bucket}' \
+        --s3-image-name 's3-direct-rm-raw' \
+        --s3-access-key minioadmin \
+        --s3-secret-key minioadmin"
+    log_success "S3-backed parent created on cluster1: $parent_pool/$parent_img"
+
+    ceph_on cluster2 "osd pool create $child_pool 16" 2>&1 || true
+    exec_on cluster2 "./bin/rbd --conf /tmp/cluster2/ceph.conf pool init $child_pool"
+
+    # Exchange cluster1 connection info into cluster2 (reuse the cluster1.conf
+    # and cluster1.keyring written by run_plain_cross_cluster if available,
+    # otherwise generate fresh ones).
+    if ! docker exec ceph-cluster2 test -f /home/cephdev/.ceph/cluster1.conf 2>/dev/null; then
+        local mon_addr key
+        mon_addr=$(docker exec ceph-cluster1 bash -c \
+            "source /home/cephdev/.ceph_env 2>/dev/null; \
+             /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf mon dump --format json 2>/dev/null \
+             | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[\"mons\"][0][\"addr\"].split(\"/\")[0])'")
+        key=$(docker exec ceph-cluster1 bash -c \
+            "source /home/cephdev/.ceph_env 2>/dev/null; \
+             /ceph/build/bin/ceph --conf /tmp/cluster1/ceph.conf auth get-key client.admin")
+        docker exec -u cephdev ceph-cluster2 bash -c "mkdir -p /home/cephdev/.ceph
+cat > /home/cephdev/.ceph/cluster1.conf << 'EOF'
+[global]
+mon_host = ${mon_addr}
+EOF
+cat > /home/cephdev/.ceph/cluster1.keyring << 'EOF'
+[client.admin]
+key = ${key}
+EOF
+chmod 600 /home/cephdev/.ceph/cluster1.keyring"
+    fi
+
+    docker exec -u cephdev ceph-cluster2 bash -c \
+        "source /home/cephdev/.ceph_env 2>/dev/null; cd /ceph/build && \
+         ./bin/rbd --conf /tmp/cluster2/ceph.conf clone-standalone \
+             --remote-cluster-conf   /home/cephdev/.ceph/cluster1.conf \
+             --remote-keyring        /home/cephdev/.ceph/cluster1.keyring \
+             $parent_pool/$parent_img \
+             $child_pool/$child_img"
+    log_success "S3-backed cross-cluster standalone clone created (no flatten will be done)"
+
+    # Direct rm — no flatten.  DetachChildRequest must connect to cluster1 and
+    # call child_detach on the S3-backed parent's header.
+    log_step "Removing S3-backed cross-cluster clone directly (no flatten)"
+    if ! rbd_on cluster2 "rm $child_pool/$child_img"; then
+        log_fail "S3 direct-rm: child removal failed"
+        rbd_on cluster1 "children $parent_pool/$parent_img" 2>&1 || true
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "S3-backed cross-cluster clone removed"
+
+    # Proxy check for DetachChildRequest reaching cluster1: child_detach atomically
+    # clears the CLONE_PARENT op_feature when the last child goes away.  If
+    # DetachChildRequest silently mis-targeted the local cluster instead of cluster1,
+    # this feature bit stays set and we catch it here before the harder-to-diagnose
+    # "parent has children" failure below.
+    local parent_info
+    parent_info=$(exec_on cluster1 \
+        "./bin/rbd --conf /tmp/cluster1/ceph.conf info $parent_pool/$parent_img 2>&1")
+    if echo "$parent_info" | grep -q "clone-parent"; then
+        log_fail "S3 direct-rm: op_features: clone-parent still set on S3 parent after child rm"
+        log_error "  DetachChildRequest did not reach cluster1 (stale OSD or parent_type bug)"
+        echo "$parent_info"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "S3 parent op_features: clone-parent cleared after direct child rm"
+
+    # Now remove the S3-backed parent — must succeed (no phantom child entry).
+    log_step "Removing S3-backed parent after direct child rm (must succeed)"
+    if ! rbd_on cluster1 "rm $parent_pool/$parent_img"; then
+        log_fail "S3 direct-rm regression: parent removal failed — phantom child entry"
+        log_error "  child_detach did not reach cluster1; see 'detaching from remote parent in cluster:'"
+        log_error "  in debug_rbd=10 output for confirmation"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "S3-backed parent removed after direct child rm — no phantom entry"
+
+    ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+    ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+
+    log_success "=== S3-Backed Cross-Cluster Direct Rm Test PASSED ==="
+}
+
 # ── Test: cross-cluster `rbd children` lists remote child ─────────────────────
 # Bug #5: list_descendants used pool-name comparison alone to detect cross-
 # cluster children.  When both clusters happened to use the same pool name
@@ -1435,6 +1605,7 @@ start_ceph_cluster cluster2
 [ $RUN_PLAIN      -eq 1 ] && run_plain_cross_cluster_direct_rm
 [ $RUN_PLAIN      -eq 1 ] && run_plain_cross_cluster_rename
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster
+[ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_direct_rm
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_rbd_children
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_partial_backfill
 [ $RUN_S3         -eq 1 ] && run_s3_cross_cluster_snap_clone
