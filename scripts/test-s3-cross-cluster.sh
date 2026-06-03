@@ -461,9 +461,48 @@ run_plain_cross_cluster_rename() {
     fi
     log_success "rbd children shows new name '$child_img_new' after rename"
 
-    # Cleanup
-    rbd_on cluster2 "rm $child_pool/$child_img_new" 2>/dev/null || true
-    rbd_on cluster1 "rm $parent_pool/$parent_img"   2>/dev/null || true
+    # Bug #7 (rename-then-rm): after renaming a cross-cluster clone and then
+    # removing it, DetachChildRequest must reach the remote parent cluster and
+    # clean up the child entry — same as the direct-rm path but exercised after
+    # a rename.  Pre-fix, the `rbd rm` cleanup below silently passed even when
+    # the parent-side detach failed, hiding the phantom-child regression.
+    log_step "Removing renamed child directly (no flatten) — Bug #7 rename-then-rm check"
+    if ! rbd_on cluster2 "rm $child_pool/$child_img_new"; then
+        log_fail "Bug #7 rename-then-rm: removal of renamed child failed"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "Renamed child removed"
+
+    # Proxy check: child_detach must have reached cluster1 and atomically cleared
+    # CLONE_PARENT.  If it silently mis-targeted the local cluster instead (wrong
+    # parent_type after rename-related state change), the flag stays set.
+    local parent_info
+    parent_info=$(exec_on cluster1 \
+        "./bin/rbd --conf /tmp/cluster1/ceph.conf info $parent_pool/$parent_img 2>&1")
+    if echo "$parent_info" | grep -q "clone-parent"; then
+        log_fail "Bug #7 rename-then-rm: clone-parent still set on parent after renamed child rm"
+        log_error "  DetachChildRequest did not reach cluster1 after rename"
+        echo "$parent_info"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "clone-parent cleared after renamed child rm"
+
+    if ! rbd_on cluster1 "rm $parent_pool/$parent_img"; then
+        log_fail "Bug #7 rename-then-rm: parent removal failed — phantom child entry after rename"
+        log_error "  child: $(exec_on cluster1 ./bin/rbd --conf /tmp/cluster1/ceph.conf children $parent_pool/$parent_img 2>&1)"
+        ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
+        ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
+        return 1
+    fi
+    log_success "Parent removed after rename+child-rm — no phantom entry"
+
     ceph_on cluster1 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
     ceph_on cluster2 "osd pool delete $parent_pool $parent_pool --yes-i-really-really-mean-it" 2>/dev/null || true
     ceph_on cluster2 "osd pool delete $child_pool  $child_pool  --yes-i-really-really-mean-it" 2>/dev/null || true
