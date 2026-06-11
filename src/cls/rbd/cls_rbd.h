@@ -84,7 +84,11 @@ struct cls_rbd_parent {
       version = 4;
     }
 
-    ENCODE_START(version, version, bl);
+    // struct_compat stays at 2: v2 inserted pool_namespace mid-record (the last
+    // layout-incompatible change), while v3 (parent_type) and v4 (remote
+    // fields) only append.  Encoding compat==version needlessly rejected
+    // decoders that predate v3/v4 but could skip those fields via DECODE_FINISH.
+    ENCODE_START(version, version == 1 ? 1 : 2, bl);
     encode(pool_id, bl);
     if (version >= 2) {
       encode(pool_namespace, bl);

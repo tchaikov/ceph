@@ -13,6 +13,7 @@
 #include <iosfwd>
 #include <string>
 #include <set>
+#include <vector>
 
 #define RBD_GROUP_REF "rbd_group_ref"
 
@@ -187,6 +188,18 @@ struct ParentImageSpec {
   std::string image_id;
   snapid_t snap_id = CEPH_NOSNAP;
   std::string pool_name;  // Pool name for remote parents (pool IDs are cluster-specific)
+
+  // v3 fields.  parent_type classifies the parent (0=snapshot, 1=standalone,
+  // 2=remote_standalone; numeric values match cls_rbd_parent_type); the
+  // remote_* fields carry the connection details for a remote standalone
+  // parent.  These deliberately live INSIDE this struct's encoding envelope so
+  // that pre-lazy-loading clients (which batch parent_get with
+  // parent_overlap_get and decode both from one buffer) skip them via
+  // DECODE_FINISH and stay byte-aligned for the overlap decode that follows.
+  uint8_t parent_type = 0;
+  std::string remote_cluster_name;
+  std::vector<std::string> remote_mon_hosts;
+  std::string remote_keyring;
 
   ParentImageSpec() {
   }

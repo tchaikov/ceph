@@ -844,6 +844,106 @@ TEST_F(TestClsRbd, parents_v1)
   ioctx.close();
 }
 
+TEST(TestParentGetWireCompat, new_client_reads_stock_reply)
+{
+  // Reverse of the lazy-loading parent_get bug: a NEW (lazy-loading) client
+  // must read a STOCK backend's parent_get reply, which is just a
+  // ParentImageSpec envelope with no parent_type/remote fields, followed by the
+  // batched parent_overlap reply.  The pre-fix client decoded trailing fields a
+  // stock OSD never sends, misaligned the overlap, and returned EBADMSG on every
+  // clone open -- and in `rbd children` the misaligned string decode corrupted
+  // the heap and crashed.  parent_get_finish must now succeed and leave the
+  // overlap aligned.
+  bufferlist bl;
+  // Hand-roll a stock (v2) ParentImageSpec reply: no v3 fields.
+  {
+    ENCODE_START(2, 1, bl);
+    encode(static_cast<int64_t>(1), bl);  // pool_id
+    encode(std::string(""), bl);          // pool_namespace
+    encode(std::string("parent"), bl);    // image_id
+    encode(snapid_t(2), bl);              // snap_id
+    encode(std::string(""), bl);          // pool_name (v2)
+    ENCODE_FINISH(bl);
+  }
+  std::optional<uint64_t> overlap = (32 << 20) + 7;
+  encode(overlap, bl);  // batched parent_overlap reply
+
+  auto it = bl.cbegin();
+  cls::rbd::ParentImageSpec spec;
+  uint8_t parent_type = 0xff;
+  std::string remote_cluster_name, remote_keyring;
+  std::vector<std::string> remote_mon_hosts;
+  ASSERT_EQ(0, parent_get_finish(&it, &spec, &parent_type, &remote_cluster_name,
+                                 &remote_mon_hosts, &remote_keyring));
+  ASSERT_EQ(1, spec.pool_id);
+  ASSERT_EQ("parent", spec.image_id);
+  ASSERT_EQ(0, parent_type);  // stock reply has no parent_type -> default
+  ASSERT_TRUE(remote_cluster_name.empty());
+
+  std::optional<uint64_t> decoded_overlap;
+  ASSERT_EQ(0, parent_overlap_get_finish(&it, &decoded_overlap));
+  ASSERT_EQ(overlap, decoded_overlap);
+}
+
+TEST_F(TestClsRbd, parent_get_old_client_batched_decode)
+{
+  // Regression for the lazy-loading parent_get wire bug.  parent_get must
+  // encode the parent_type + remote-cluster fields INSIDE the ParentImageSpec
+  // envelope, never appended after it.  A pre-lazy-loading client (e.g.
+  // Nautilus v14.2.10) batches parent_get with parent_overlap_get in one read
+  // op and decodes both from a single buffer using a v1 ParentImageSpec
+  // decoder.  If the OSD appended fields after the envelope, that client reads
+  // the stray parent_type byte as the overlap's std::optional present-flag and
+  // silently drops the parent.  This reproduces that exact decode and asserts
+  // the overlap stays byte-aligned.
+  librados::IoCtx ioctx;
+  ASSERT_EQ(0, _rados.ioctx_create(_pool_name.c_str(), ioctx));
+
+  std::string oid = get_temp_image_name();
+  ASSERT_EQ(0, create_image(&ioctx, oid, 33 << 20, 22, RBD_FEATURE_LAYERING,
+                            "foo.", -1));
+
+  // Attach a snapshot-style parent (snap_id != CEPH_NOSNAP) with an overlap --
+  // the common case that #1 silently broke on old clients.
+  cls::rbd::ParentImageSpec parent_image_spec{1, "", "parent", 2};
+  uint64_t parent_overlap = (32 << 20) + 7;
+  ASSERT_EQ(0, parent_attach(&ioctx, oid, parent_image_spec, parent_overlap,
+                             false));
+
+  // Same batched op as RefreshRequest::send_v2_get_parent.
+  librados::ObjectReadOperation op;
+  parent_get_start(&op);
+  parent_overlap_get_start(&op, CEPH_NOSNAP);
+  bufferlist out_bl;
+  ASSERT_EQ(0, ioctx.operate(oid, &op, &out_bl));
+
+  // Decode as v14.2.10 does: a v1 ParentImageSpec decoder (only knows
+  // pool_id/namespace/image_id/snap_id) followed by the overlap, sharing one
+  // iterator.  DECODE_FINISH must skip every newer in-envelope field so the
+  // overlap stays aligned.
+  auto it = out_bl.cbegin();
+  {
+    DECODE_START(1, it);
+    int64_t pool_id;
+    std::string pool_namespace;
+    std::string image_id;
+    snapid_t snap_id;
+    decode(pool_id, it);
+    decode(pool_namespace, it);
+    decode(image_id, it);
+    decode(snap_id, it);
+    ASSERT_EQ(1, pool_id);
+    ASSERT_EQ("parent", image_id);
+    DECODE_FINISH(it);
+  }
+  std::optional<uint64_t> old_client_overlap;
+  decode(old_client_overlap, it);
+  ASSERT_EQ(parent_overlap, old_client_overlap);
+
+  ASSERT_EQ(0, parent_detach(&ioctx, oid));
+  ioctx.close();
+}
+
 TEST_F(TestClsRbd, parents_v2)
 {
   librados::IoCtx ioctx;

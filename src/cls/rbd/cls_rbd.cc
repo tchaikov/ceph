@@ -1764,16 +1764,19 @@ int parent_get(cls_method_context_t hctx, bufferlist *in, bufferlist *out) {
     parent.pool_id, parent.pool_namespace, parent.image_id,
     parent.snap_id};
   parent_image_spec.pool_name = parent.pool_name;
+  // Carry the parent type and remote-cluster connection info INSIDE the
+  // ParentImageSpec encoding envelope (v3 fields).  Earlier code appended
+  // these as raw top-level encodes AFTER the envelope; pre-lazy-loading
+  // clients batch parent_overlap_get right after parent_get and decode both
+  // from one buffer, so they consumed only the envelope and then read the
+  // stray parent_type byte as the overlap's std::optional present-flag --
+  // silently yielding no overlap and dropping the parent.  Inside the
+  // envelope, those clients skip these via DECODE_FINISH and stay aligned.
+  parent_image_spec.parent_type = static_cast<uint8_t>(parent.parent_type);
+  parent_image_spec.remote_cluster_name = parent.remote_cluster_name;
+  parent_image_spec.remote_mon_hosts = parent.remote_mon_hosts;
+  parent_image_spec.remote_keyring = parent.remote_keyring;
   encode(parent_image_spec, *out);
-
-  // Conditional on exists_or_standalone() prevents decoding issues when
-  // this op is batched with parent_overlap_get.
-  if (parent.exists_or_standalone()) {
-    encode(static_cast<uint8_t>(parent.parent_type), *out);
-    encode(parent.remote_cluster_name, *out);
-    encode(parent.remote_mon_hosts, *out);
-    encode(parent.remote_keyring, *out);
-  }
 
   return 0;
 }

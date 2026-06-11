@@ -396,20 +396,20 @@ int parent_get_finish(bufferlist::const_iterator* it,
                       std::string* remote_keyring) {
   try {
     decode(*parent_image_spec, *it);
-
-    // Older OSDs don't encode the remote-parent fields; the caller is
-    // responsible for default-initialising the outputs (which std::string
-    // and std::vector already do, and parent_type defaults to
-    // CLS_RBD_PARENT_TYPE_SNAPSHOT == 0).
-    if (parent_image_spec->exists_or_standalone() && !it->end()) {
-      decode(*parent_type, *it);
-      decode(*remote_cluster_name, *it);
-      decode(*remote_mon_hosts, *it);
-      decode(*remote_keyring, *it);
-    }
   } catch (const buffer::error &) {
     return -EBADMSG;
   }
+  // The parent type and remote-cluster fields now travel INSIDE the
+  // ParentImageSpec encoding envelope (v3 fields), so the decode above already
+  // consumed them and left the iterator at the envelope boundary -- exactly
+  // where the batched parent_overlap_get reply begins.  Copy them out so the
+  // existing out-parameter interface (and RefreshRequest call site) is
+  // unchanged.  Against an OSD without these fields the spec carries the
+  // defaults (parent_type 0, empty remote fields).
+  *parent_type = parent_image_spec->parent_type;
+  *remote_cluster_name = parent_image_spec->remote_cluster_name;
+  *remote_mon_hosts = parent_image_spec->remote_mon_hosts;
+  *remote_keyring = parent_image_spec->remote_keyring;
   return 0;
 }
 

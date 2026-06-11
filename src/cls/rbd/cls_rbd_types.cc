@@ -213,23 +213,36 @@ std::ostream& operator<<(std::ostream& os, const MirrorImageStatus& status) {
 }
 
 void ParentImageSpec::encode(bufferlist& bl) const {
-  ENCODE_START(2, 1, bl);
+  // compat stays 1: every field added past v1 is appended, so older decoders
+  // skip them via DECODE_FINISH.  This is what keeps pre-lazy-loading clients
+  // (which batch parent_get with parent_overlap_get) aligned.
+  ENCODE_START(3, 1, bl);
   encode(pool_id, bl);
   encode(pool_namespace, bl);
   encode(image_id, bl);
   encode(snap_id, bl);
   encode(pool_name, bl);  // v2: pool name for remote parents
+  encode(parent_type, bl);          // v3
+  encode(remote_cluster_name, bl);  // v3
+  encode(remote_mon_hosts, bl);     // v3
+  encode(remote_keyring, bl);       // v3
   ENCODE_FINISH(bl);
 }
 
 void ParentImageSpec::decode(bufferlist::const_iterator& bl) {
-  DECODE_START(2, bl);
+  DECODE_START(3, bl);
   decode(pool_id, bl);
   decode(pool_namespace, bl);
   decode(image_id, bl);
   decode(snap_id, bl);
   if (struct_v >= 2) {
     decode(pool_name, bl);
+  }
+  if (struct_v >= 3) {
+    decode(parent_type, bl);
+    decode(remote_cluster_name, bl);
+    decode(remote_mon_hosts, bl);
+    decode(remote_keyring, bl);
   }
   DECODE_FINISH(bl);
 }
@@ -240,12 +253,27 @@ void ParentImageSpec::dump(Formatter *f) const {
   f->dump_string("image_id", image_id);
   f->dump_unsigned("snap_id", snap_id);
   f->dump_string("pool_name", pool_name);
+  f->dump_unsigned("parent_type", parent_type);
+  f->dump_string("remote_cluster_name", remote_cluster_name);
+  f->open_array_section("remote_mon_hosts");
+  for (const auto& mon : remote_mon_hosts) {
+    f->dump_string("mon", mon);
+  }
+  f->close_section();
+  // remote_keyring is intentionally not dumped (it is a secret).
 }
 
 void ParentImageSpec::generate_test_instances(std::list<ParentImageSpec*>& o) {
   o.push_back(new ParentImageSpec{});
   o.push_back(new ParentImageSpec{1, "", "foo", 3});
   o.push_back(new ParentImageSpec{1, "ns", "foo", 3});
+  auto remote = new ParentImageSpec{-1, "", "bar", CEPH_NOSNAP};
+  remote->pool_name = "remote_pool";
+  remote->parent_type = 2;  // remote_standalone
+  remote->remote_cluster_name = "remote";
+  remote->remote_mon_hosts = {"10.0.0.1:6789", "10.0.0.2:6789"};
+  remote->remote_keyring = "/etc/ceph/remote.keyring";
+  o.push_back(remote);
 }
 
 void ChildImageSpec::encode(bufferlist &bl) const {
