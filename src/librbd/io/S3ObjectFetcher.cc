@@ -43,9 +43,15 @@ namespace {
 
   // Maximum number of S3 GETs in flight at once for this fetcher.  With the
   // curl_multi event loop, concurrency is bounded here (a libcurl connection
-  // cap) rather than by a thread count -- one event-loop thread sustains all
+  // cap) rather than by a thread count: one event-loop thread sustains all
   // of these concurrently.  Mirrors the old pool's 8-way concurrency.
   static constexpr long S3_MAX_CONCURRENT_FETCHES = 8;
+
+  // Threads that run completion work (complete_and_destroy) off the event
+  // loop.  Fewer than the old per-fetch pool: these only do completion (no
+  // blocking network I/O, which the loop owns), so a small pool restores
+  // concurrent completion without reintroducing the old thread count.
+  static constexpr int S3_FINISHER_THREADS = 4;
 }
 
 void S3ObjectFetcher::share_lock(CURL*, curl_lock_data data,
@@ -98,17 +104,23 @@ S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config,
                     S3_MAX_CONCURRENT_FETCHES);
   curl_multi_setopt(m_multi, CURLMOPT_MAX_HOST_CONNECTIONS,
                     S3_MAX_CONCURRENT_FETCHES);
+  // Start the completion finisher pool BEFORE the loop thread so the loop
+  // always has somewhere to hand finished transfers.
+  for (int i = 0; i < S3_FINISHER_THREADS; ++i) {
+    m_finisher_threads.emplace_back(&S3ObjectFetcher::finisher_body, this);
+  }
   m_loop_thread = std::thread(&S3ObjectFetcher::event_loop_body, this);
   ldout(m_cct, 20) << "S3ObjectFetcher created (curl_multi event loop, max "
-                   << S3_MAX_CONCURRENT_FETCHES << " concurrent fetches)" << dendl;
+                   << S3_MAX_CONCURRENT_FETCHES << " concurrent fetches, "
+                   << S3_FINISHER_THREADS << " finisher threads)" << dendl;
 }
 
 S3ObjectFetcher::~S3ObjectFetcher() {
   ldout(m_cct, 20) << "S3ObjectFetcher destroying" << dendl;
 
   // Signal the event loop to exit, wake it out of curl_multi_poll, and join.
-  // The loop completes (with -ECANCELED) any fetch still in flight or queued
-  // before it returns, so all callbacks have fired by the time join() returns.
+  // The loop drains every fetch still in flight or queued to the finisher pool
+  // before it returns, so no callback is dropped.
   {
     std::lock_guard<std::mutex> lock(m_submit_mutex);
     m_loop_shutdown = true;
@@ -120,6 +132,19 @@ S3ObjectFetcher::~S3ObjectFetcher() {
 #endif
   if (m_loop_thread.joinable()) {
     m_loop_thread.join();
+  }
+
+  // The loop has stopped, so no new completion work can be produced.  Drain
+  // and join the finisher pool now: every complete_and_destroy (and its
+  // curl_easy_cleanup) must finish BEFORE curl_multi_cleanup / curl_share_
+  // cleanup below, since the easy handles share m_curl_share.
+  {
+    std::lock_guard<std::mutex> lock(m_finisher_mutex);
+    m_finisher_shutdown = true;
+  }
+  m_finisher_cv.notify_all();
+  for (auto& t : m_finisher_threads) {
+    t.join();
   }
 
   if (m_multi) {
@@ -395,14 +420,14 @@ void S3ObjectFetcher::event_loop_body() {
     for (FetchContext* ctx : batch) {
       // Cancellation parity with the old execute_fetch pre-I/O check.
       if (ctx->cancel_flag && ctx->cancel_flag->load()) {
-        complete_and_destroy(ctx, -ECANCELED);
+        finisher_submit(ctx, -ECANCELED);
         continue;
       }
       curl_easy_setopt(ctx->curl_handle, CURLOPT_PRIVATE, ctx);
       if (curl_multi_add_handle(m_multi, ctx->curl_handle) == CURLM_OK) {
         inflight.push_back(ctx);
       } else {
-        complete_and_destroy(ctx, -EIO);
+        finisher_submit(ctx, -EIO);
       }
     }
 
@@ -423,7 +448,7 @@ void S3ObjectFetcher::event_loop_body() {
     curl_multi_perform(m_multi, &still_running);
     curl_multi_poll(m_multi, nullptr, 0, 100, nullptr);
 
-    // 4. Reap completed transfers and run their completions inline.
+    // 4. Reap completed transfers and hand each to the finisher pool.
     CURLMsg* msg;
     int in_queue;
     while ((msg = curl_multi_info_read(m_multi, &in_queue)) != nullptr) {
@@ -452,18 +477,51 @@ void S3ObjectFetcher::event_loop_body() {
         }
       }
 
-      // Remove from the multi BEFORE complete_and_destroy frees the handle.
+      // Detach from the multi (loop-thread only) BEFORE handing the ctx to a
+      // finisher, which will curl_easy_cleanup the handle off-thread.
       curl_multi_remove_handle(m_multi, eh);
       inflight.erase(std::remove(inflight.begin(), inflight.end(), ctx),
                      inflight.end());
-      complete_and_destroy(ctx, result);
+      finisher_submit(ctx, result);
     }
   }
 
-  // Shutdown: cancel anything still attached so no callback is dropped.
-  for (FetchContext* ctx : inflight) {
-    curl_multi_remove_handle(m_multi, ctx->curl_handle);
-    complete_and_destroy(ctx, -ECANCELED);
+  // The loop only breaks once inflight is empty (step 2), so every transfer
+  // has already been reaped and handed to the finisher pool.  The finisher
+  // pool is drained and joined by the destructor after this thread joins.
+  ceph_assert(inflight.empty());
+}
+
+void S3ObjectFetcher::finisher_submit(FetchContext* ctx, int result) {
+  {
+    std::lock_guard<std::mutex> lock(m_finisher_mutex);
+    m_finisher_queue.emplace_back(ctx, result);
+  }
+  m_finisher_cv.notify_one();
+}
+
+void S3ObjectFetcher::finisher_body() {
+  while (true) {
+    FetchContext* ctx;
+    int result;
+    {
+      std::unique_lock<std::mutex> lock(m_finisher_mutex);
+      m_finisher_cv.wait(lock, [this] {
+        return m_finisher_shutdown || !m_finisher_queue.empty();
+      });
+      if (m_finisher_queue.empty()) {
+        // Shutdown requested and nothing left to complete.
+        return;
+      }
+      ctx = m_finisher_queue.front().first;
+      result = m_finisher_queue.front().second;
+      m_finisher_queue.pop_front();
+    }
+    // Runs concurrently across finisher threads; complete_and_destroy's shared
+    // state (m_inflight, m_recent_lru) is mutex-protected, and a re-entrant
+    // fetch_url() from on_finish just enqueues to m_submit_queue + wakes the
+    // loop.
+    complete_and_destroy(ctx, result);
   }
 }
 

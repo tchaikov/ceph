@@ -169,13 +169,29 @@ private:
   // decoupled from thread count: this one thread services many in-flight S3
   // GETs via non-blocking I/O, instead of one blocked thread per concurrent
   // fetch (the previous fixed pool).  fetch_url() hands a primary FetchContext
-  // to m_submit_queue and wakes the loop; the loop adds it to m_multi, drives
-  // all transfers, and runs each completion.
+  // to m_submit_queue and wakes the loop; the loop adds it to m_multi and
+  // drives all transfers.  All curl_multi_* calls happen ONLY on this thread.
   CURLM* m_multi = nullptr;
   std::thread m_loop_thread;
   std::deque<FetchContext*> m_submit_queue;
   std::mutex m_submit_mutex;
   bool m_loop_shutdown = false;
+
+  // Completion finisher pool.  The loop thread reaps a finished transfer,
+  // detaches it from m_multi (curl_multi_remove_handle MUST run on the loop
+  // thread), then hands (ctx, result) here so complete_and_destroy() -- the
+  // ~4 MB is_zero scan, waiter copies, throttler submit, on_finish callback
+  // and curl_easy_cleanup -- runs OFF the loop thread.  This keeps the curl
+  // pump from stalling behind a slow completion, and restores the concurrent
+  // completion submission the old worker pool provided (multiple writebacks
+  // hit the AsyncWritebackThrottler at once).  complete_and_destroy was
+  // already written to run concurrently from the old pool, so its shared
+  // state (m_inflight, m_recent_lru) is already mutex-protected.
+  std::vector<std::thread> m_finisher_threads;
+  std::deque<std::pair<FetchContext*, int>> m_finisher_queue;
+  std::mutex m_finisher_mutex;
+  std::condition_variable m_finisher_cv;
+  bool m_finisher_shutdown = false;
 
   // In-flight fetch coalescing: maps coalesce_key (url@start-end) to the
   // primary FetchContext.  Concurrent callers asking for the same URL+range
@@ -268,9 +284,17 @@ private:
   static size_t write_callback(void* ptr, size_t size, size_t nmemb, void* userdata);
 
   // Event loop (runs on m_loop_thread): owns m_multi, adds newly submitted
-  // fetches, drives all in-flight transfers via curl_multi, and runs each
-  // completion as it finishes.  Replaces the per-fetch blocking worker pool.
+  // fetches, drives all in-flight transfers via curl_multi, and hands each
+  // finished transfer to the finisher pool.  Replaces the per-fetch blocking
+  // worker pool.
   void event_loop_body();
+
+  // Finisher pool worker: pops (ctx, result) and runs complete_and_destroy
+  // off the event-loop thread.
+  void finisher_body();
+
+  // Hand a finished/cancelled fetch to the finisher pool for completion.
+  void finisher_submit(FetchContext* ctx, int result);
 
   // Free curl resources, detach from the in-flight map, and complete the
   // primary callback followed by all coalesced waiters with the given result.
