@@ -8,6 +8,7 @@
 #include "include/ceph_assert.h"
 
 #include <curl/curl.h>
+#include <algorithm>
 #include <chrono>
 #include <mutex>
 
@@ -40,9 +41,11 @@ namespace {
     return -EIO;
   }
 
-  // Number of worker threads in the async fetch pool.
-  // Bounds simultaneous S3 HTTP connections for this fetcher instance.
-  static constexpr int S3_WORKER_THREADS = 8;
+  // Maximum number of S3 GETs in flight at once for this fetcher.  With the
+  // curl_multi event loop, concurrency is bounded here (a libcurl connection
+  // cap) rather than by a thread count -- one event-loop thread sustains all
+  // of these concurrently.  Mirrors the old pool's 8-way concurrency.
+  static constexpr long S3_MAX_CONCURRENT_FETCHES = 8;
 }
 
 void S3ObjectFetcher::share_lock(CURL*, curl_lock_data data,
@@ -86,36 +89,42 @@ S3ObjectFetcher::S3ObjectFetcher(CephContext* cct, const S3Config& s3_config,
     curl_share_setopt(m_curl_share, CURLSHOPT_UNLOCKFUNC, share_unlock);
     curl_share_setopt(m_curl_share, CURLSHOPT_USERDATA, this);
   }
-  // Start the fixed-size worker thread pool for async fetches.
-  for (int i = 0; i < S3_WORKER_THREADS; ++i) {
-    m_worker_threads.emplace_back(&S3ObjectFetcher::worker_thread_body, this);
-  }
-  ldout(m_cct, 20) << "S3ObjectFetcher created (" << S3_WORKER_THREADS
-                   << " worker threads)" << dendl;
+  // Create the curl_multi handle and start the single event-loop thread.
+  // CURLMOPT_MAX_*_CONNECTIONS bounds concurrency at S3_MAX_CONCURRENT_FETCHES;
+  // libcurl queues any easy handles added beyond that cap and starts them as
+  // connections free up, so fetch_url() can submit freely.
+  m_multi = curl_multi_init();
+  curl_multi_setopt(m_multi, CURLMOPT_MAX_TOTAL_CONNECTIONS,
+                    S3_MAX_CONCURRENT_FETCHES);
+  curl_multi_setopt(m_multi, CURLMOPT_MAX_HOST_CONNECTIONS,
+                    S3_MAX_CONCURRENT_FETCHES);
+  m_loop_thread = std::thread(&S3ObjectFetcher::event_loop_body, this);
+  ldout(m_cct, 20) << "S3ObjectFetcher created (curl_multi event loop, max "
+                   << S3_MAX_CONCURRENT_FETCHES << " concurrent fetches)" << dendl;
 }
 
 S3ObjectFetcher::~S3ObjectFetcher() {
   ldout(m_cct, 20) << "S3ObjectFetcher destroying" << dendl;
 
-  // Signal all worker threads to exit and wait for them to finish.
-  // Workers must drain before curl resources are released.
+  // Signal the event loop to exit, wake it out of curl_multi_poll, and join.
+  // The loop completes (with -ECANCELED) any fetch still in flight or queued
+  // before it returns, so all callbacks have fired by the time join() returns.
   {
-    std::lock_guard<std::mutex> lock(m_work_mutex);
-    m_shutdown = true;
+    std::lock_guard<std::mutex> lock(m_submit_mutex);
+    m_loop_shutdown = true;
   }
-  m_work_cv.notify_all();
-  for (auto& t : m_worker_threads) {
-    t.join();
+#if LIBCURL_VERSION_NUM >= 0x074400  // 7.68.0: curl_multi_wakeup
+  if (m_multi) {
+    curl_multi_wakeup(m_multi);
+  }
+#endif
+  if (m_loop_thread.joinable()) {
+    m_loop_thread.join();
   }
 
-  // Drain any requests queued but not yet started (edge case: abnormal
-  // shutdown while items were enqueued but no worker had dequeued them yet).
-  // Under normal image-close the queue is empty here because callers hold
-  // shared_ptr refs to this fetcher until all their requests complete.
-  while (!m_work_queue.empty()) {
-    FetchContext* ctx = m_work_queue.front();
-    m_work_queue.pop_front();
-    complete_and_destroy(ctx, -ECANCELED);
+  if (m_multi) {
+    curl_multi_cleanup(m_multi);
+    m_multi = nullptr;
   }
 
   if (m_sync_handle) {
@@ -367,55 +376,95 @@ uint64_t S3ObjectFetcher::calculate_s3_offset(uint64_t object_no, uint64_t objec
 
 
 
-void S3ObjectFetcher::worker_thread_body() {
+void S3ObjectFetcher::event_loop_body() {
+  // FetchContexts that have been added to m_multi and not yet completed.
+  // Tracked locally (on this thread only) so shutdown can cancel them; the
+  // ctx pointer is also stashed on each easy handle via CURLOPT_PRIVATE.
+  std::vector<FetchContext*> inflight;
+  int still_running = 0;
+
   while (true) {
-    FetchContext* ctx;
+    // 1. Drain newly submitted fetches and add them to the multi handle.
+    std::deque<FetchContext*> batch;
+    bool shutting_down;
     {
-      std::unique_lock<std::mutex> lock(m_work_mutex);
-      m_work_cv.wait(lock, [this] {
-        return m_shutdown || !m_work_queue.empty();
-      });
-      if (m_work_queue.empty()) {
-        // m_shutdown is true and no pending work — exit
+      std::lock_guard<std::mutex> lock(m_submit_mutex);
+      shutting_down = m_loop_shutdown;
+      batch.swap(m_submit_queue);
+    }
+    for (FetchContext* ctx : batch) {
+      // Cancellation parity with the old execute_fetch pre-I/O check.
+      if (ctx->cancel_flag && ctx->cancel_flag->load()) {
+        complete_and_destroy(ctx, -ECANCELED);
+        continue;
+      }
+      curl_easy_setopt(ctx->curl_handle, CURLOPT_PRIVATE, ctx);
+      if (curl_multi_add_handle(m_multi, ctx->curl_handle) == CURLM_OK) {
+        inflight.push_back(ctx);
+      } else {
+        complete_and_destroy(ctx, -EIO);
+      }
+    }
+
+    // 2. Exit once shutdown is requested and there is nothing left to do.
+    if (shutting_down && inflight.empty()) {
+      std::lock_guard<std::mutex> lock(m_submit_mutex);
+      if (m_submit_queue.empty()) {
         break;
       }
-      ctx = m_work_queue.front();
-      m_work_queue.pop_front();
+      continue;  // more arrived between the swap and now
     }
-    execute_fetch(ctx);
-  }
-}
 
-void S3ObjectFetcher::execute_fetch(FetchContext* ctx) {
-  // Check for cancellation before issuing any I/O.
-  if (ctx->cancel_flag && ctx->cancel_flag->load()) {
+    // 3. Drive all in-flight transfers, then block until I/O is ready or a
+    //    fetch_url() submit calls curl_multi_wakeup().  The 100 ms timeout is
+    //    only a backstop for libcurl builds without curl_multi_wakeup (<7.68):
+    //    without a timely wakeup, newly-submitted fetches would not start
+    //    until the next poll tick, collapsing effective concurrency.
+    curl_multi_perform(m_multi, &still_running);
+    curl_multi_poll(m_multi, nullptr, 0, 100, nullptr);
+
+    // 4. Reap completed transfers and run their completions inline.
+    CURLMsg* msg;
+    int in_queue;
+    while ((msg = curl_multi_info_read(m_multi, &in_queue)) != nullptr) {
+      if (msg->msg != CURLMSG_DONE) {
+        continue;
+      }
+      CURL* eh = msg->easy_handle;
+      FetchContext* ctx = nullptr;
+      curl_easy_getinfo(eh, CURLINFO_PRIVATE, &ctx);
+      long http_code = 0;
+      curl_easy_getinfo(eh, CURLINFO_RESPONSE_CODE, &http_code);
+
+      // Same mapping the old execute_fetch used.
+      int result;
+      CURLcode res = msg->data.result;
+      if (res == CURLE_OPERATION_TIMEDOUT) {
+        result = -ETIMEDOUT;
+      } else if (res == CURLE_COULDNT_CONNECT) {
+        result = -ECONNREFUSED;
+      } else if (res != CURLE_OK) {
+        result = -EIO;
+      } else {
+        result = http_code_to_errno(http_code);
+        if (result == RETRY_SIGNAL) {
+          result = -EIO;  // 5xx: caller's concern, parity with old path
+        }
+      }
+
+      // Remove from the multi BEFORE complete_and_destroy frees the handle.
+      curl_multi_remove_handle(m_multi, eh);
+      inflight.erase(std::remove(inflight.begin(), inflight.end(), ctx),
+                     inflight.end());
+      complete_and_destroy(ctx, result);
+    }
+  }
+
+  // Shutdown: cancel anything still attached so no callback is dropped.
+  for (FetchContext* ctx : inflight) {
+    curl_multi_remove_handle(m_multi, ctx->curl_handle);
     complete_and_destroy(ctx, -ECANCELED);
-    return;
   }
-
-  // Perform the blocking HTTP GET.  curl_easy_perform() is the correct
-  // single-transfer API; curl_multi_*() adds overhead with no benefit here.
-  CURLcode res = curl_easy_perform(ctx->curl_handle);
-
-  long response_code = 0;
-  curl_easy_getinfo(ctx->curl_handle, CURLINFO_RESPONSE_CODE, &response_code);
-
-  int result;
-  if (res == CURLE_OPERATION_TIMEDOUT) {
-    result = -ETIMEDOUT;
-  } else if (res == CURLE_COULDNT_CONNECT) {
-    result = -ECONNREFUSED;
-  } else if (res != CURLE_OK) {
-    result = -EIO;
-  } else {
-    result = http_code_to_errno(response_code);
-    // 5xx: treat as generic I/O error — retries are the caller's concern.
-    if (result == RETRY_SIGNAL) {
-      result = -EIO;
-    }
-  }
-
-  complete_and_destroy(ctx, result);
 }
 
 // Free curl resources, detach from the in-flight map, then complete the
@@ -630,12 +679,17 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
     return;
   }
 
-  // Enqueue for the worker thread pool; a worker will call execute_fetch(ctx).
+  // Hand off to the event loop and wake it out of curl_multi_poll so the
+  // fetch starts immediately.  The wakeup is essential: without it the loop
+  // only notices the new submit on its next poll timeout, which collapses
+  // effective concurrency (measured ~4x slowdown in prototyping).
   {
-    std::lock_guard<std::mutex> lock(m_work_mutex);
-    m_work_queue.push_back(ctx);
+    std::lock_guard<std::mutex> lock(m_submit_mutex);
+    m_submit_queue.push_back(ctx);
   }
-  m_work_cv.notify_one();
+#if LIBCURL_VERSION_NUM >= 0x074400  // 7.68.0: curl_multi_wakeup
+  curl_multi_wakeup(m_multi);
+#endif
 
   ldout(cct, 15) << "queued async S3 fetch" << dendl;
 }

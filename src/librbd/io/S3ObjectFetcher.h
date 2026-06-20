@@ -165,14 +165,17 @@ private:
     std::vector<std::pair<bufferlist*, Context*>> waiters;
   };
 
-  // Fixed-size thread pool for async S3 fetches.
-  // Threads are created at construction and joined at destruction, so the
-  // pool provides clean lifecycle management with no per-request overhead.
-  std::vector<std::thread> m_worker_threads;
-  std::deque<FetchContext*> m_work_queue;
-  std::mutex m_work_mutex;
-  std::condition_variable m_work_cv;
-  bool m_shutdown = false;
+  // Single event-loop thread driving one curl_multi handle.  Concurrency is
+  // decoupled from thread count: this one thread services many in-flight S3
+  // GETs via non-blocking I/O, instead of one blocked thread per concurrent
+  // fetch (the previous fixed pool).  fetch_url() hands a primary FetchContext
+  // to m_submit_queue and wakes the loop; the loop adds it to m_multi, drives
+  // all transfers, and runs each completion.
+  CURLM* m_multi = nullptr;
+  std::thread m_loop_thread;
+  std::deque<FetchContext*> m_submit_queue;
+  std::mutex m_submit_mutex;
+  bool m_loop_shutdown = false;
 
   // In-flight fetch coalescing: maps coalesce_key (url@start-end) to the
   // primary FetchContext.  Concurrent callers asking for the same URL+range
@@ -264,11 +267,10 @@ private:
   // libcurl write callback for response data
   static size_t write_callback(void* ptr, size_t size, size_t nmemb, void* userdata);
 
-  // Worker thread loop: dequeues FetchContext items and executes them.
-  void worker_thread_body();
-
-  // Execute a single fetch: performs the HTTP GET and invokes on_finish.
-  void execute_fetch(FetchContext* ctx);
+  // Event loop (runs on m_loop_thread): owns m_multi, adds newly submitted
+  // fetches, drives all in-flight transfers via curl_multi, and runs each
+  // completion as it finishes.  Replaces the per-fetch blocking worker pool.
+  void event_loop_body();
 
   // Free curl resources, detach from the in-flight map, and complete the
   // primary callback followed by all coalesced waiters with the given result.
