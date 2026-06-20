@@ -141,14 +141,21 @@ private:
       return;
     }
 
-    // Log at 10 so dedup-{read,writeback}.sh's grep at --debug-rbd=10
-    // can count successful write_fulls.  This is the key cross-process
-    // dedup signal: with N concurrent writebacks contending on cls_lock,
-    // exactly 1 should reach write_full and N-1 should EBUSY-drop above.
-    ldout(m_cct, 10) << "write_full " << m_data.length()
-                     << " bytes to " << m_parent_oid << dendl;
+    ldout(m_cct, 15) << "obj=" << m_object_no << " populating "
+                     << m_data.length() << " bytes to " << m_parent_oid
+                     << " (exclusive create)" << dendl;
 
+    // Idempotent dedup: create(exclusive) makes the whole op fail -EEXIST if
+    // the object is already populated (by a peer writeback, CopyupRequest, or
+    // the backfill daemon).  The cls_lock only dedups writebacks that contend
+    // SIMULTANEOUSLY; a writeback that acquires the lock AFTER a peer already
+    // wrote and released would otherwise re-write the same immutable bytes.
+    // The exclusive create covers that SEQUENTIAL (staggered-submission) case,
+    // so exactly one write_full lands per parent object regardless of timing.
+    // The immutable S3 source guarantees an existing object holds identical
+    // bytes, so skipping the redundant write is safe.
     librados::ObjectWriteOperation op;
+    op.create(true);
     op.write_full(m_data);
 
     auto on_finish = util::create_context_callback<
@@ -161,12 +168,32 @@ private:
 
   void handle_write_full(int r) {
     ldout(m_cct, 15) << "r=" << r << dendl;
+    if (r == -EEXIST) {
+      // Desired dedup outcome: a peer (or the backfill daemon) already
+      // populated this object, so our exclusive create failed and no redundant
+      // write landed.  Still set the object_map bit (idempotent) in case the
+      // object was created by a path that did not update THIS image's map.
+      // Deliberately do NOT emit the counted "write_full ... bytes to" line --
+      // no write happened here, so dedup-{read,writeback}.sh see exactly one
+      // real write per parent object even when N writebacks contend.
+      ldout(m_cct, 10) << "obj=" << m_object_no << " already populated in "
+                       << m_parent_oid
+                       << "; skipped redundant write_full (cross-writer dedup)"
+                       << dendl;
+      update_object_map();
+      return;
+    }
     if (r < 0) {
       lderr(m_cct) << "write_full failed: " << cpp_strerror(r)
                    << " (obj=" << m_object_no << "); releasing lock" << dendl;
       release_lock();
       return;
     }
+    // Counted dedup signal -- emitted ONLY when a real write landed (grep'd by
+    // dedup-{read,writeback}.sh at --debug-rbd=10).  With N contending
+    // writebacks, exactly one reaches here per parent object.
+    ldout(m_cct, 10) << "write_full " << m_data.length()
+                     << " bytes to " << m_parent_oid << dendl;
     m_write_full_succeeded = true;
     update_object_map();
   }
