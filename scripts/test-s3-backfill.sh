@@ -1334,11 +1334,14 @@ test_flatten_offloads_backfill_on_spill() {
         return 1
     fi
 
-    # Flatten the child with the writeback throttler capped to 1 op / 4 MiB so
-    # the parent-cache writebacks spill during the burst.
+    # Flatten the child with the writeback throttler's byte budget capped BELOW
+    # one 4 MiB object (1 MiB).  Every parent-cache writeback then fails the
+    # bytes_in_flight check on its own (0 + 4 MiB > 1 MiB) and spills, with no
+    # dependence on two writebacks overlapping in time -- the old 4 MiB cap only
+    # spilled when a burst raced, which was flaky under load.
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
         --rbd_s3_async_writeback_max_concurrent 1 \
-        --rbd_s3_async_writeback_max_bytes_in_flight 4194304 \
+        --rbd_s3_async_writeback_max_bytes_in_flight 1048576 \
         --debug_rbd 10 flatten "$child" >"$flog" 2>&1
     local flatten_rc=$?
     if [ $flatten_rc -ne 0 ]; then
@@ -1415,14 +1418,16 @@ test_read_offloads_backfill_on_spill() {
         return 1
     fi
 
-    # Read the whole cold child with the writeback throttler capped to 1 op /
-    # 4 MiB.  Use 8 concurrent I/O threads so multiple S3 fetches land on the
-    # throttler at the same time — the burst causes spills.  `rbd bench` reads
-    # only one object by default; set io-total to the full image size so all
-    # objects are fetched.
+    # Read the whole cold child with the writeback throttler's byte budget
+    # capped BELOW one 4 MiB object (1 MiB).  Every read-path cache-populate
+    # writeback then fails the bytes_in_flight check on its own (0 + 4 MiB >
+    # 1 MiB) and spills deterministically, instead of only when a concurrent
+    # burst happens to overlap on the throttler (flaky under load).  `rbd bench`
+    # reads only one object by default; set io-total to the full image size so
+    # all objects are fetched.
     "$BUILD_DIR/bin/rbd" --conf "$CEPH_CONF" \
         --rbd_s3_async_writeback_max_concurrent 1 \
-        --rbd_s3_async_writeback_max_bytes_in_flight 4194304 \
+        --rbd_s3_async_writeback_max_bytes_in_flight 1048576 \
         --debug_rbd 10 bench "$child" \
         --io-type read --io-size 4M --io-threads 8 \
         --io-total "$((size_mb * 1024 * 1024))" >"$rlog" 2>&1
