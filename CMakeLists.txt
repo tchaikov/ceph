@@ -399,7 +399,10 @@ else()
   set(EXE_LINKER_USE_PIE ${ENABLE_SHARED})
 endif()
 
-find_package(CURL REQUIRED)
+# librbd's S3 object fetcher drives transfers with curl_multi_poll (libcurl
+# 7.66) and curl_multi_wakeup (libcurl 7.68); require 7.68 so both are present
+# rather than failing later with a confusing missing-symbol compile error.
+find_package(CURL 7.68 REQUIRED)
 set(CMAKE_REQUIRED_INCLUDES ${CURL_INCLUDE_DIRS})
 set(CMAKE_REQUIRED_LIBRARIES ${CURL_LIBRARIES})
 CHECK_SYMBOL_EXISTS(curl_multi_wait curl/curl.h HAVE_CURL_MULTI_WAIT)

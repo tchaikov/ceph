@@ -10,6 +10,7 @@
 #include <curl/curl.h>
 #include <chrono>
 #include <mutex>
+#include <unordered_set>
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
@@ -53,10 +54,9 @@ namespace {
   static constexpr int S3_FINISHER_THREADS = 4;
 
   // curl_multi_poll timeout (ms).  ACTIVE bounds the wait while transfers are
-  // in flight so libcurl's internal timers are serviced; it is also the only
-  // wakeup on builds without curl_multi_wakeup (<7.68).  IDLE is used when the
-  // loop has no work AND wakeup is available, so an idle fetcher blocks until a
-  // submit/shutdown wakeup instead of spinning at the ACTIVE cadence.
+  // in flight so libcurl's internal timers are serviced.  IDLE is used when the
+  // loop has no work, so an idle fetcher blocks until a submit/shutdown
+  // curl_multi_wakeup() instead of spinning at the ACTIVE cadence.
   static constexpr int ACTIVE_POLL_TIMEOUT_MS = 100;
   static constexpr int IDLE_POLL_TIMEOUT_MS = 1000;
 }
@@ -132,11 +132,9 @@ S3ObjectFetcher::~S3ObjectFetcher() {
     std::lock_guard<std::mutex> lock(m_submit_mutex);
     m_loop_shutdown = true;
   }
-#if LIBCURL_VERSION_NUM >= 0x074400  // 7.68.0: curl_multi_wakeup
   if (m_multi) {
     curl_multi_wakeup(m_multi);
   }
-#endif
   if (m_loop_thread.joinable()) {
     m_loop_thread.join();
   }
@@ -409,9 +407,10 @@ uint64_t S3ObjectFetcher::calculate_s3_offset(uint64_t object_no, uint64_t objec
 
 
 void S3ObjectFetcher::event_loop_body() {
-  // Count of transfers added to m_multi and not yet reaped (loop-thread only).
-  // The ctx pointer itself rides on each easy handle via CURLOPT_PRIVATE.
-  int inflight = 0;
+  // Transfers added to m_multi and not yet reaped (loop-thread only).  The ctx
+  // also rides on each easy handle via CURLOPT_PRIVATE; this set lets us fail
+  // every outstanding fetch if curl_multi_perform reports a fatal error.
+  std::unordered_set<FetchContext*> inflight;
   int still_running = 0;
 
   while (true) {
@@ -431,7 +430,7 @@ void S3ObjectFetcher::event_loop_body() {
       }
       curl_easy_setopt(ctx->curl_handle, CURLOPT_PRIVATE, ctx);
       if (curl_multi_add_handle(m_multi, ctx->curl_handle) == CURLM_OK) {
-        ++inflight;
+        inflight.insert(ctx);
       } else {
         finisher_submit(ctx, -EIO);
       }
@@ -441,7 +440,7 @@ void S3ObjectFetcher::event_loop_body() {
     //    The re-check under the lock closes the window where a fetch_url()
     //    appended to m_submit_queue after this iteration's swap: breaking
     //    without it would drop that submission's callback.
-    if (shutting_down && inflight == 0) {
+    if (shutting_down && inflight.empty()) {
       std::lock_guard<std::mutex> lock(m_submit_mutex);
       if (m_submit_queue.empty()) {
         break;
@@ -449,24 +448,34 @@ void S3ObjectFetcher::event_loop_body() {
       continue;  // more arrived between the swap and now
     }
 
-    // 3. Drive all in-flight transfers, then wait for socket I/O, a
-    //    curl_multi_wakeup() from fetch_url()/the destructor, or the timeout.
-    //    When wakeup is available and the loop is idle, block on a long
-    //    timeout (a submit/shutdown wakeup ends the wait at once) instead of
-    //    spinning every 100 ms.  Keep the short timeout while transfers are
-    //    active so libcurl's own timers are serviced, and always on builds
-    //    without wakeup (<7.68) where the timeout is the only way a new submit
-    //    gets noticed.
-    curl_multi_perform(m_multi, &still_running);
-    int poll_timeout_ms = ACTIVE_POLL_TIMEOUT_MS;
-#if LIBCURL_VERSION_NUM >= 0x074400  // 7.68.0: curl_multi_wakeup
-    if (still_running == 0 && inflight == 0) {
-      poll_timeout_ms = IDLE_POLL_TIMEOUT_MS;
+    // 3. Drive all in-flight transfers.  A fatal curl_multi_perform error
+    //    (e.g. OOM) can leave transfers that never report CURLMSG_DONE, which
+    //    would hang their callers forever; fail every outstanding fetch with
+    //    -EIO instead so no callback is dropped.
+    CURLMcode mc = curl_multi_perform(m_multi, &still_running);
+    if (mc != CURLM_OK) {
+      lderr(m_cct) << "curl_multi_perform failed: " << curl_multi_strerror(mc)
+                   << "; failing " << inflight.size() << " in-flight fetch(es)"
+                   << dendl;
+      for (FetchContext* ctx : inflight) {
+        curl_multi_remove_handle(m_multi, ctx->curl_handle);
+        finisher_submit(ctx, -EIO);
+      }
+      inflight.clear();
+      continue;
     }
-#endif
+
+    // 4. Wait for socket I/O, a curl_multi_wakeup() from fetch_url()/the
+    //    destructor, or the timeout.  When the loop is idle, block on a long
+    //    timeout (a submit/shutdown wakeup ends the wait at once) instead of
+    //    spinning at the active cadence; keep the short timeout while transfers
+    //    are active so libcurl's own timers are serviced.
+    int poll_timeout_ms = (still_running == 0 && inflight.empty())
+                              ? IDLE_POLL_TIMEOUT_MS
+                              : ACTIVE_POLL_TIMEOUT_MS;
     curl_multi_poll(m_multi, nullptr, 0, poll_timeout_ms, nullptr);
 
-    // 4. Reap completed transfers and hand each to the finisher pool.
+    // 5. Reap completed transfers and hand each to the finisher pool.
     CURLMsg* msg;
     int in_queue;
     while ((msg = curl_multi_info_read(m_multi, &in_queue)) != nullptr) {
@@ -498,15 +507,15 @@ void S3ObjectFetcher::event_loop_body() {
       // Detach from the multi (loop-thread only) BEFORE handing the ctx to a
       // finisher, which will curl_easy_cleanup the handle off-thread.
       curl_multi_remove_handle(m_multi, eh);
-      --inflight;
+      inflight.erase(ctx);
       finisher_submit(ctx, result);
     }
   }
 
-  // The loop only breaks once inflight is zero (step 2), so every transfer
+  // The loop only breaks once inflight is empty (step 2), so every transfer
   // has already been reaped and handed to the finisher pool.  The finisher
   // pool is drained and joined by the destructor after this thread joins.
-  ceph_assert(inflight == 0);
+  ceph_assert(inflight.empty());
 }
 
 void S3ObjectFetcher::finisher_submit(FetchContext* ctx, int result) {
@@ -762,9 +771,7 @@ void S3ObjectFetcher::fetch_url(const std::string& url,
     std::lock_guard<std::mutex> lock(m_submit_mutex);
     m_submit_queue.push_back(ctx);
   }
-#if LIBCURL_VERSION_NUM >= 0x074400  // 7.68.0: curl_multi_wakeup
   curl_multi_wakeup(m_multi);
-#endif
 
   ldout(cct, 15) << "queued async S3 fetch" << dendl;
 }
