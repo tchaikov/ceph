@@ -177,16 +177,12 @@ private:
   std::mutex m_submit_mutex;
   bool m_loop_shutdown = false;
 
-  // Completion finisher pool.  The loop thread reaps a finished transfer,
-  // detaches it from m_multi (curl_multi_remove_handle MUST run on the loop
-  // thread), then hands (ctx, result) here so complete_and_destroy() -- the
-  // ~4 MB is_zero scan, waiter copies, throttler submit, on_finish callback
-  // and curl_easy_cleanup -- runs OFF the loop thread.  This keeps the curl
-  // pump from stalling behind a slow completion, and restores the concurrent
-  // completion submission the old worker pool provided (multiple writebacks
-  // hit the AsyncWritebackThrottler at once).  complete_and_destroy was
-  // already written to run concurrently from the old pool, so its shared
-  // state (m_inflight, m_recent_lru) is already mutex-protected.
+  // Completion finisher pool.  The loop reaps a finished transfer, detaches it
+  // from m_multi (loop-thread only), then hands (ctx, result) here so
+  // complete_and_destroy() runs OFF the loop: this keeps the curl pump from
+  // stalling behind a slow completion and lets completions (and their
+  // throttler submits) run concurrently.  Their shared state (m_inflight,
+  // m_recent_lru) is mutex-protected, so concurrent runs are safe.
   std::vector<std::thread> m_finisher_threads;
   std::deque<std::pair<FetchContext*, int>> m_finisher_queue;
   std::mutex m_finisher_mutex;

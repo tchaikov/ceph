@@ -169,13 +169,10 @@ private:
   void handle_write_full(int r) {
     ldout(m_cct, 15) << "r=" << r << dendl;
     if (r == -EEXIST) {
-      // Desired dedup outcome: a peer (or the backfill daemon) already
-      // populated this object, so our exclusive create failed and no redundant
-      // write landed.  Still set the object_map bit (idempotent) in case the
-      // object was created by a path that did not update THIS image's map.
-      // Deliberately do NOT emit the counted "write_full ... bytes to" line --
-      // no write happened here, so dedup-{read,writeback}.sh see exactly one
-      // real write per parent object even when N writebacks contend.
+      // Dedup outcome (see write_full's exclusive-create comment): a peer
+      // already populated the object, so no write landed here.  Still set the
+      // object_map bit idempotently, and do NOT emit the counted write_full
+      // log line -- no write happened.
       ldout(m_cct, 10) << "obj=" << m_object_no << " already populated in "
                        << m_parent_oid
                        << "; skipped redundant write_full (cross-writer dedup)"
