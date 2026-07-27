@@ -182,7 +182,7 @@ function(do_build_boost root_dir version)
       https://archives.boost.io//release/${boost_version}/source/boost_${boost_version_underscore}.tar.bz2
       https://boostorg.jfrog.io/artifactory/main/release/${boost_version}/source/boost_${boost_version_underscore}.tar.bz2)
     set(source_dir
-      URL ${boost_url}
+      URL file:///home/kefu/dev/ceph-build-deps/boost_${boost_version_underscore}.tar.bz2
       URL_HASH SHA256=${boost_sha256}
       DOWNLOAD_NO_PROGRESS 1)
   endif()
