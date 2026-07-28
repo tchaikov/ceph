@@ -8461,6 +8461,22 @@ int OSDMonitor::prepare_new_pool(string& name,
   pi->expected_num_objects = expected_num_objects;
   pi->object_hash = CEPH_STR_HASH_RJENKINS;
   if (osdmap.stretch_mode_enabled) {
+    // A pool created here becomes a stretch pool, so it needs the same rule as
+    // any other: one whose OSDs report the bucket we will require of them.
+    //
+    // The rule is only known once prepare_pool_crush_rule() has run, by which
+    // point we hold a pool id and an entry in new_pools. Returning an error
+    // does not discard the pending increment, so give both back or a later
+    // proposal commits the pool this is refusing.
+    if (auto rule_class = osdmap.crush->get_rule_device_class(crush_rule);
+	rule_class) {
+      *ss << "crush rule " << crush_rule << " selects devices of class "
+	  << osdmap.crush->get_class_name(*rule_class)
+	  << ", which stretch mode does not support";
+      pending_inc.new_pools.erase(pool);
+      --pending_inc.new_pool_max;
+      return -EINVAL;
+    }
     pi->peering_crush_bucket_count = osdmap.stretch_bucket_count;
     pi->peering_crush_bucket_target = osdmap.stretch_bucket_count;
     pi->peering_crush_bucket_barrier = osdmap.stretch_mode_bucket;
@@ -9104,6 +9120,22 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
       ss << "crush rule " << id << " type does not match pool";
       return -EINVAL;
     }
+    if (p.is_stretch_pool()) {
+      if (auto rule_class = osdmap.crush->get_rule_device_class(id);
+          rule_class) {
+        bool force = false;
+        cmd_getval(cmdmap, "yes_i_really_mean_it", force);
+        if (!force) {
+          ss << "crush rule " << val << " selects devices of class "
+             << osdmap.crush->get_class_name(*rule_class)
+             << ", which stretch mode does not support: this pool's PGs would "
+                "fail to peer if a "
+             << osdmap.crush->get_type_name(p.peering_crush_bucket_barrier)
+             << " were lost. Pass --yes-i-really-mean-it to proceed anyway.";
+          return -EINVAL;
+        }
+      }
+    }
     p.crush_rule = id;
   } else if (var == "nodelete" || var == "nopgchange" ||
 	     var == "nosizechange" || var == "write_fadvise_dontneed" ||
@@ -9662,6 +9694,14 @@ int OSDMonitor::prepare_command_pool_stretch_set(const cmdmap_t& cmdmap,
   }
   if (!crush.rule_valid_for_pool_type(crush_rule, p.get_type())) {
     ss << "crush rule " << crush_rule << " type does not match pool";
+    return -EINVAL;
+  }
+  // this makes the pool a stretch pool, so the rule has to be one whose OSDs
+  // report the bucket we will require of them
+  if (auto rule_class = crush.get_rule_device_class(crush_rule); rule_class) {
+    ss << "crush rule " << crush_rule_str << " selects devices of class "
+       << crush.get_class_name(*rule_class)
+       << ", which stretch mode does not support";
     return -EINVAL;
   }
   int64_t pool_size = cmd_getval_or<int64_t>(cmdmap, "size", 0);
@@ -15930,6 +15970,19 @@ void OSDMonitor::try_enable_stretch_mode(stringstream& ss, bool *okay,
        << stretch_max_weight_delta * 100 << "%";
     *errcode = -EINVAL;
     ceph_assert(!commit || !exceeds_threshold);
+    return;
+  }
+  // A rule with a device class takes from that class's shadow tree, so an OSD
+  // resolves to a shadow bucket such as "zone1~ssd" while we record the
+  // surviving zone below as the real "zone1". The two never compare equal, and
+  // every PG of a pool on such a rule fails to peer once a zone is lost. See
+  // https://tracker.ceph.com/issues/67414
+  if (auto rule_class = crush.get_rule_device_class(new_rule); rule_class) {
+    ss << "crush rule " << new_crush_rule << " selects devices of class "
+       << crush.get_class_name(*rule_class)
+       << ", which stretch mode does not support";
+    *errcode = -EINVAL;
+    ceph_assert(!commit);
     return;
   }
   // TODO: check CRUSH rules for pools so that we are appropriately divided
