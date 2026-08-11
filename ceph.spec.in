@@ -263,6 +263,12 @@ BuildRequires:  cmake > 3.5
 BuildRequires:	pkgconfig(fuse3)
 BuildRequires:	git
 BuildRequires:	pkgconfig(grpc++)
+# protoc, for the C++ and the nvmeof mgr module bindings
+BuildRequires:	protobuf-compiler
+%if 0%{?fedora} || 0%{?rhel}
+# grpc_python_plugin, for the nvmeof mgr module bindings
+BuildRequires:	grpc-plugins
+%endif
 # Before 13.3, an lto bug resulted in a segfault in SafeTimer and perhaps
 # elsewhere. Require the fixed version so we can reenable lto. See
 # ceph bug https://tracker.ceph.com/issues/63867
@@ -406,7 +412,6 @@ BuildRequires:  systemtap-sdt-devel
 BuildRequires:  libubsan
 BuildRequires:  libasan
 BuildRequires:  pkgconfig(protobuf)
-BuildRequires:  protobuf-compiler
 %if 0%{?gts_version} > 0
 BuildRequires:  gcc-toolset-%{gts_version}-gcc-plugin-annobin
 BuildRequires:  gcc-toolset-%{gts_version}-libubsan-devel

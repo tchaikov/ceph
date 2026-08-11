@@ -11,14 +11,6 @@ from .nvmeof_conf import NvmeofGatewaysConfig, is_mtls_enabled
 logger = logging.getLogger("nvmeof_client")
 
 try:
-    # if the protobuf version is newer than what we generated with
-    # proto file import will fail (because of differences between what's
-    # available in centos and ubuntu).
-    # this "hack" should be removed once we update both the
-    # distros; centos and ubuntu.
-    import os
-    os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
-
     import grpc  # type: ignore
     import grpc._channel  # type: ignore
     from google.protobuf.message import Message  # type: ignore

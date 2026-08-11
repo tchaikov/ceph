@@ -9,6 +9,13 @@ set(mgr_module_install_excludes
 
 add_subdirectory(dashboard)
 
+# only the generated protobuf bindings are built here, and they need
+# protoc and grpc_python_plugin; without them the module still
+# installs and reports its gateway commands as unavailable
+if(WITH_NVMEOF_GATEWAY_MONITOR_CLIENT)
+  add_subdirectory(nvmeof)
+endif()
+
 if(WITH_MGR_ROOK_CLIENT)
   add_subdirectory(rook)
 endif()

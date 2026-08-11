@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
-# The checked-in bindings predate protobuf 3.20; newer runtimes only
-# load them with the pure-python implementation. Select it before any
-# google.protobuf import can happen. This goes away once the bindings
-# are generated at build time.
-import os
-
-os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+# The gateway_pb2 modules in this package are generated at build time
+# from src/nvmeof/gateway/control/proto/gateway.proto by the protoc of
+# the build host; see ../CMakeLists.txt. Outside a cmake build, the
+# gen-nvmeof-proto tox environment in ../../dashboard/tox.ini produces
+# them with grpcio-tools.
