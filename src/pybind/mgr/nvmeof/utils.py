@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from typing import Any, Dict, List, Optional, Union
 
+from ceph.utils import strtobool
+
 from .errors import NvmeofInvalidInputError
 
 MULTIPLES = ['', "K", "M", "G", "T", "P"]
@@ -106,3 +108,15 @@ def resolve_nvmeof_server_address(
         )
 
     return resolved
+
+
+def str_to_bool(val):
+    """Convert a string representation of truth to True or False.
+
+    :param val: The value to convert.
+    :type val: str|bool
+    :rtype: bool
+    """
+    if isinstance(val, bool):
+        return val
+    return bool(strtobool(val))

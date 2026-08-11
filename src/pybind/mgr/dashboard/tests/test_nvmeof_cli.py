@@ -1418,6 +1418,15 @@ class TestNvmeofModuleContract(unittest.TestCase):
         ('host_del_controller_key',
          {'nqn': 'n', 'host_nqn': 'h', 'gw_group': None,
           'server_address': None, 'traddr': None}),
+        ('listener_list', {'nqn': 'n', 'gw_group': None,
+                           'server_address': None, 'traddr': None}),
+        ('listener_add', {'nqn': 'n', 'host_name': 'h', 'traddr': 't',
+                          'trsvcid': None, 'adrfam': 0, 'gw_group': None,
+                          'server_address': None, 'secure': False,
+                          'force': False, 'verify_host_name': False}),
+        ('listener_del', {'nqn': 'n', 'host_name': 'h', 'traddr': 't',
+                          'trsvcid': 5, 'adrfam': 0, 'force': False,
+                          'gw_group': None, 'server_address': None}),
     ]
 
     def test_api_calls_bind(self):

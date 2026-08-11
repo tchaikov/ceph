@@ -918,7 +918,6 @@ else:
     @APIDoc("NVMe-oF Subsystem Listener Management API", "NVMe-oF Subsystem Listener")
     class NVMeoFListener(RESTController):
         @pick("listeners")
-        @NvmeofCLICommand("nvmeof listener list", model.ListenerList)
         @EndpointDoc(
             "List all NVMeoF listeners",
             parameters={
@@ -928,28 +927,13 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.ListenerList)
-        @handle_nvmeof_error
         def list(self, nqn: str, gw_group: Optional[str] = None,
                  server_address: Optional[str] = None,
                  traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.list_listeners(
-                NVMeoFClient.pb2.list_listeners_req(subsystem=nqn)
-            )
+            return _api('listener_list', nqn=nqn, gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
         @empty_response
-        @NvmeofCLICommand(
-            "nvmeof listener add",
-            model.RequestStatus,
-            success_message_template="Adding {nqn} listener at {traddr}:{trsvcid}: Successful"
-        )
         @EndpointDoc(
             "Create a new NVMeoF listener",
             parameters={
@@ -973,8 +957,6 @@ else:
                                           True, False),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def create(
             self,
             nqn: str,
@@ -988,38 +970,13 @@ else:
             force: Optional[bool] = False,
             verify_host_name: Optional[bool] = False,
         ):
-            client = NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            )
-            return client.stub.create_listener(
-                NVMeoFClient.pb2.create_listener_req(
-                    nqn=nqn,
-                    host_name=host_name,
-                    traddr=traddr,
-                    trsvcid=int(trsvcid) if trsvcid is not None else None,
-                    adrfam=int(adrfam),
-                    secure=str_to_bool(secure),
-                    force=str_to_bool(force),
-                    verify_host_name=str_to_bool(verify_host_name),
-                )
-            )
+            return _api('listener_add', nqn=nqn, host_name=host_name,
+                        traddr=traddr, trsvcid=trsvcid, adrfam=adrfam,
+                        gw_group=gw_group, server_address=server_address,
+                        secure=secure, force=force,
+                        verify_host_name=verify_host_name)
 
         @empty_response
-        @NvmeofCLICommand(
-            "nvmeof listener del",
-            model.RequestStatus,
-            success_message_template=(
-                "Deleting listener {traddr}:{trsvcid} from {nqn} {host_msg}: Successful"
-            ),
-            success_message_map={
-                "traddr": lambda v, _f: escape_address_if_ipv6(v) if v is not None else "",
-                "host_msg": lambda _v, f: (
-                    "for all hosts" if f.get("host_name") == "*"
-                    else f"for host {f.get('host_name')}"
-                ),
-            }
-        )
         @EndpointDoc(
             "Delete an existing NVMeoF listener",
             parameters={
@@ -1041,8 +998,6 @@ else:
                 "server_address": Param(str, "NVMeoF gateway address", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def delete(
             self,
             nqn: str,
@@ -1054,20 +1009,10 @@ else:
             gw_group: Optional[str] = None,
             server_address: Optional[str] = None
         ):
-            client = NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            )
-            return client.stub.delete_listener(
-                NVMeoFClient.pb2.delete_listener_req(
-                    nqn=nqn,
-                    host_name=host_name,
-                    traddr=traddr,
-                    trsvcid=int(trsvcid),
-                    adrfam=int(adrfam),
-                    force=str_to_bool(force),
-                )
-            )
+            return _api('listener_del', nqn=nqn, host_name=host_name,
+                        traddr=traddr, trsvcid=trsvcid, adrfam=adrfam,
+                        force=force, gw_group=gw_group,
+                        server_address=server_address)
 
     @APIRouter("/nvmeof/subsystem/{nqn}/namespace", Scope.NVME_OF)
     @APIDoc("NVMe-oF Subsystem Namespace Management API", "NVMe-oF Subsystem Namespace")

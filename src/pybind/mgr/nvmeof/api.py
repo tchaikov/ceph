@@ -17,7 +17,8 @@ from . import model
 from .cli import NvmeofCLICommand
 from .client import NVMeoFClient, handle_nvmeof_error
 from .converters import convert_to_model
-from .utils import format_host_updates, resolve_nvmeof_server_address
+from .utils import escape_address_if_ipv6, format_host_updates, \
+    resolve_nvmeof_server_address, str_to_bool
 
 
 def _normalize_enum_key(val):
@@ -291,3 +292,94 @@ def host_del_controller_key(mgr, nqn: str, host_nqn: str,
     """Delete host DH-HMAC-CHAP controller key"""
     return _host_change_key(mgr, nqn, host_nqn, "-", None,
                             gw_group, server_address, traddr)
+
+
+@NvmeofCLICommand("nvmeof listener list", model.ListenerList)
+@convert_to_model(model.ListenerList)
+@handle_nvmeof_error
+def listener_list(mgr, nqn: str, gw_group: Optional[str] = None,
+                  server_address: Optional[str] = None,
+                  traddr: Optional[str] = None):
+    """List all NVMeoF listeners"""
+    server_address = resolve_nvmeof_server_address(
+        server_address=server_address,
+        traddr=traddr
+    )
+    return NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    ).stub.list_listeners(
+        NVMeoFClient.pb2.list_listeners_req(subsystem=nqn)
+    )
+
+
+@NvmeofCLICommand(
+    "nvmeof listener add",
+    model.RequestStatus,
+    success_message_template="Adding {nqn} listener at {traddr}:{trsvcid}: Successful"
+)
+@convert_to_model(model.RequestStatus)
+@handle_nvmeof_error
+def listener_add(mgr, nqn: str, host_name: str, traddr: str,
+                 trsvcid: Optional[int] = None,
+                 adrfam: int = 0,  # IPv4,
+                 gw_group: Optional[str] = None,
+                 server_address: Optional[str] = None,
+                 secure: Optional[bool] = False,
+                 force: Optional[bool] = False,
+                 verify_host_name: Optional[bool] = False):
+    """Create a new NVMeoF listener"""
+    client = NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    )
+    return client.stub.create_listener(
+        NVMeoFClient.pb2.create_listener_req(
+            nqn=nqn,
+            host_name=host_name,
+            traddr=traddr,
+            trsvcid=int(trsvcid) if trsvcid is not None else None,
+            adrfam=int(adrfam),
+            secure=str_to_bool(secure),
+            force=str_to_bool(force),
+            verify_host_name=str_to_bool(verify_host_name),
+        )
+    )
+
+
+@NvmeofCLICommand(
+    "nvmeof listener del",
+    model.RequestStatus,
+    success_message_template=(
+        "Deleting listener {traddr}:{trsvcid} from {nqn} {host_msg}: Successful"
+    ),
+    success_message_map={
+        "traddr": lambda v, _f: escape_address_if_ipv6(v) if v is not None else "",
+        "host_msg": lambda _v, f: (
+            "for all hosts" if f.get("host_name") == "*"
+            else f"for host {f.get('host_name')}"
+        ),
+    }
+)
+@convert_to_model(model.RequestStatus)
+@handle_nvmeof_error
+def listener_del(mgr, nqn: str, host_name: str, traddr: str, trsvcid: int,
+                 adrfam: int = 0,  # IPv4
+                 force: bool = False,
+                 gw_group: Optional[str] = None,
+                 server_address: Optional[str] = None):
+    """Delete an existing NVMeoF listener"""
+    client = NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    )
+    return client.stub.delete_listener(
+        NVMeoFClient.pb2.delete_listener_req(
+            nqn=nqn,
+            host_name=host_name,
+            traddr=traddr,
+            trsvcid=int(trsvcid),
+            adrfam=int(adrfam),
+            force=str_to_bool(force),
+        )
+    )
