@@ -647,6 +647,9 @@ Group:          System/Filesystems
 %endif
 Requires:       ceph-base = %{_epoch_prefix}%{version}-%{release}
 Requires:       ceph-mgr-modules-core = %{_epoch_prefix}%{version}-%{release}
+# the nvmeof module is always-on since umbrella, so the mgr daemon reports a
+# health error when its files are missing
+Requires:       ceph-mgr-nvmeof = %{_epoch_prefix}%{version}-%{release}
 Requires:	    libcephsqlite = %{_epoch_prefix}%{version}-%{release}
 %if 0%{?weak_deps}
 Recommends:	ceph-mgr-alerts = %{_epoch_prefix}%{version}-%{release}
@@ -662,7 +665,6 @@ Recommends:	ceph-mgr-localpool = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-mds-autoscaler = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-mirroring = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-nfs = %{_epoch_prefix}%{version}-%{release}
-Recommends:	ceph-mgr-nvmeof = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-osd-perf-query = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-osd-support = %{_epoch_prefix}%{version}-%{release}
 Recommends:	ceph-mgr-prometheus = %{_epoch_prefix}%{version}-%{release}
@@ -944,7 +946,8 @@ Summary:        Ceph Manager module for managing NVMe-oF gateway deployments
 %if 0%{?suse_version}
 Group:          System/Filesystems
 %endif
-Requires:       ceph-mgr = %{_epoch_prefix}%{version}-%{release}
+# no Requires on ceph-mgr: ceph-mgr requires this package (the module is
+# always-on), and mgr-modules-core sets the precedent for that direction
 Obsoletes:      ceph-mgr-modules-core < %{_epoch_prefix}%{version}-%{release}
 %description mgr-nvmeof
 ceph-mgr-nvmeof is a ceph-mgr module that manages NVMe-oF gateway

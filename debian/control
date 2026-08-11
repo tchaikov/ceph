@@ -238,6 +238,7 @@ Package: ceph-mgr
 Architecture: linux-any
 Depends: ceph-base (= ${binary:Version}),
          ceph-mgr-modules-core (= ${binary:Version}),
+         ceph-mgr-nvmeof (= ${binary:Version}),
          libsqlite3-mod-ceph (= ${binary:Version}),
          librados2 (= ${binary:Version}),
          ${misc:Depends},
@@ -256,7 +257,6 @@ Recommends: ceph-mgr-alerts,
             ceph-mgr-mds-autoscaler,
             ceph-mgr-mirroring,
             ceph-mgr-nfs,
-            ceph-mgr-nvmeof,
             ceph-mgr-osd-perf-query,
             ceph-mgr-osd-support,
             ceph-mgr-prometheus,
@@ -541,8 +541,7 @@ Description: nfs module for ceph-mgr
 
 Package: ceph-mgr-nvmeof
 Architecture: all
-Depends: ceph-mgr (= ${binary:Version}),
-         ${misc:Depends},
+Depends: ${misc:Depends},
          ${python3:Depends},
 Breaks: ceph-mgr-modules-core (<< 21.0.0)
 Replaces: ceph-mgr-modules-core (<< 21.0.0)
