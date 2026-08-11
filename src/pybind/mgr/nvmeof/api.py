@@ -11,7 +11,7 @@ Commands migrate here from dashboard/controllers/nvmeof.py one
 resource at a time; connections are first.
 """
 from functools import partial
-from typing import Optional
+from typing import List, Optional
 
 from . import model
 from .cli import NvmeofCLICommand
@@ -382,4 +382,283 @@ def listener_del(mgr, nqn: str, host_name: str, traddr: str, trsvcid: int,
             adrfam=int(adrfam),
             force=str_to_bool(force),
         )
+    )
+
+
+@NvmeofCLICommand(
+    "nvmeof gateway info", model.GatewayInfo, alias="nvmeof gw info"
+)
+@convert_to_model(model.GatewayInfo)
+@handle_nvmeof_error
+def gateway_info(mgr, gw_group: Optional[str] = None,
+                 server_address: Optional[str] = None,
+                 traddr: Optional[str] = None):
+    """Get information about the NVMeoF gateway"""
+    server_address = resolve_nvmeof_server_address(
+        server_address=server_address,
+        traddr=traddr
+    )
+    return NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    ).stub.get_gateway_info(
+        NVMeoFClient.pb2.get_gateway_info_req()
+    )
+
+
+@NvmeofCLICommand(
+    "nvmeof gateway version", model.GatewayVersion, alias="nvmeof gw version"
+)
+@convert_to_model(model.GatewayVersion)
+@handle_nvmeof_error
+def gateway_version(mgr, gw_group: Optional[str] = None,
+                    server_address: Optional[str] = None,
+                    traddr: Optional[str] = None):
+    """Get the version of the NVMeoF gateway"""
+    server_address = resolve_nvmeof_server_address(
+        server_address=server_address,
+        traddr=traddr
+    )
+    gw_info = NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    ).stub.get_gateway_info(
+        NVMeoFClient.pb2.get_gateway_info_req()
+    )
+    return NVMeoFClient.pb2.gw_version(status=gw_info.status,
+                                       error_message=gw_info.error_message,
+                                       version=gw_info.version)
+
+
+@NvmeofCLICommand(
+    "nvmeof gateway get_log_level", model.GatewayLogLevelInfo,
+    alias="nvmeof gw get_log_level"
+)
+@convert_to_model(model.GatewayLogLevelInfo)
+@handle_nvmeof_error
+def gateway_get_log_level(mgr, gw_group: Optional[str] = None,
+                          server_address: Optional[str] = None,
+                          traddr: Optional[str] = None):
+    """Get NVMeoF gateway log level information"""
+    server_address = resolve_nvmeof_server_address(
+        server_address=server_address,
+        traddr=traddr
+    )
+    return NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    ).stub.get_gateway_log_level(
+        NVMeoFClient.pb2.get_gateway_log_level_req()
+    )
+
+
+@NvmeofCLICommand(
+    "nvmeof gateway set_log_level", model.RequestStatus,
+    alias="nvmeof gw set_log_level",
+    success_message_template="Set gateway log level to {log_level}: Successful")
+@convert_to_model(model.RequestStatus)
+@handle_nvmeof_error
+def gateway_set_log_level(mgr, log_level: str, gw_group: Optional[str] = None,
+                          server_address: Optional[str] = None,
+                          traddr: Optional[str] = None):
+    """Set NVMeoF gateway log levels"""
+    server_address = resolve_nvmeof_server_address(
+        server_address=server_address,
+        traddr=traddr
+    )
+    log_level = log_level.strip().lower()
+    return NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    ).stub.set_gateway_log_level(
+        NVMeoFClient.pb2.set_gateway_log_level_req(log_level=log_level)
+    )
+
+
+@NvmeofCLICommand(
+    "nvmeof gateway get_stats", model.GatewayStatsInfo,
+    alias="nvmeof gw get_stats")
+@convert_to_model(model.GatewayStatsInfo)
+@handle_nvmeof_error
+def gateway_get_stats(mgr, gw_group: Optional[str] = None,
+                      server_address: Optional[str] = None,
+                      traddr: Optional[str] = None):
+    """Get NVMeoF statistics for the gateway"""
+    server_address = resolve_nvmeof_server_address(
+        server_address=server_address,
+        traddr=traddr
+    )
+    return NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    ).stub.get_gateway_stats(
+        NVMeoFClient.pb2.get_gateway_stats_req()
+    )
+
+
+@NvmeofCLICommand(
+    "nvmeof gateway listener_info", model.GatewayListenersInfo,
+    alias="nvmeof gw listener_info")
+@convert_to_model(model.GatewayListenersInfo)
+@handle_nvmeof_error
+def gateway_listener_info(mgr, nqn: str, gw_group: Optional[str] = None,
+                          server_address: Optional[str] = None,
+                          traddr: Optional[str] = None):
+    """Get NVMeoF gateway's listeners info"""
+    server_address = resolve_nvmeof_server_address(
+        server_address=server_address,
+        traddr=traddr
+    )
+    return NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    ).stub.show_gateway_listeners_info(
+        NVMeoFClient.pb2.show_gateway_listeners_info_req(subsystem_nqn=nqn)
+    )
+
+
+@NvmeofCLICommand(
+    "nvmeof gateway set_io_stats_mode", model.RequestStatus,
+    alias="nvmeof gw set_io_stats_mode",
+    success_message_template="Set gateway IO statistics mode to {enabled}: Successful")
+@convert_to_model(model.RequestStatus)
+@handle_nvmeof_error
+def gateway_set_io_stats_mode(mgr, enabled: bool,
+                              gw_group: Optional[str] = None,
+                              server_address: Optional[str] = None,
+                              traddr: Optional[str] = None):
+    """Enable or disable IO statistics collection"""
+    server_address = resolve_nvmeof_server_address(
+        server_address=server_address,
+        traddr=traddr
+    )
+    return NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    ).stub.set_gateway_io_stats_mode(
+        NVMeoFClient.pb2.set_gateway_io_stats_mode_req(enabled=enabled)
+    )
+
+
+@NvmeofCLICommand(
+    "nvmeof gateway get_thread_stats", model.ThreadStatsInfo,
+    alias="nvmeof gw get_thread_stats")
+@convert_to_model(model.ThreadStatsInfo)
+@handle_nvmeof_error
+def gateway_get_thread_stats(mgr, gw_group: Optional[str] = None,
+                             server_address: Optional[str] = None,
+                             traddr: Optional[str] = None):
+    """Get NVMeoF thread statistics for the gateway"""
+    server_address = resolve_nvmeof_server_address(
+        server_address=server_address,
+        traddr=traddr
+    )
+    return NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    ).stub.get_thread_stats(
+        NVMeoFClient.pb2.get_thread_stats_req()
+    )
+
+
+@NvmeofCLICommand(
+    "nvmeof gateway refresh_network", model.GwRefreshNetworkStatus,
+    alias="nvmeof gw refresh_network",
+    success_message_template=("Refreshed configured network masks for subsystem "
+                              "{nqn} on gateway {server_address}: "
+                              "Successful{added}{removed}"),
+    success_message_map={
+        "server_address": lambda v, f: v or f.get("traddr"),
+        "added": lambda v, _f: f"\nAdded: {', '.join(v)}" if v else "",
+        "removed": lambda v, _f: f"\nRemoved: {', '.join(v)}" if v else "",
+    }
+)
+@convert_to_model(model.GwRefreshNetworkStatus)
+@handle_nvmeof_error
+def gateway_refresh_network(mgr, nqn: str = "", gw_group: Optional[str] = None,
+                            server_address: Optional[str] = None,
+                            traddr: Optional[str] = None):
+    """Re-evaluate subsystem network masks and update auto-listeners for this gateway"""
+    server_address = resolve_nvmeof_server_address(
+        server_address=server_address,
+        traddr=traddr,
+        require=True
+    )
+    return NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    ).stub.gw_refresh_network(
+        NVMeoFClient.pb2.gw_refresh_network_req(subsystem_nqn=nqn)
+    )
+
+
+@NvmeofCLICommand("nvmeof spdk_log_level get",
+                  model.SpdkNvmfLogFlagsAndLevelInfo)
+@convert_to_model(model.SpdkNvmfLogFlagsAndLevelInfo)
+@handle_nvmeof_error
+def spdk_log_level_get(mgr, all_log_flags: Optional[bool] = None,
+                       gw_group: Optional[str] = None,
+                       server_address: Optional[str] = None,
+                       traddr: Optional[str] = None):
+    """Get NVMeoF gateway spdk log levels"""
+    server_address = resolve_nvmeof_server_address(
+        server_address=server_address,
+        traddr=traddr
+    )
+    return NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    ).stub.get_spdk_nvmf_log_flags_and_level(
+        NVMeoFClient.pb2.get_spdk_nvmf_log_flags_and_level_req(all_log_flags=all_log_flags)
+    )
+
+
+@NvmeofCLICommand(
+    "nvmeof spdk_log_level set",
+    model.RequestStatus,
+    success_message_template="Set SPDK log levels and nvmf log flags: Successful"
+)
+@convert_to_model(model.RequestStatus)
+@handle_nvmeof_error
+def spdk_log_level_set(mgr, log_level: Optional[str] = None,
+                       print_level: Optional[str] = None,
+                       extra_log_flags: Optional[List[str]] = None,
+                       gw_group: Optional[str] = None,
+                       server_address: Optional[str] = None,
+                       traddr: Optional[str] = None):
+    """Set NVMeoF gateway spdk log levels"""
+    server_address = resolve_nvmeof_server_address(
+        server_address=server_address,
+        traddr=traddr
+    )
+    log_level = log_level.strip().upper() if log_level else None
+    print_level = print_level.strip().upper() if print_level else None
+    return NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    ).stub.set_spdk_nvmf_logs(
+        NVMeoFClient.pb2.set_spdk_nvmf_logs_req(log_level=log_level,
+                                                print_level=print_level,
+                                                extra_log_flags=extra_log_flags)
+    )
+
+
+@NvmeofCLICommand("nvmeof spdk_log_level disable", model.RequestStatus,
+                  success_message_template="Disable SPDK log flags: Successful")
+@convert_to_model(model.RequestStatus)
+@handle_nvmeof_error
+def spdk_log_level_disable(mgr, extra_log_flags: Optional[List[str]] = None,
+                           gw_group: Optional[str] = None,
+                           server_address: Optional[str] = None,
+                           traddr: Optional[str] = None):
+    """Disable NVMeoF gateway spdk log"""
+    server_address = resolve_nvmeof_server_address(
+        server_address=server_address,
+        traddr=traddr
+    )
+    return NVMeoFClient(
+        mgr, gw_group=gw_group,
+        server_address=server_address
+    ).stub.disable_spdk_nvmf_logs(
+        NVMeoFClient.pb2.disable_spdk_nvmf_logs_req(extra_log_flags=extra_log_flags)
     )

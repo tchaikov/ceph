@@ -59,9 +59,6 @@ else:
     @APIRouter("/nvmeof/gateway", Scope.NVME_OF)
     @APIDoc("NVMe-oF Gateway Management API", "NVMe-oF Gateway")
     class NVMeoFGateway(RESTController):
-        @NvmeofCLICommand(
-            "nvmeof gateway info", model.GatewayInfo, alias="nvmeof gw info"
-        )
         @EndpointDoc(
             "Get information about the NVMeoF gateway",
             parameters={
@@ -70,20 +67,10 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             }
         )
-        @convert_to_model(model.GatewayInfo)
-        @handle_nvmeof_error
         def list(self, gw_group: Optional[str] = None, server_address: Optional[str] = None,
                  traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.get_gateway_info(
-                NVMeoFClient.pb2.get_gateway_info_req()
-            )
+            return _api('gateway_info', gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
         @ReadPermission
         @Endpoint('GET')
@@ -141,9 +128,6 @@ else:
 
         @ReadPermission
         @Endpoint('GET', '/version')
-        @NvmeofCLICommand(
-            "nvmeof gateway version", model.GatewayVersion, alias="nvmeof gw version"
-        )
         @EndpointDoc(
             "Get the version of the NVMeoF gateway",
             parameters={
@@ -152,30 +136,13 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             }
         )
-        @convert_to_model(model.GatewayVersion)
-        @handle_nvmeof_error
         def version(self, gw_group: Optional[str] = None, server_address: Optional[str] = None,
                     traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            gw_info = NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.get_gateway_info(
-                NVMeoFClient.pb2.get_gateway_info_req()
-            )
-            return NVMeoFClient.pb2.gw_version(status=gw_info.status,
-                                               error_message=gw_info.error_message,
-                                               version=gw_info.version)
+            return _api('gateway_version', gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
         @ReadPermission
         @Endpoint('GET', '/log_level')
-        @NvmeofCLICommand(
-            "nvmeof gateway get_log_level", model.GatewayLogLevelInfo,
-            alias="nvmeof gw get_log_level"
-        )
         @EndpointDoc(
             "Get NVMeoF gateway log level information",
             parameters={
@@ -184,28 +151,14 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             }
         )
-        @convert_to_model(model.GatewayLogLevelInfo)
-        @handle_nvmeof_error
         def get_log_level(self, gw_group: Optional[str] = None,
                           server_address: Optional[str] = None,
                           traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            gw_log_level = NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.get_gateway_log_level(
-                NVMeoFClient.pb2.get_gateway_log_level_req()
-            )
-            return gw_log_level
+            return _api('gateway_get_log_level', gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
         @ReadPermission
         @Endpoint('PUT', '/log_level')
-        @NvmeofCLICommand(
-            "nvmeof gateway set_log_level", model.RequestStatus, alias="nvmeof gw set_log_level",
-            success_message_template="Set gateway log level to {log_level}: Successful")
         @EndpointDoc(
             "Set NVMeoF gateway log levels",
             parameters={
@@ -215,26 +168,15 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             }
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def set_log_level(self, log_level: str, gw_group: Optional[str] = None,
                           server_address: Optional[str] = None,
                           traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            log_level = log_level.strip().lower()
-            gw_log_level = NVMeoFClient(gw_group=gw_group,
-                                        server_address=server_address).stub.set_gateway_log_level(
-                NVMeoFClient.pb2.set_gateway_log_level_req(log_level=log_level)
-            )
-            return gw_log_level
+            return _api('gateway_set_log_level', log_level=log_level,
+                        gw_group=gw_group, server_address=server_address,
+                        traddr=traddr)
 
         @ReadPermission
         @Endpoint('GET', '/stats')
-        @NvmeofCLICommand(
-            "nvmeof gateway get_stats", model.GatewayStatsInfo, alias="nvmeof gw get_stats")
         @EndpointDoc(
             "Get NVMeoF statistics for the gateway",
             parameters={
@@ -243,28 +185,14 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             }
         )
-        @convert_to_model(model.GatewayStatsInfo)
-        @handle_nvmeof_error
         def get_gw_stats(self, gw_group: Optional[str] = None,
                          server_address: Optional[str] = None,
                          traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            gw_stats = NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.get_gateway_stats(
-                NVMeoFClient.pb2.get_gateway_stats_req()
-            )
-            return gw_stats
+            return _api('gateway_get_stats', gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
         @ReadPermission
         @Endpoint('GET', '/listener_info')
-        @NvmeofCLICommand(
-            "nvmeof gateway listener_info", model.GatewayListenersInfo,
-            alias="nvmeof gw listener_info")
         @EndpointDoc(
             "Get NVMeoF gateway's listeners info",
             parameters={
@@ -274,29 +202,14 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             }
         )
-        @convert_to_model(model.GatewayListenersInfo)
-        @handle_nvmeof_error
         def listener_info(self, nqn: str, gw_group: Optional[str] = None,
                           server_address: Optional[str] = None,
                           traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            gw_listener_info = NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.show_gateway_listeners_info(
-                NVMeoFClient.pb2.show_gateway_listeners_info_req(subsystem_nqn=nqn)
-            )
-            return gw_listener_info
+            return _api('gateway_listener_info', nqn=nqn, gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
         @UpdatePermission
         @Endpoint('PUT', '/io_stats')
-        @NvmeofCLICommand(
-            "nvmeof gateway set_io_stats_mode", model.RequestStatus,
-            alias="nvmeof gw set_io_stats_mode",
-            success_message_template="Set gateway IO statistics mode to {enabled}: Successful")
         @EndpointDoc(
             "Enable or disable IO statistics collection",
             parameters={
@@ -306,26 +219,15 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def set_io_stats_mode(self, enabled: bool, gw_group: Optional[str] = None,
                               server_address: Optional[str] = None,
                               traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            io_stats = NVMeoFClient(gw_group=gw_group,
-                                    server_address=server_address).stub.set_gateway_io_stats_mode(
-                NVMeoFClient.pb2.set_gateway_io_stats_mode_req(enabled=enabled)
-            )
-            return io_stats
+            return _api('gateway_set_io_stats_mode', enabled=enabled,
+                        gw_group=gw_group, server_address=server_address,
+                        traddr=traddr)
 
         @ReadPermission
         @Endpoint('GET', '/thread_stats')
-        @NvmeofCLICommand(
-            "nvmeof gateway get_thread_stats", model.ThreadStatsInfo,
-            alias="nvmeof gw get_thread_stats")
         @EndpointDoc(
             "Get NVMeoF thread statistics for the gateway",
             parameters={
@@ -334,38 +236,16 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             }
         )
-        @convert_to_model(model.ThreadStatsInfo)
-        @handle_nvmeof_error
         def get_thread_stats(
             self, gw_group: Optional[str] = None,
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.get_thread_stats(
-                NVMeoFClient.pb2.get_thread_stats_req()
-            )
+            return _api('gateway_get_thread_stats', gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
         @UpdatePermission
         @Endpoint('PUT', '/refresh_network')
-        @NvmeofCLICommand(
-            "nvmeof gateway refresh_network", model.GwRefreshNetworkStatus,
-            alias="nvmeof gw refresh_network",
-            success_message_template=("Refreshed configured network masks for subsystem "
-                                      "{nqn} on gateway {server_address}: "
-                                      "Successful{added}{removed}"),
-            success_message_map={
-                "server_address": lambda v, f: v or f.get("traddr"),
-                "added": lambda v, _f: f"\nAdded: {', '.join(v)}" if v else "",
-                "removed": lambda v, _f: f"\nRemoved: {', '.join(v)}" if v else "",
-            }
-        )
         @EndpointDoc(
             "Re-evaluate subsystem network masks and update auto-listeners for this gateway",
             parameters={
@@ -375,29 +255,17 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.GwRefreshNetworkStatus)
-        @handle_nvmeof_error
         def refresh_network(self, nqn: str = "", gw_group: Optional[str] = None,
                             server_address: Optional[str] = None,
                             traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr,
-                require=True
-            )
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.gw_refresh_network(
-                NVMeoFClient.pb2.gw_refresh_network_req(subsystem_nqn=nqn)
-            )
+            return _api('gateway_refresh_network', nqn=nqn, gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
     @APIRouter("/nvmeof/spdk", Scope.NVME_OF)
     @APIDoc("NVMe-oF SPDK Management API", "NVMe-oF SPDK")
     class NVMeoFSpdk(RESTController):
         @ReadPermission
         @Endpoint('GET', '/log_level')
-        @NvmeofCLICommand("nvmeof spdk_log_level get", model.SpdkNvmfLogFlagsAndLevelInfo)
         @EndpointDoc(
             "Get NVMeoF gateway spdk log levels",
             parameters={
@@ -407,32 +275,17 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             }
         )
-        @convert_to_model(model.SpdkNvmfLogFlagsAndLevelInfo)
-        @handle_nvmeof_error
         def get_spdk_log_level(
             self, all_log_flags: Optional[bool] = None,
             gw_group: Optional[str] = None, server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            spdk_log_level = NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.get_spdk_nvmf_log_flags_and_level(
-                NVMeoFClient.pb2.get_spdk_nvmf_log_flags_and_level_req(all_log_flags=all_log_flags)
-            )
-            return spdk_log_level
+            return _api('spdk_log_level_get', all_log_flags=all_log_flags,
+                        gw_group=gw_group, server_address=server_address,
+                        traddr=traddr)
 
         @ReadPermission
         @Endpoint('PUT', '/log_level')
-        @NvmeofCLICommand(
-            "nvmeof spdk_log_level set",
-            model.RequestStatus,
-            success_message_template="Set SPDK log levels and nvmf log flags: Successful"
-        )
         @EndpointDoc(
             "Set NVMeoF gateway spdk log levels",
             parameters={
@@ -444,34 +297,19 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             }
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def set_spdk_log_level(self, log_level: Optional[str] = None,
                                print_level: Optional[str] = None,
                                extra_log_flags: Optional[List[str]] = None,
                                gw_group: Optional[str] = None,
                                server_address: Optional[str] = None,
                                traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            log_level = log_level.strip().upper() if log_level else None
-            print_level = print_level.strip().upper() if print_level else None
-            spdk_log_level = NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.set_spdk_nvmf_logs(
-                NVMeoFClient.pb2.set_spdk_nvmf_logs_req(log_level=log_level,
-                                                        print_level=print_level,
-                                                        extra_log_flags=extra_log_flags)
-            )
-            return spdk_log_level
+            return _api('spdk_log_level_set', log_level=log_level,
+                        print_level=print_level,
+                        extra_log_flags=extra_log_flags, gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
         @ReadPermission
         @Endpoint('PUT', '/log_level/disable')
-        @NvmeofCLICommand("nvmeof spdk_log_level disable", model.RequestStatus,
-                          success_message_template="Disable SPDK log flags: Successful")
         @EndpointDoc(
             "Disable NVMeoF gateway spdk log",
             parameters={
@@ -481,25 +319,15 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             }
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def disable_spdk_log_level(
             self, extra_log_flags: Optional[List[str]] = None,
             gw_group: Optional[str] = None,
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            spdk_log_level = NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.disable_spdk_nvmf_logs(
-                NVMeoFClient.pb2.disable_spdk_nvmf_logs_req(extra_log_flags=extra_log_flags)
-            )
-            return spdk_log_level
+            return _api('spdk_log_level_disable',
+                        extra_log_flags=extra_log_flags, gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
     @APIRouter("/nvmeof/subsystem", Scope.NVME_OF)
     @APIDoc("NVMe-oF Subsystem Management API", "NVMe-oF Subsystem")
