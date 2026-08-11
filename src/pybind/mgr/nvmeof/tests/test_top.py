@@ -5,9 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ..services.nvmeof_top_cli import MAX_SESSION_TTL, Counter, \
+from nvmeof.top import MAX_SESSION_TTL, Counter, \
     NvmeofTopCollector, NVMeoFTopCPU, NVMeoFTopIO
-from ..tests import CLICommandTestMixin, CmdException
+from nvmeof.top import nvmeof_top_cpu, nvmeof_top_io
 
 
 @pytest.fixture(name='cpu_collector')
@@ -175,7 +175,7 @@ class TestNVMeoFTopIOFormat:
 class TestNvmeofTopCollector:
     @pytest.fixture
     def collector(self):
-        c = NvmeofTopCollector()
+        c = NvmeofTopCollector(MagicMock())
         c.client = MagicMock()
         c.service = 'myservice'
         c.group = 'mygroup'
@@ -194,8 +194,8 @@ class TestNvmeofTopCollector:
     def test_set_gateways_no_services(self, collector):
         collector.service = ''
         collector.group = ''
-        with patch('dashboard.services.nvmeof_top_cli.NvmeofGatewaysConfig.get_gateways_config',
-                   return_value={'gateways': {}}):
+        with patch.object(collector.mgr, 'get_gateways_config',
+                          return_value={'gateways': {}}):
             collector._set_gateways('', '')  # pylint: disable=protected-access
         assert collector.health.rc == -errno.ENOENT
         assert collector.health.msg == 'No NVMeoF gateways configured'
@@ -207,8 +207,8 @@ class TestNvmeofTopCollector:
             'nvmeof.pool.group1': [{'service_url': '1.1.1.1:5500', 'group': 'group1'}],
             'nvmeof.pool.group2': [{'service_url': '2.2.2.2:5500', 'group': 'group2'}],
         }}
-        with patch('dashboard.services.nvmeof_top_cli.NvmeofGatewaysConfig.get_gateways_config',
-                   return_value=config):
+        with patch.object(collector.mgr, 'get_gateways_config',
+                          return_value=config):
             collector._set_gateways('', '')  # pylint: disable=protected-access
         assert collector.health.rc == -errno.EINVAL
         assert 'Multiple gateway groups found' in collector.health.msg
@@ -219,8 +219,8 @@ class TestNvmeofTopCollector:
         config = {'gateways': {
             'nvmeof.pool.group1': [{'service_url': '1.1.1.1:5500', 'group': 'group1'}],
         }}
-        with patch('dashboard.services.nvmeof_top_cli.NvmeofGatewaysConfig.get_gateways_config',
-                   return_value=config):
+        with patch.object(collector.mgr, 'get_gateways_config',
+                          return_value=config):
             collector._set_gateways('', '9.9.9.9')  # pylint: disable=protected-access
         assert collector.health.rc == -errno.ENOENT
         assert 'No gateway found matching address' in collector.health.msg
@@ -231,8 +231,8 @@ class TestNvmeofTopCollector:
         config = {'gateways': {
             'nvmeof.pool.group1': [{'service_url': '1.1.1.1:5500', 'group': 'group1'}],
         }}
-        with patch('dashboard.services.nvmeof_top_cli.NvmeofGatewaysConfig.get_gateways_config',
-                   return_value=config):
+        with patch.object(collector.mgr, 'get_gateways_config',
+                          return_value=config):
             collector._set_gateways('nonexistent', '')  # pylint: disable=protected-access
         assert collector.health.rc == -errno.ENOENT
         assert "Gateway group 'nonexistent' not found" in collector.health.msg
@@ -243,8 +243,8 @@ class TestNvmeofTopCollector:
         config = {'gateways': {
             'nvmeof.pool.group1': [{'service_url': '1.1.1.1:5500', 'group': 'group1'}],
         }}
-        with patch('dashboard.services.nvmeof_top_cli.NvmeofGatewaysConfig.get_gateways_config',
-                   return_value=config):
+        with patch.object(collector.mgr, 'get_gateways_config',
+                          return_value=config):
             collector._set_gateways('group2', '1.1.1.1')  # pylint: disable=protected-access
         assert collector.health.rc == -errno.EINVAL
         assert "Address '1.1.1.1' belongs to group 'group1', not 'group2'" in collector.health.msg
@@ -255,8 +255,8 @@ class TestNvmeofTopCollector:
         config = {'gateways': {
             'nvmeof.pool.group1': [{'service_url': '1.1.1.1:5500', 'group': 'group1'}],
         }}
-        with patch('dashboard.services.nvmeof_top_cli.NvmeofGatewaysConfig.get_gateways_config',
-                   return_value=config), \
+        with patch.object(collector.mgr, 'get_gateways_config',
+                          return_value=config), \
              patch.object(collector, '_get_client'):
             collector._set_gateways('', '')  # pylint: disable=protected-access
         assert collector.service == 'nvmeof.pool.group1'
@@ -269,8 +269,8 @@ class TestNvmeofTopCollector:
             'nvmeof.pool.group1': [{'service_url': '1.1.1.1:5500', 'group': 'group1'}],
             'nvmeof.pool.group2': [{'service_url': '2.2.2.2:5500', 'group': 'group2'}],
         }}
-        with patch('dashboard.services.nvmeof_top_cli.NvmeofGatewaysConfig.get_gateways_config',
-                   return_value=config), \
+        with patch.object(collector.mgr, 'get_gateways_config',
+                          return_value=config), \
              patch.object(collector, '_get_client'):
             collector._set_gateways('group1', '')  # pylint: disable=protected-access
         assert collector.service == 'nvmeof.pool.group1'
@@ -282,8 +282,8 @@ class TestNvmeofTopCollector:
         config = {'gateways': {
             'nvmeof.pool.group1': [{'service_url': '1.1.1.1:5500', 'group': 'group1'}],
         }}
-        with patch('dashboard.services.nvmeof_top_cli.NvmeofGatewaysConfig.get_gateways_config',
-                   return_value=config), \
+        with patch.object(collector.mgr, 'get_gateways_config',
+                          return_value=config), \
              patch.object(collector, '_get_client'):
             collector._set_gateways('', '1.1.1.1')  # pylint: disable=protected-access
         assert collector.service == 'nvmeof.pool.group1'
@@ -295,8 +295,8 @@ class TestNvmeofTopCollector:
         config = {'gateways': {
             'nvmeof.pool.group1': [{'service_url': '1.1.1.11:5500', 'group': 'group1'}],
         }}
-        with patch('dashboard.services.nvmeof_top_cli.NvmeofGatewaysConfig.get_gateways_config',
-                   return_value=config):
+        with patch.object(collector.mgr, 'get_gateways_config',
+                          return_value=config):
             collector._set_gateways('', '1.1.1.1')  # pylint: disable=protected-access
         assert collector.health.rc == -errno.ENOENT
 
@@ -306,8 +306,8 @@ class TestNvmeofTopCollector:
         config = {'gateways': {
             'nvmeof.pool.group1': [{'service_url': '1.1.1.1:5500', 'group': 'group1'}],
         }}
-        with patch('dashboard.services.nvmeof_top_cli.NvmeofGatewaysConfig.get_gateways_config',
-                   return_value=config), \
+        with patch.object(collector.mgr, 'get_gateways_config',
+                          return_value=config), \
              patch.object(collector, '_get_client'):
             collector._set_gateways('', '1.1.1.1', 5500)  # pylint: disable=protected-access
         assert collector.service == 'nvmeof.pool.group1'
@@ -318,8 +318,8 @@ class TestNvmeofTopCollector:
         config = {'gateways': {
             'nvmeof.pool.group1': [{'service_url': '1.1.1.1:5500', 'group': 'group1'}],
         }}
-        with patch('dashboard.services.nvmeof_top_cli.NvmeofGatewaysConfig.get_gateways_config',
-                   return_value=config):
+        with patch.object(collector.mgr, 'get_gateways_config',
+                          return_value=config):
             collector._set_gateways('', '1.1.1.1', 9999)  # pylint: disable=protected-access
         assert collector.health.rc == -errno.ENOENT
 
@@ -329,8 +329,8 @@ class TestNvmeofTopCollector:
         config = {'gateways': {
             'nvmeof.pool.group1': [{'service_url': '[::1]:5500', 'group': 'group1'}],
         }}
-        with patch('dashboard.services.nvmeof_top_cli.NvmeofGatewaysConfig.get_gateways_config',
-                   return_value=config), \
+        with patch.object(collector.mgr, 'get_gateways_config',
+                          return_value=config), \
              patch.object(collector, '_get_client'):
             collector._set_gateways('', '::1')  # pylint: disable=protected-access
         assert collector.service == 'nvmeof.pool.group1'
@@ -375,7 +375,7 @@ class TestNvmeofTopCollector:
         mock_namespace_info.namespaces = []
         with patch.object(collector, '_fetch_subsystems', return_value=mock_subsystems), \
              patch.object(collector, '_fetch_namespaces', return_value=mock_namespace_info), \
-             patch('dashboard.services.nvmeof_top_cli.get_lbg_gws_map', return_value={}):
+             patch('nvmeof.top.get_lbg_gws_map', return_value={}):
             collector.collect_io_data()
         assert collector.health.rc == -errno.ENOENT
         assert collector.health.msg == \
@@ -440,55 +440,46 @@ class TestNvmeofTopValidateArgs:
         assert self._validate(server_port=5500) is None
 
 
-class TestNvmeofTopCommands(CLICommandTestMixin):
-    @classmethod
-    def exec_nvmeof_cmd(cls, cmd, **kwargs):
-        return cls.exec_cmd('', prefix=cmd, **kwargs)
+class TestNvmeofTopCommands:
+    """The handlers are called directly with a stub module instance; the
+    NVMeoFCLICommand decorator returns the function unchanged."""
 
     def test_top_io_missing_nqn_returns_einval(self):
-        with pytest.raises(CmdException) as exc_info:
-            self.exec_nvmeof_cmd('nvmeof top io', nqn='', session_id='sess1')
-        assert exc_info.value.retcode == -errno.EINVAL
-        assert str(exc_info.value) == "Required argument '--nqn' missing"
+        res = nvmeof_top_io(MagicMock(), nqn='', session_id='sess1')
+        assert res.retval == -errno.EINVAL
+        assert res.stderr == "Required argument '--nqn' missing"
 
     def test_top_cpu_success(self):
         with patch.object(NVMeoFTopCPU, 'run', return_value=(0, 'cpu output\n')):
-            result = self.exec_nvmeof_cmd('nvmeof top cpu', session_id='sess1')
-            assert 'cpu output' in result
+            res = nvmeof_top_cpu(MagicMock(), session_id='sess1')
+            assert res.retval == 0
+            assert 'cpu output' in res.stdout
 
     def test_top_cpu_run_fail(self):
         with patch.object(NVMeoFTopCPU, 'run',
                           return_value=(-errno.ENOENT, 'error')):
-            with pytest.raises(CmdException) as exc_info:
-                self.exec_nvmeof_cmd('nvmeof top cpu', session_id='sess1')
-            assert exc_info.value.retcode == -errno.ENOENT
-            assert str(exc_info.value) == 'error'
+            res = nvmeof_top_cpu(MagicMock(), session_id='sess1')
+            assert res.retval == -errno.ENOENT
+            assert res.stderr == 'error'
 
     def test_top_io_success(self):
         with patch.object(NVMeoFTopIO, 'run', return_value=(0, 'io output\n')):
-            result = self.exec_nvmeof_cmd(
-                'nvmeof top io',
-                nqn='nqn.test',
-                session_id='sess2'
-            )
-            assert 'io output' in result
+            res = nvmeof_top_io(MagicMock(), nqn='nqn.test',
+                                session_id='sess2')
+            assert res.retval == 0
+            assert 'io output' in res.stdout
 
     def test_top_cpu_get_collector_fail(self):
-        with patch('dashboard.services.nvmeof_top_cli.get_collector',
+        with patch('nvmeof.top.get_collector',
                    side_effect=RuntimeError("boom")):
-            with pytest.raises(CmdException) as exc_info:
-                self.exec_nvmeof_cmd('nvmeof top cpu', session_id='sess1')
-            assert exc_info.value.retcode == -errno.EINVAL
-            assert str(exc_info.value) == 'boom'
+            res = nvmeof_top_cpu(MagicMock(), session_id='sess1')
+            assert res.retval == -errno.EINVAL
+            assert res.stderr == 'boom'
 
     def test_top_io_get_collector_fail(self):
-        with patch('dashboard.services.nvmeof_top_cli.get_collector',
+        with patch('nvmeof.top.get_collector',
                    side_effect=RuntimeError("boom")):
-            with pytest.raises(CmdException) as exc_info:
-                self.exec_nvmeof_cmd(
-                    'nvmeof top io',
-                    nqn='nqn.test',
-                    session_id='sess2'
-                )
-            assert exc_info.value.retcode == -errno.EINVAL
-            assert str(exc_info.value) == 'boom'
+            res = nvmeof_top_io(MagicMock(), nqn='nqn.test',
+                                session_id='sess2')
+            assert res.retval == -errno.EINVAL
+            assert res.stderr == 'boom'

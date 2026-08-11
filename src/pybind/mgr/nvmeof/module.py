@@ -26,23 +26,47 @@ DASHBOARD_STORE_KEY = "mgr/dashboard/_nvmeof_config"
 class NVMeoF(orchestrator.OrchestratorClientMixin, MgrModule):
     CLICommand = NVMeoFCLICommand
 
+    MIGRATION_RETRY_SECONDS = 60
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super(NVMeoF, self).__init__(*args, **kwargs)
         self._shutdown_event = threading.Event()
+        # guards the registry read-modify-write cycles and the collector
+        # cache; remote() calls arrive on their own threads
+        self._registry_lock = threading.Lock()
+        self.nvmeof_collectors: Dict[str, Any] = {}
 
     def serve(self) -> None:
-        self._migrate_dashboard_gateways()
+        # a mon error leaves the migration pending; keep retrying instead
+        # of serving an empty registry until the next mgr failover
+        while not self._shutdown_event.is_set():
+            self._migrate_dashboard_gateways()
+            if self.get_store(MIGRATION_DONE_KEY):
+                break
+            self._shutdown_event.wait(self.MIGRATION_RETRY_SECONDS)
         self._shutdown_event.wait()
 
     def shutdown(self) -> None:
         self._shutdown_event.set()
+        with self._registry_lock:
+            collectors = list(self.nvmeof_collectors.values())
+            self.nvmeof_collectors.clear()
+        for collector in collectors:
+            self._close_collector(collector)
+
+    @staticmethod
+    def _close_collector(collector: Any) -> None:
+        for client in getattr(collector, 'clients', {}).values():
+            channel = getattr(client, 'channel', None)
+            if channel is not None:
+                channel.close()
 
     def _migrate_dashboard_gateways(self) -> None:
         """Adopt the gateway registry from the dashboard's KV store, once.
 
-        The dashboard keeps rewriting its copy on every read, so the old
-        key is left in place; it gets removed a release after the
-        dashboard side stops writing it.
+        The old key is left in place so that downgrading to a release
+        whose dashboard still owns the registry finds its data where it
+        expects it; it gets removed a release later.
         """
         if self.get_store(MIGRATION_DONE_KEY):
             return
@@ -54,20 +78,106 @@ class NVMeoF(orchestrator.OrchestratorClientMixin, MgrModule):
             self.set_store(MIGRATION_DONE_KEY, 'v1')
             return
         if r != 0:
-            # mon unhappy; leave the flag unset so the next start retries
+            # mon unhappy; leave the flag unset so serve() retries
             logger.warning("cannot read %s from the mon (%d): %s",
                            DASHBOARD_STORE_KEY, r, err)
             return
-        if not self.get_store(GATEWAYS_STORE_KEY):
+        with self._registry_lock:
+            # the lock keeps a gateway registration arriving over remote()
+            # from being clobbered by the adopted copy
             try:
-                json.loads(out)
+                parsed = json.loads(out)
             except json.decoder.JSONDecodeError as e:
                 logger.error("not adopting malformed dashboard gateway "
                              "registry: %s", e)
             else:
-                self.set_store(GATEWAYS_STORE_KEY, out)
-                logger.info("adopted the gateway registry from the dashboard")
-        self.set_store(MIGRATION_DONE_KEY, 'v1')
+                if isinstance(parsed, dict) and isinstance(
+                        parsed.get('gateways'), dict):
+                    self._adopt_gateways(parsed['gateways'])
+                else:
+                    logger.error("not adopting dashboard gateway "
+                                 "registry of unexpected shape")
+            self.set_store(MIGRATION_DONE_KEY, 'v1')
+
+    def _adopt_gateways(self, adopted):
+        """Merge the dashboard's registry into ours, keeping what is here.
+
+        The store is not necessarily empty by the time this runs: a mon
+        that is briefly unavailable defers the migration, and cephadm
+        registers the gateways it can see over remote() meanwhile.
+        Overwriting with the dashboard copy would drop those, and
+        skipping the adoption because the store is non-empty would drop
+        every gateway cephadm does not happen to re-register just then -
+        a daemon that is down, or a group it is not reconciling. So
+        merge, and let what is already registered win.
+        """
+        config = self._load_gateways()
+        gateways = config.setdefault('gateways', {})
+        adopted_daemons = 0
+        for service_name, daemons in adopted.items():
+            if not isinstance(daemons, list):
+                # v19.2.0 wrote a dict here, carrying no daemon to keep
+                continue
+            current = gateways.get(service_name)
+            if not isinstance(current, list):
+                current = []
+                gateways[service_name] = current
+            known = {daemon.get('daemon_name') for daemon in current
+                     if isinstance(daemon, dict)}
+            for daemon in daemons:
+                if not isinstance(daemon, dict):
+                    continue
+                if daemon.get('daemon_name') in known:
+                    continue
+                current.append(daemon)
+                known.add(daemon.get('daemon_name'))
+                adopted_daemons += 1
+        self._save_gateways(config)
+        logger.info("adopted %d gateway(s) from the dashboard registry",
+                    adopted_daemons)
+
+    def get_nvmeof_collector(self, session_id: str = '', ttl: int = 3600):
+        import time
+
+        from .top import NvmeofTopCollector
+        STALE_POLL_THRESHOLD = 5  # expire if 5 poll intervals passed without activity
+
+        def _expire_old_sessions():
+            now = time.time()
+            expired = []
+
+            for _id in list(self.nvmeof_collectors.keys()):
+                collector = self.nvmeof_collectors[_id]
+                delay = collector.delay
+                if delay < 1:  # for first poll iteration
+                    expire_time = collector.timestamp + ttl
+                else:
+                    expire_time = collector.timestamp + (STALE_POLL_THRESHOLD * delay)
+                if now > expire_time:
+                    expired.append(_id)
+
+            for _id in expired:
+                collector = self.nvmeof_collectors.pop(_id, None)
+                if collector is not None:
+                    self._close_collector(collector)
+
+        if NvmeofTopCollector is None:
+            logger.error("nvmeof top collector is unavailable "
+                         "(grpc bindings missing)")
+            return None
+
+        if not session_id:
+            return None
+
+        with self._registry_lock:
+            _expire_old_sessions()
+            if session_id not in self.nvmeof_collectors:
+                self.nvmeof_collectors[session_id] = NvmeofTopCollector(self)
+            collector = self.nvmeof_collectors[session_id]
+            # count the fetch as activity so a concurrent expiry scan
+            # cannot close a collector that is about to be used
+            collector.timestamp = time.time()
+            return collector
 
     # ---- gateway command bridge -----------------------------------------
 
@@ -77,9 +187,16 @@ class NVMeoF(orchestrator.OrchestratorClientMixin, MgrModule):
         Exception types do not survive remote(), so failures come back
         as an error envelope the caller re-raises on its side.
         """
-        from . import api
+        api_mod = globals().get('api')
+        if api_mod is None:
+            # the guarded import at the end of this file failed
+            return {'__nvmeof_error__': {
+                'kind': 'internal', 'code': None,
+                'msg': 'gateway commands are unavailable '
+                       '(grpc bindings missing)'}}
+        api_mod.reset_partial_failure()
         try:
-            return getattr(api, method)(self, **kwargs)
+            result = getattr(api_mod, method)(self, **kwargs)
         except NvmeofGatewayUnavailableError as e:
             return {'__nvmeof_error__': {'kind': 'unavailable',
                                          'msg': str(e), 'code': e.code}}
@@ -89,6 +206,15 @@ class NVMeoF(orchestrator.OrchestratorClientMixin, MgrModule):
         except NvmeofError as e:
             return {'__nvmeof_error__': {'kind': 'input',
                                          'msg': str(e), 'code': e.code}}
+        except Exception as e:  # pylint: disable=broad-except
+            # a raw exception would cross remote() as an opaque
+            # RuntimeError; report it as an internal error instead
+            logger.exception("api_call %s failed", method)
+            return {'__nvmeof_error__': {'kind': 'internal',
+                                         'msg': str(e), 'code': None}}
+        if api_mod.partial_failure_flagged():
+            return {'__nvmeof_partial__': result}
+        return result
 
     # ---- registry lookups for the grpc client ---------------------------
 
@@ -182,6 +308,12 @@ class NVMeoF(orchestrator.OrchestratorClientMixin, MgrModule):
 
     def gateway_cfg_add(self, service_url: str, name: str, group: str,
                         daemon_name: str) -> Tuple[int, str, str]:
+        with self._registry_lock:
+            return self._gateway_cfg_add(service_url, name, group,
+                                         daemon_name)
+
+    def _gateway_cfg_add(self, service_url: str, name: str, group: str,
+                         daemon_name: str) -> Tuple[int, str, str]:
         config = self._load_gateways()
 
         if name in config.get('gateways', {}):
@@ -196,7 +328,10 @@ class NVMeoF(orchestrator.OrchestratorClientMixin, MgrModule):
                     if 'daemon_name' not in gateway:
                         gateway['daemon_name'] = daemon_name
                         break
-                    if gateway['service_url'] == service_url:
+                for gateway in existing_gateways:
+                    if gateway.get('service_url') == service_url:
+                        # persists a legacy entry backfilled above
+                        self._save_gateways(config)
                         return 0, 'Success', ''
 
         new_gateway = {
@@ -215,6 +350,11 @@ class NVMeoF(orchestrator.OrchestratorClientMixin, MgrModule):
 
     def gateway_cfg_rm(self, name: str,
                        daemon_name: Optional[str] = None) -> Tuple[int, str, str]:
+        with self._registry_lock:
+            return self._gateway_cfg_rm(name, daemon_name)
+
+    def _gateway_cfg_rm(self, name: str,
+                        daemon_name: Optional[str] = None) -> Tuple[int, str, str]:
         config = self._load_gateways()
         if name not in config['gateways']:
             return (-errno.EINVAL, '',
@@ -225,7 +365,7 @@ class NVMeoF(orchestrator.OrchestratorClientMixin, MgrModule):
         else:
             # remove the daemon from the list of gateways
             config['gateways'][name] = [daemon for daemon in config['gateways'][name]
-                                        if daemon['daemon_name'] != daemon_name]
+                                        if daemon.get('daemon_name') != daemon_name]
 
             # if there are no more daemons in the list, remove the gateway
             if not config['gateways'][name]:
@@ -272,3 +412,5 @@ try:
     from . import api  # noqa: F401,E402 pylint: disable=wrong-import-position
 except ImportError as e:
     logger.warning("gateway commands unavailable: %s", e)
+
+from . import top  # noqa: F401,E402 pylint: disable=wrong-import-position

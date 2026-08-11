@@ -9,29 +9,37 @@ import logging
 import time
 from typing import Any, Optional
 
+import orchestrator
 from mgr_module import HandleCommandResult
+from orchestrator import OrchestratorError
 
-from .. import mgr
-from ..cli import DBCLICommand
+from .cli import NVMeoFCLICommand
 
 logger = logging.getLogger(__name__)
 
 NvmeofTopCollector = None
 
 try:
-    from .nvmeof_conf import NvmeofGatewaysConfig
-    from .nvmeof_client import NVMeoFClient
-    from .nvmeof_conf import get_pool_group_name
+    from .client import NVMeoFClient
 except ImportError as e:
     logger.error("Failed to import NVMeoFClient and related components: %s", e)
 else:
     MAX_SESSION_TTL = 60 * 60
 
-    def get_collector(session_id: Optional[str]):
+    def get_collector(mgr, session_id: Optional[str]):
         return mgr.get_nvmeof_collector(session_id, MAX_SESSION_TTL)
 
-    def get_lbg_gws_map(service_name: str):
-        pool_group = get_pool_group_name(service_name)
+    def get_pool_group_name(mgr, service_name: str):
+        try:
+            services = orchestrator.raise_if_exception(
+                mgr.describe_service(service_name=service_name))
+            spec = services[0].spec
+            return (spec.pool, spec.group)
+        except (OrchestratorError, IndexError):
+            return None
+
+    def get_lbg_gws_map(mgr, service_name: str):
+        pool_group = get_pool_group_name(mgr, service_name)
         if not pool_group:
             logger.error("Error getting pool name and group name of the service")
             return {}
@@ -137,7 +145,8 @@ else:
             self.idle_rate = self.idle_secs.rate(delay)
 
     class NvmeofTopCollector:  # type: ignore[no-redef]  # noqa  # pylint: disable=function-redefined,too-many-instance-attributes
-        def __init__(self):
+        def __init__(self, mgr):
+            self.mgr = mgr
             self.tool: Any = None
             self.subsystem_nqn = ''
             self.service = ''
@@ -367,7 +376,8 @@ else:
         def _get_client(self, group, server_addr):
             key = (group, server_addr)
             if key not in self.clients:
-                self.clients[key] = NVMeoFClient(group, server_addr)
+                self.clients[key] = NVMeoFClient(self.mgr, gw_group=group,
+                                                 server_address=server_addr)
             return self.clients[key]
 
         def _set_gateways(self, group_filter: str, addr_filter: str,
@@ -375,7 +385,7 @@ else:
             if self.service and self.group:
                 return
 
-            services = NvmeofGatewaysConfig.get_gateways_config().get("gateways", {})
+            services = self.mgr.get_gateways_config().get("gateways", {})
 
             if not services:
                 self.health.rc = -errno.ENOENT
@@ -495,7 +505,7 @@ else:
                 return
 
             if not self.tool.args.get('server_address'):
-                self.lbg_to_gateway = get_lbg_gws_map(self.service)
+                self.lbg_to_gateway = get_lbg_gws_map(self.mgr, self.service)
                 if not self.lbg_to_gateway:
                     self.health.rc = -errno.ENOENT
                     self.health.msg = (
@@ -541,7 +551,8 @@ else:
                 err = self._validate_args()
                 if err:
                     return err
-                self.collector = get_collector(self.args.get('session_id'))
+                self.collector = get_collector(self.args.get('mgr'),
+                                               self.args.get('session_id'))
                 if self.collector is None:
                     return (-errno.EINVAL, "Unable to initialise collector")
                 self.collector.initialise(self)
@@ -665,8 +676,8 @@ else:
 
             return ''.join(rows)
 
-    @DBCLICommand.Read('nvmeof top cpu', poll=True)
-    def nvmeof_top_cpu(_, server_address: str = '', server_port: Optional[int] = None,
+    @NVMeoFCLICommand.Read('nvmeof top cpu', poll=True)
+    def nvmeof_top_cpu(mgr, server_address: str = '', server_port: Optional[int] = None,
                        gw_group: str = '',
                        descending: bool = False, sort_by: str = 'Thread Name',
                        with_timestamp: bool = False,
@@ -691,14 +702,15 @@ else:
             'gw_group': gw_group,
             'period': period,
             'session_id': session_id,
+            'mgr': mgr,
         }
         rc, output = NVMeoFTopCPU(args).run()
         if rc != 0:
             return HandleCommandResult(stderr=output, retval=rc)
         return HandleCommandResult(stdout=output, retval=rc)
 
-    @DBCLICommand.Read('nvmeof top io', poll=True)
-    def nvmeof_top_io(_, nqn: str = '',
+    @NVMeoFCLICommand.Read('nvmeof top io', poll=True)
+    def nvmeof_top_io(mgr, nqn: str = '',
                       server_address: str = '', server_port: Optional[int] = None,
                       gw_group: str = '',
                       descending: bool = False, sort_by: str = 'NSID',
@@ -731,6 +743,7 @@ else:
             'gw_group': gw_group,
             'period': period,
             'session_id': session_id,
+            'mgr': mgr,
         }
         rc, output = NVMeoFTopIO(args).run()
         if rc != 0:
