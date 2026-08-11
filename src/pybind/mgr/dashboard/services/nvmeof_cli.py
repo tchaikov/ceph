@@ -11,7 +11,6 @@ from mgr_module import CLICheckNonemptyFileInput, HandleCommandResult
 from nvmeof.formatter import AnnotatedDataTextOutputFormatter
 
 from ..cli import DBCLICommand
-from ..exceptions import DashboardException
 from ..rest_client import RequestException
 from .nvmeof_conf import ManagedByOrchestratorException, \
     NvmeofGatewayAlreadyExists, NvmeofGatewaysConfig
@@ -55,38 +54,6 @@ def remove_nvmeof_gateway(_, name: str, daemon_name: str = ''):
         return 0, 'Success', ''
     except ManagedByOrchestratorException as ex:
         return -errno.EINVAL, '', str(ex)
-
-
-
-
-def resolve_nvmeof_server_address(
-    *,
-    server_address: Optional[str] = None,
-    traddr: Optional[str] = None,
-    require: bool = False,
-) -> Optional[str]:
-    sa = (server_address or "").strip() or None
-    ta = (traddr or "").strip() or None
-
-    if sa and ta:
-        raise DashboardException(
-            msg="Pass either 'server_address' or deprecated 'traddr', not both.",
-            code="server_address_and_traddr_mutually_exclusive",
-            http_status_code=400,
-            component="nvmeof",
-        )
-
-    resolved = sa or ta
-
-    if require and not resolved:
-        raise DashboardException(
-            msg="Missing required gateway address: 'server_address' (or deprecated 'traddr').",
-            code="missing_server_address",
-            http_status_code=400,
-            component="nvmeof",
-        )
-
-    return resolved
 
 
 

@@ -23,6 +23,11 @@ try:
     import grpc._channel  # type: ignore
     from google.protobuf.message import Message  # type: ignore
 
+    from nvmeof.client import \
+        handle_nvmeof_error as _handle_nvmeof_error_core  # type: ignore
+    from nvmeof.errors import NvmeofError, NvmeofGatewayUnavailableError, \
+        NvmeofStatusError
+
     from .proto import gateway_pb2 as pb2  # type: ignore
     from .proto import gateway_pb2_grpc as pb2_grpc  # type: ignore
 except ImportError:
@@ -121,36 +126,36 @@ else:
     }
 
     def handle_nvmeof_error(func: Callable[..., Message]) -> Callable[..., Message]:
+        """Adapt the module-level error handling to the REST API: the
+        nvmeof module raises transport-agnostic errors, this maps them
+        onto DashboardException with the right HTTP status."""
+        core = _handle_nvmeof_error_core(func)
+
         @functools.wraps(func)
         def wrapper(*args, **kwargs) -> Message:
             try:
-                response = func(*args, **kwargs)
-            except grpc._channel._InactiveRpcError as e:  # pylint: disable=protected-access
+                return core(*args, **kwargs)
+            except NvmeofGatewayUnavailableError as e:
                 raise DashboardException(
-                    msg=e.details(),
-                    code=e.code(),
+                    msg=str(e),
+                    code=e.code,
                     http_status_code=504,
                     component="nvmeof",
                 )
-
-            status = getattr(response, "status", None)
-            error_message = getattr(response, "error_message", None)
-
-            # Normalize the response so callers do not see a non-zero status in
-            # a successful HTTP response.
-            if status == errno.EREMOTE:
-                response.status = 0
-                if hasattr(response, "error_message"):
-                    response.error_message = ""
-                return response
-            if status not in (None, 0):
+            except NvmeofStatusError as e:
                 raise DashboardException(
-                    msg=error_message or "NVMeoF operation failed",
-                    code=status,
-                    http_status_code=NVMeoFError2HTTP.get(status, 400),  # type: ignore[arg-type]
+                    msg=str(e),
+                    code=e.code,
+                    http_status_code=NVMeoFError2HTTP.get(e.code, 400),  # type: ignore[arg-type]
                     component="nvmeof",
                 )
-            return response
+            except NvmeofError as e:
+                raise DashboardException(
+                    msg=str(e),
+                    code=e.code,
+                    http_status_code=400,
+                    component="nvmeof",
+                )
 
         return wrapper
 

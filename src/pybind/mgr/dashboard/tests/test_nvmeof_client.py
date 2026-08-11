@@ -625,8 +625,8 @@ class TestHandleNvmeofError:
             def code(self):
                 return self._code
 
-        # Mock grpc module
-        with patch('dashboard.services.nvmeof_client.grpc') as mock_grpc:
+        # Mock grpc module where the core error handler lives
+        with patch('nvmeof.client.grpc') as mock_grpc:
             # pylint: disable=protected-access
             mock_grpc._channel._InactiveRpcError = MockInactiveRpcError
 

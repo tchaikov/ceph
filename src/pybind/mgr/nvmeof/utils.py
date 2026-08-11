@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
+
+from .errors import NvmeofInvalidInputError
 
 MULTIPLES = ['', "K", "M", "G", "T", "P"]
 UNITS = {
@@ -77,3 +79,30 @@ def convert_from_bytes(num_in_bytes):
         size_str = f"{size:.1f}"
 
     return f"{size_str}{units[unit_index]}"
+
+
+def resolve_nvmeof_server_address(
+    *,
+    server_address: Optional[str] = None,
+    traddr: Optional[str] = None,
+    require: bool = False,
+) -> Optional[str]:
+    sa = (server_address or "").strip() or None
+    ta = (traddr or "").strip() or None
+
+    if sa and ta:
+        raise NvmeofInvalidInputError(
+            "Pass either 'server_address' or deprecated 'traddr', not both.",
+            code="server_address_and_traddr_mutually_exclusive",
+        )
+
+    resolved = sa or ta
+
+    if require and not resolved:
+        raise NvmeofInvalidInputError(
+            "Missing required gateway address: "
+            "'server_address' (or deprecated 'traddr').",
+            code="missing_server_address",
+        )
+
+    return resolved

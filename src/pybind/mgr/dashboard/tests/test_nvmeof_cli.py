@@ -16,8 +16,10 @@ from nvmeof.formatter import AnnotatedDataTextOutputFormatter
 from nvmeof.utils import convert_from_bytes, convert_to_bytes, \
     format_host_updates
 
-from ..services.nvmeof_cli import NvmeofCLICommand, \
-    resolve_nvmeof_server_address
+from nvmeof.errors import NvmeofInvalidInputError
+from nvmeof.utils import resolve_nvmeof_server_address
+
+from ..services.nvmeof_cli import NvmeofCLICommand
 from ..tests import CLICommandTestMixin
 
 
@@ -1859,28 +1861,24 @@ class TestResolveNvmeofServerAddress:
         ) == "10.0.0.2"
 
     def test_resolve_rejects_both_server_address_and_traddr(self):
-        with pytest.raises(DashboardException) as excinfo:
+        with pytest.raises(NvmeofInvalidInputError) as excinfo:
             resolve_nvmeof_server_address(
                 server_address="10.0.0.1",
                 traddr="10.0.0.2",
                 require=False,
             )
 
-        err = excinfo.value
-        assert err.status == 400
-        assert err.code == "server_address_and_traddr_mutually_exclusive"
+        assert excinfo.value.code == "server_address_and_traddr_mutually_exclusive"
 
     def test_resolve_require_true_rejects_missing(self):
-        with pytest.raises(DashboardException) as excinfo:
+        with pytest.raises(NvmeofInvalidInputError) as excinfo:
             resolve_nvmeof_server_address(
                 server_address=None,
                 traddr=None,
                 require=True,
             )
 
-        err = excinfo.value
-        assert err.status == 400
-        assert err.code == "missing_server_address"
+        assert excinfo.value.code == "missing_server_address"
 
     def test_resolve_require_false_allows_missing(self):
         assert resolve_nvmeof_server_address(

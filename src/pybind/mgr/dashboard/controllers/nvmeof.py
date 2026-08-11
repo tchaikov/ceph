@@ -12,10 +12,9 @@ from ..exceptions import DashboardException
 from nvmeof import model
 from ..security import Scope
 from nvmeof.utils import convert_to_bytes, escape_address_if_ipv6, \
-    format_host_updates
+    format_host_updates, resolve_nvmeof_server_address
 
-from ..services.nvmeof_cli import NvmeofCLICommand, \
-    resolve_nvmeof_server_address
+from ..services.nvmeof_cli import NvmeofCLICommand
 from ..services.nvmeof_client import get_gateway_locations
 from ..services.orchestrator import OrchClient
 from ..tools import str_to_bool
