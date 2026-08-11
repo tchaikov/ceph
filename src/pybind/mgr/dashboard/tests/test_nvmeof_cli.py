@@ -12,9 +12,12 @@ from ..cli import DBCLICommand
 from ..controllers import EndpointDoc
 from ..exceptions import DashboardException
 from nvmeof.model import CliEmptyMessage, CliFieldTransformer, CliFlags, CliHeader
-from ..services.nvmeof_cli import AnnotatedDataTextOutputFormatter, \
-    NvmeofCLICommand, convert_from_bytes, convert_to_bytes, \
-    format_host_updates, resolve_nvmeof_server_address
+from nvmeof.formatter import AnnotatedDataTextOutputFormatter
+from nvmeof.utils import convert_from_bytes, convert_to_bytes, \
+    format_host_updates
+
+from ..services.nvmeof_cli import NvmeofCLICommand, \
+    resolve_nvmeof_server_address
 from ..tests import CLICommandTestMixin
 
 

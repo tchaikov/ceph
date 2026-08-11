@@ -5,9 +5,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ..exceptions import DashboardException
+from nvmeof import converters as nvmeof_converters
+
 from ..services import nvmeof_client
-from ..services.nvmeof_client import MaxRecursionDepthError, NVMeoFClient, \
-    convert_to_model, handle_nvmeof_error, obj_to_namedtuple, pick
+from nvmeof.converters import MaxRecursionDepthError, convert_to_model, \
+    obj_to_namedtuple
+
+from ..services.nvmeof_client import NVMeoFClient, handle_nvmeof_error, pick
 
 
 class TestObjToNamedTuple:
@@ -326,7 +330,7 @@ def fixture_empty_func():
 
 @pytest.fixture(name="disable_message_to_dict")
 def fixture_disable_message_to_dict(monkeypatch):
-    monkeypatch.setattr(nvmeof_client, 'MessageToDict', lambda x, **kwargs: x)
+    monkeypatch.setattr(nvmeof_converters, 'MessageToDict', lambda x, **kwargs: x)
 
 
 class TestConvertToModel:

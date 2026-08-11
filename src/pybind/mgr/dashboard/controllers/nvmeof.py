@@ -11,8 +11,10 @@ from .. import mgr
 from ..exceptions import DashboardException
 from nvmeof import model
 from ..security import Scope
-from ..services.nvmeof_cli import NvmeofCLICommand, convert_to_bytes, \
-    escape_address_if_ipv6, format_host_updates, \
+from nvmeof.utils import convert_to_bytes, escape_address_if_ipv6, \
+    format_host_updates
+
+from ..services.nvmeof_cli import NvmeofCLICommand, \
     resolve_nvmeof_server_address
 from ..services.nvmeof_client import get_gateway_locations
 from ..services.orchestrator import OrchClient
@@ -29,8 +31,10 @@ NVME_SCHEMA = {
 }
 
 try:
-    from ..services.nvmeof_client import NVMeoFClient, convert_to_model, \
-        empty_response, handle_nvmeof_error, namedtuple_to_dict, pick
+    from nvmeof.converters import convert_to_model, namedtuple_to_dict
+
+    from ..services.nvmeof_client import NVMeoFClient, empty_response, \
+        handle_nvmeof_error, pick
 except ImportError as e:
     logger.error("Failed to import NVMeoFClient and related components: %s", e)
 else:
