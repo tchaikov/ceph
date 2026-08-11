@@ -2325,7 +2325,6 @@ else:
             "NVMe-oF Subsystem Host Allowlist")
     class NVMeoFHost(RESTController):
         @pick('hosts')
-        @NvmeofCLICommand("nvmeof host list", model.HostsInfo)
         @EndpointDoc(
             "List all allowed hosts for an NVMeoF subsystem",
             parameters={
@@ -2335,34 +2334,15 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.HostsInfo, finalize=_update_hosts)
-        @handle_nvmeof_error
         def list(
             self, nqn: str,
             gw_group: Optional[str] = None, server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.list_hosts(
-                NVMeoFClient.pb2.list_hosts_req(subsystem=nqn, clear_alerts=False)
-            )
+            return _api('host_list', nqn=nqn, gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
         @empty_response
-        @NvmeofCLICommand(
-            "nvmeof host add",
-            model.RequestStatus,
-            success_message_fn=partial(
-                format_host_updates,
-                template_wildcard="Allowing open host access to {nqn}: Successful",
-                template_item="Adding host {host_nqn} to {nqn}: Successful",
-            ),
-        )
         @EndpointDoc(
             "Allow hosts to access an NVMeoF subsystem",
             parameters={
@@ -2373,8 +2353,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def create(
             self, nqn: str, host_nqn: str, dhchap_key: Optional[str] = None,
             dhchap_controller_key: Optional[str] = None,
@@ -2382,31 +2360,13 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.add_host(
-                NVMeoFClient.pb2.add_host_req(
-                    subsystem_nqn=nqn, host_nqn=host_nqn,
-                    dhchap_key=dhchap_key,
-                    dhchap_ctrlr_key=dhchap_controller_key,
-                    psk=psk)
-            )
+            return _api('host_add', nqn=nqn, host_nqn=host_nqn,
+                        dhchap_key=dhchap_key,
+                        dhchap_controller_key=dhchap_controller_key,
+                        psk=psk, gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
         @empty_response
-        @NvmeofCLICommand(
-            "nvmeof host del",
-            model.RequestStatus,
-            success_message_fn=partial(
-                format_host_updates,
-                template_wildcard="Disabling open host access to {nqn}: Successful",
-                template_item="Removing host {host_nqn} access from {nqn}: Successful",
-            ),
-        )
         @EndpointDoc(
             "Disallow hosts from accessing an NVMeoF subsystem",
             parameters={
@@ -2425,34 +2385,18 @@ else:
                     True, False),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def delete(self, nqn: str, host_nqn: str, force: Optional[bool] = False,
                    gw_group: Optional[str] = None,
                    server_address: Optional[str] = None,
                    traddr: Optional[str] = None,
                    keep_connections: Optional[bool] = False):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.remove_host(
-                NVMeoFClient.pb2.remove_host_req(subsystem_nqn=nqn, host_nqn=host_nqn, force=force,
-                                                 keep_connections=keep_connections)
-            )
+            return _api('host_del', nqn=nqn, host_nqn=host_nqn, force=force,
+                        gw_group=gw_group, server_address=server_address,
+                        traddr=traddr, keep_connections=keep_connections)
 
         @empty_response
         @Endpoint('PUT', '{host_nqn}/change_key')
         @UpdatePermission
-        @NvmeofCLICommand(
-            "nvmeof host change_key",
-            model.RequestStatus,
-            success_message_template=("Changing key for host {host_nqn} "
-                                      "on subsystem {nqn}: Successful")
-        )
         @EndpointDoc(
             "Change host DH-HMAC-CHAP key",
             parameters={
@@ -2464,37 +2408,18 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def change_key(
             self, nqn: str, host_nqn: str, dhchap_key: str,
             gw_group: Optional[str] = None, server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.change_host_key(
-                NVMeoFClient.pb2.change_host_key_req(
-                    subsystem_nqn=nqn,
-                    host_nqn=host_nqn,
-                    dhchap_key=dhchap_key,
-                    dhchap_ctrlr_key="-")
-            )
+            return _api('host_change_key', nqn=nqn, host_nqn=host_nqn,
+                        dhchap_key=dhchap_key, gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
         @empty_response
         @Endpoint('PUT', '{host_nqn}/change_controller_key')
         @UpdatePermission
-        @NvmeofCLICommand(
-            "nvmeof host change_controller_key",
-            model.RequestStatus,
-            success_message_template=("Changing controller key for host {host_nqn} "
-                                      "on subsystem {nqn}: Successful")
-        )
         @EndpointDoc(
             "Change host DH-HMAC-CHAP controller key",
             parameters={
@@ -2506,36 +2431,20 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def change_controller_key(
             self, nqn: str, host_nqn: str, dhchap_controller_key: str,
             gw_group: Optional[str] = None, server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.change_host_key(
-                NVMeoFClient.pb2.change_host_key_req(subsystem_nqn=nqn,
-                                                     host_nqn=host_nqn,
-                                                     dhchap_key="-",
-                                                     dhchap_ctrlr_key=dhchap_controller_key)
-            )
+            return _api('host_change_controller_key', nqn=nqn,
+                        host_nqn=host_nqn,
+                        dhchap_controller_key=dhchap_controller_key,
+                        gw_group=gw_group, server_address=server_address,
+                        traddr=traddr)
 
         @empty_response
         @Endpoint('PUT', '{host_nqn}/del_key')
         @UpdatePermission
-        @NvmeofCLICommand(
-            "nvmeof host del_key",
-            model.RequestStatus,
-            success_message_template=("Deleting key for host {host_nqn} "
-                                      "on subsystem {nqn}: Successful")
-        )
         @EndpointDoc(
             "Delete host DH-HMAC-CHAP key",
             parameters={
@@ -2546,36 +2455,18 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def del_key(
             self, nqn: str, host_nqn: str, gw_group: Optional[str] = None,
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.change_host_key(
-                NVMeoFClient.pb2.change_host_key_req(subsystem_nqn=nqn,
-                                                     host_nqn=host_nqn,
-                                                     dhchap_key=None,
-                                                     dhchap_ctrlr_key="-")
-            )
+            return _api('host_del_key', nqn=nqn, host_nqn=host_nqn,
+                        gw_group=gw_group, server_address=server_address,
+                        traddr=traddr)
 
         @empty_response
         @Endpoint('PUT', '{host_nqn}/del_controller_key')
         @UpdatePermission
-        @NvmeofCLICommand(
-            "nvmeof host del_controller_key",
-            model.RequestStatus,
-            success_message_template=("Deleting controller key for host {host_nqn} "
-                                      "on subsystem {nqn}: Successful")
-        )
         @EndpointDoc(
             "Delete host DH-HMAC-CHAP controller key",
             parameters={
@@ -2586,26 +2477,14 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def del_controller_key(
             self, nqn: str, host_nqn: str, gw_group: Optional[str] = None,
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.change_host_key(
-                NVMeoFClient.pb2.change_host_key_req(subsystem_nqn=nqn,
-                                                     host_nqn=host_nqn,
-                                                     dhchap_key="-",
-                                                     dhchap_ctrlr_key=None)
-            )
+            return _api('host_del_controller_key', nqn=nqn, host_nqn=host_nqn,
+                        gw_group=gw_group, server_address=server_address,
+                        traddr=traddr)
 
     def _update_connections(connection_list_resp):
         conns = connection_list_resp.get('connections')
