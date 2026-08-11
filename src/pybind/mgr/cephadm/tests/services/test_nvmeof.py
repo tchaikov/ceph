@@ -61,6 +61,18 @@ class FakeMgr:
         return '1.2.3.4'
 
 
+def _fake_nvmeof_remote(_self, module, method, *args, **kwargs):
+    """The nvmeof mgr module is not loaded in unit tests; answer with the
+    shapes its registry methods return. This replaces remote() as a
+    whole, so calls to other modules (the deploy path talks to
+    'progress') have to fall through."""
+    if module != 'nvmeof':
+        return None
+    if method == 'get_gateways_config':
+        return {'gateways': {}}
+    return 0, '', ''
+
+
 class TestNVMEOFService:
 
     mgr = FakeMgr()
@@ -85,6 +97,7 @@ class TestNVMEOFService:
     @patch("cephadm.inventory.Inventory.get_addr", lambda _, __: '192.168.100.100')
     @patch("cephadm.serve.CephadmServe._run_cephadm")
     @patch("cephadm.module.CephadmOrchestrator.get_unique_name")
+    @patch("cephadm.module.CephadmOrchestrator.remote", new=_fake_nvmeof_remote)
     def test_nvmeof_config(self, _get_name, _run_cephadm, cephadm_module: CephadmOrchestrator):
 
         pool = 'testpool'
@@ -326,6 +339,7 @@ timeout = 1.0\n"""
            lambda instance, spec, daemon_spec, label: TLSCredentials('client_cert', 'client_key', 'nvmeof_root_ca'),
            )
     @patch("cephadm.module.CephadmOrchestrator.get_unique_name")
+    @patch("cephadm.module.CephadmOrchestrator.remote", new=_fake_nvmeof_remote)
     def test_nvmeof_config_when_ssl_and_auth_enabled(
         self,
         _get_name,
@@ -525,6 +539,7 @@ timeout = 1.0
            lambda instance, dspec, ips=None, fqdns=None: TLSCredentials('mycert', 'mykey'),
            )
     @patch("cephadm.module.CephadmOrchestrator.get_unique_name")
+    @patch("cephadm.module.CephadmOrchestrator.remote", new=_fake_nvmeof_remote)
     def test_nvmeof_config_when_ssl_enabled(
         self,
         _get_name,

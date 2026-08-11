@@ -210,52 +210,51 @@ class NvmeofService(CephService):
                 err_msg = (f"Unable to send monitor command {cmd}, error {err}")
                 logger.error(err_msg)
                 raise OrchestratorError(err_msg)
-        super().daemon_check_post(daemon_descrs)
+        # deliberately not calling super(): the base implementation only
+        # configures the dashboard when that module is enabled, while the
+        # gateway registry has to be kept current either way
+        self._update_gateway_registry(daemon_descrs)
 
-    def config_dashboard(self, daemon_descrs: List[DaemonDescription]) -> None:
-        def get_set_cmd_dicts(out: str) -> List[dict]:
+    def _update_gateway_registry(self, daemon_descrs: List[DaemonDescription]) -> None:
+        try:
+            gateways = self.mgr.remote('nvmeof', 'get_gateways_config').get('gateways', {})
+        except Exception as e:  # pylint: disable=broad-except
+            logger.error(f'Failed to read the gateway registry from the nvmeof module: {e}')
+            return
 
-            try:
-                gateways = json.loads(out).get('gateways', [])
-            except json.decoder.JSONDecodeError as e:
-                logger.error(f'Error while trying to parse gateways JSON: {e}')
-                return []
+        for dd in daemon_descrs:
+            spec = cast(NvmeofServiceSpec,
+                        self.mgr.spec_store.all_specs.get(dd.service_name(), None))
+            service_name = dd.service_name()
+            if dd.hostname is None:
+                err_msg = ('Trying to register nvmeof gateways but no hostname is defined')
+                logger.error(err_msg)
+                raise OrchestratorError(err_msg)
 
-            cmd_dicts = []
-            for dd in daemon_descrs:
-                spec = cast(NvmeofServiceSpec,
-                            self.mgr.spec_store.all_specs.get(dd.service_name(), None))
-                service_name = dd.service_name()
-                if dd.hostname is None:
-                    err_msg = ('Trying to config_dashboard nvmeof but no hostname is defined')
-                    logger.error(err_msg)
-                    raise OrchestratorError(err_msg)
+            if not spec:
+                logger.warning(f'No ServiceSpec found for {service_name}')
+                continue
 
-                if not spec:
-                    logger.warning(f'No ServiceSpec found for {service_name}')
-                    continue
-
-                ip = utils.resolve_ip(self.mgr.inventory.get_addr(dd.hostname))
-                if type(ip_address(ip)) is IPv6Address:
-                    ip = f'[{ip}]'
-                service_url = '{}:{}'.format(ip, spec.port or '5500')
-                gw = gateways.get(dd.hostname)
-                if not gw or gw['service_url'] != service_url:
-                    logger.info(f'Adding NVMeoF gateway {service_url} to Dashboard')
-                    cmd_dicts.append({
-                        'prefix': 'dashboard nvmeof-gateway-add',
-                        'inbuf': service_url,
-                        'name': service_name,
-                        'group': spec.group if spec.group else '',
-                        'daemon_name': dd.name()
-                    })
-            return cmd_dicts
-
-        self._check_and_set_dashboard(
-            service_name='nvmeof',
-            get_cmd='dashboard nvmeof-gateway-list',
-            get_set_cmd_dicts=get_set_cmd_dicts
-        )
+            ip = utils.resolve_ip(self.mgr.inventory.get_addr(dd.hostname))
+            if type(ip_address(ip)) is IPv6Address:
+                ip = f'[{ip}]'
+            service_url = '{}:{}'.format(ip, spec.port or '5500')
+            entries = gateways.get(service_name, [])
+            known_urls = {e.get('service_url') for e in entries
+                          if isinstance(e, dict)} if isinstance(entries, list) else set()
+            if service_url not in known_urls:
+                logger.info(f'Adding NVMeoF gateway {service_url} to the registry')
+                try:
+                    self.mgr.remote('nvmeof', 'gateway_cfg_add',
+                                    service_url=service_url,
+                                    name=service_name,
+                                    group=spec.group if spec.group else '',
+                                    daemon_name=dd.name())
+                except Exception as e:  # pylint: disable=broad-except
+                    # registration retries on the next serve cycle; don't
+                    # abort the remaining daemons' post actions
+                    logger.error(f'Failed to register NVMeoF gateway '
+                                 f'{service_url} with the nvmeof module: {e}')
 
     def ok_to_stop(self,
                    daemon_ids: List[str],
@@ -316,14 +315,21 @@ class NvmeofService(CephService):
         service_name = daemon.service_name()
         daemon_name = daemon.name()
 
-        # remove config for dashboard nvmeof gateways if any
-        ret, _, err = self.mgr.mon_command({
-            'prefix': 'dashboard nvmeof-gateway-rm',
-            'name': service_name,
-            'daemon_name': daemon_name
-        })
-        if not ret:
-            logger.info(f'{daemon_name} removed from nvmeof gateways dashboard config')
+        # a registry failure must not abort the rest of the removal:
+        # the mon still has to be told and the certs still have to go
+        try:
+            ret, _, err = self.mgr.remote('nvmeof', 'gateway_cfg_rm',
+                                          name=service_name,
+                                          daemon_name=daemon_name)
+        except Exception as e:  # pylint: disable=broad-except
+            logger.warning(f'Failed to remove {daemon_name} from the nvmeof '
+                           f'gateway registry: {e}')
+        else:
+            if not ret:
+                logger.info(f'{daemon_name} removed from the nvmeof gateway registry')
+            else:
+                logger.warning(f'Failed to remove {daemon_name} from the nvmeof '
+                               f'gateway registry: {err}')
 
         spec = cast(NvmeofServiceSpec,
                     self.mgr.spec_store.all_specs.get(daemon.service_name(), None))
