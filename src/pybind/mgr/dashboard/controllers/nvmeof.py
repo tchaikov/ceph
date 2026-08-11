@@ -32,11 +32,30 @@ NVME_SCHEMA = {
 try:
     from nvmeof.converters import convert_to_model, namedtuple_to_dict
 
-    from ..services.nvmeof_client import NVMeoFClient, empty_response, \
-        handle_nvmeof_error, pick
+    from ..services.nvmeof_client import NVMeoFClient, NVMeoFError2HTTP, \
+        empty_response, handle_nvmeof_error, pick
 except ImportError as e:
     logger.error("Failed to import NVMeoFClient and related components: %s", e)
 else:
+
+    _NVMEOF_KIND2HTTP = {'unavailable': 504}
+
+    def _api(method, **kwargs):
+        """Call a gateway command in the nvmeof module and re-raise its
+        error envelope as DashboardException (exception types do not
+        survive remote())."""
+        res = mgr.remote('nvmeof', 'api_call', method, **kwargs)
+        err = res.get('__nvmeof_error__') if isinstance(res, dict) else None
+        if err:
+            if err['kind'] == 'status':
+                status = NVMeoFError2HTTP.get(err['code'], 400)
+            else:
+                status = _NVMEOF_KIND2HTTP.get(err['kind'], 400)
+            raise DashboardException(msg=err['msg'], code=err['code'],
+                                     http_status_code=status,
+                                     component='nvmeof')
+        return res
+
     @APIRouter("/nvmeof/gateway", Scope.NVME_OF)
     @APIDoc("NVMe-oF Gateway Management API", "NVMe-oF Gateway")
     class NVMeoFGateway(RESTController):
@@ -2603,7 +2622,6 @@ else:
     @APIDoc("NVMe-oF Subsystem Connection Management API", "NVMe-oF Subsystem Connection")
     class NVMeoFConnection(RESTController):
         @pick("connections")
-        @NvmeofCLICommand("nvmeof connection list", model.ConnectionList)
         @EndpointDoc(
             "List all NVMeoF Subsystem Connections",
             parameters={
@@ -2613,29 +2631,12 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.ConnectionList, finalize=_update_connections)
-        @handle_nvmeof_error
         def list(self, nqn: Optional[str] = None,
                  gw_group: Optional[str] = None, server_address: Optional[str] = None,
                  traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            if not nqn:
-                nqn = '*'
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.list_connections(
-                NVMeoFClient.pb2.list_connections_req(subsystem=nqn)
-            )
+            return _api('connection_list', nqn=nqn, gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
-        @NvmeofCLICommand(
-            "nvmeof connection get_io_statistics",
-            model.ConnectionIOStatistics,
-            success_message_template="Please use JSON format to see the statistics"
-        )
         @EndpointDoc(
             "Get the IO statistics for a connection",
             parameters={
@@ -2646,8 +2647,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.ConnectionIOStatistics)
-        @handle_nvmeof_error
         def get_io_stats(
             self,
             nqn: str,
@@ -2656,26 +2655,10 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.get_connection_io_statistics(
-                NVMeoFClient.pb2.get_connection_io_statistics_req(subsystem_nqn=nqn,
-                                                                  host_nqn=host_nqn,
-                                                                  reset=False)
-            )
+            return _api('connection_get_io_statistics', nqn=nqn,
+                        host_nqn=host_nqn, gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
-        @NvmeofCLICommand(
-            "nvmeof connection reset_io_statistics",
-            model.ConnectionIOStatistics,
-            success_message_template=(
-                "Resetting host's {host_nqn} in {nqn} IO statistics: Successful"
-            )
-        )
         @EndpointDoc(
             "Reset the IO statistics for a connection",
             parameters={
@@ -2686,8 +2669,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.ConnectionIOStatistics)
-        @handle_nvmeof_error
         def reset_io_stats(
             self,
             nqn: str,
@@ -2696,18 +2677,9 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
-                gw_group=gw_group,
-                server_address=server_address
-            ).stub.get_connection_io_statistics(
-                NVMeoFClient.pb2.get_connection_io_statistics_req(subsystem_nqn=nqn,
-                                                                  host_nqn=host_nqn,
-                                                                  reset=True)
-            )
+            return _api('connection_reset_io_statistics', nqn=nqn,
+                        host_nqn=host_nqn, gw_group=gw_group,
+                        server_address=server_address, traddr=traddr)
 
     @UIRouter('/nvmeof', Scope.NVME_OF)
     class NVMeoFTcpUI(BaseController):

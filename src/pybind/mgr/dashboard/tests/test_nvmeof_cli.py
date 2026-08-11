@@ -1388,6 +1388,31 @@ class TestNvmeofModuleContract(unittest.TestCase):
         ('gateway_cfg_rm', {'name': 'n', 'daemon_name': 'd'}),
     ]
 
+    # commands the dashboard invokes through NVMeoF.api_call()
+    API_CALLS = [
+        ('connection_list', {'nqn': 'n', 'gw_group': None,
+                             'server_address': None, 'traddr': None}),
+        ('connection_get_io_statistics',
+         {'nqn': 'n', 'host_nqn': 'h', 'gw_group': None,
+          'server_address': None, 'traddr': None}),
+        ('connection_reset_io_statistics',
+         {'nqn': 'n', 'host_nqn': 'h', 'gw_group': None,
+          'server_address': None, 'traddr': None}),
+    ]
+
+    def test_api_calls_bind(self):
+        import inspect
+
+        import nvmeof.api as api
+        for method, kwargs in self.API_CALLS:
+            fn = getattr(api, method, None)
+            self.assertIsNotNone(fn, f'nvmeof.api lacks {method}()')
+            sig = inspect.signature(fn)
+            try:
+                sig.bind(None, **kwargs)  # None stands in for the module
+            except TypeError as e:
+                self.fail(f'{method}{sig} does not accept {kwargs}: {e}')
+
     def test_remote_calls_bind(self):
         import inspect
 

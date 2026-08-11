@@ -143,3 +143,21 @@ class TestDashboardMigration:
         mgr.mon_command = lambda cmd: calls.append(cmd)
         mgr._migrate_dashboard_gateways()
         assert calls == []
+
+
+class TestApiCallEnvelope:
+    def test_wraps_module_errors(self):
+        import nvmeof.api as api_mod
+        from nvmeof.errors import NvmeofStatusError
+        mgr = make_mgr()
+
+        def boom(_mgr):
+            raise NvmeofStatusError('gateway said no', code=2)
+
+        api_mod.failing = boom
+        try:
+            res = nvmeof_mod.NVMeoF.api_call(mgr, 'failing')
+        finally:
+            del api_mod.failing
+        assert res == {'__nvmeof_error__': {
+            'kind': 'status', 'msg': 'gateway said no', 'code': 2}}

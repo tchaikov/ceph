@@ -4,7 +4,12 @@ import logging
 import threading
 from typing import Any, Dict, Optional, Tuple
 
+import orchestrator
+from orchestrator import OrchestratorError
+
 from .cli import NVMeoFCLICommand
+from .errors import NvmeofError, NvmeofGatewayUnavailableError, \
+    NvmeofInvalidInputError, NvmeofStatusError
 from mgr_module import MgrModule
 
 logger = logging.getLogger(__name__)
@@ -18,7 +23,7 @@ MIGRATION_DONE_KEY = "dashboard_config_migrated"
 DASHBOARD_STORE_KEY = "mgr/dashboard/_nvmeof_config"
 
 
-class NVMeoF(MgrModule):
+class NVMeoF(orchestrator.OrchestratorClientMixin, MgrModule):
     CLICommand = NVMeoFCLICommand
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -63,6 +68,96 @@ class NVMeoF(MgrModule):
                 self.set_store(GATEWAYS_STORE_KEY, out)
                 logger.info("adopted the gateway registry from the dashboard")
         self.set_store(MIGRATION_DONE_KEY, 'v1')
+
+    # ---- gateway command bridge -----------------------------------------
+
+    def api_call(self, method: str, **kwargs: Any) -> Any:
+        """Invoke a gateway command on behalf of the dashboard.
+
+        Exception types do not survive remote(), so failures come back
+        as an error envelope the caller re-raises on its side.
+        """
+        from . import api
+        try:
+            return getattr(api, method)(self, **kwargs)
+        except NvmeofGatewayUnavailableError as e:
+            return {'__nvmeof_error__': {'kind': 'unavailable',
+                                         'msg': str(e), 'code': e.code}}
+        except NvmeofStatusError as e:
+            return {'__nvmeof_error__': {'kind': 'status',
+                                         'msg': str(e), 'code': e.code}}
+        except NvmeofError as e:
+            return {'__nvmeof_error__': {'kind': 'input',
+                                         'msg': str(e), 'code': e.code}}
+
+    # ---- registry lookups for the grpc client ---------------------------
+
+    def get_service_info(self, group: Optional[str] = None) -> Optional[Any]:
+        try:
+            gateways = self._load_gateways().get('gateways', {})
+            if not gateways:
+                return None
+            if group:
+                return self._get_name_url_for_group(gateways, group)
+            return self._get_default_service(gateways)
+        except (KeyError, IndexError) as e:
+            raise NvmeofError(f'NVMe-oF configuration is not set: {e}')
+
+    def is_mtls_enabled(self, service_name: str) -> bool:
+        try:
+            services = orchestrator.raise_if_exception(
+                self.describe_service(service_name=service_name))
+            return services[0].spec.enable_auth
+        except (OrchestratorError, IndexError):
+            return False
+
+    def get_tls_bundle(self, service_name: str,
+                       daemon_name: str) -> Optional[Dict[str, str]]:
+        try:
+            return orchestrator.raise_if_exception(
+                self.get_nvmeof_tls_bundle(service_name, daemon_name))
+        except OrchestratorError:
+            # just return None if any orchestrator error is raised
+            # otherwise nvmeof api will raise this error and doesn't proceed.
+            return None
+
+    def _get_name_url_for_group(self, gateways: Dict[str, Any],
+                                group: str) -> Optional[Any]:
+        try:
+            for service_name, svc_config in gateways.items():
+                # get the group name of the service and match it against
+                # the group name provided
+                services = orchestrator.raise_if_exception(
+                    self.describe_service(service_name=service_name))
+                if group == services[0].spec.group:
+                    daemons = orchestrator.raise_if_exception(
+                        self.list_daemons(service_name=service_name))
+                    running = [d.to_dict()['daemon_name'] for d in daemons
+                               if d.to_dict()['status_desc'] == 'running']
+                    config = next((c for c in svc_config
+                                   if c['daemon_name'] in running), None)
+                    if config:
+                        return (service_name, config['service_url'],
+                                config['daemon_name'])
+            return None
+        except OrchestratorError:
+            return self._get_default_service(gateways)
+
+    @staticmethod
+    def _get_default_service(gateways: Dict[str, Any]) -> Optional[Any]:
+        if gateways:
+            gateway_keys = list(gateways.keys())
+            # if there are more than 1 gateway, rather than chosing a random
+            # gateway from any of the group, raise an exception to make it
+            # clear that we need to specify the group name in the API request.
+            if len(gateway_keys) > 1:
+                raise NvmeofInvalidInputError(
+                    "Multiple NVMe-oF gateway groups are configured. "
+                    "Please specify the 'gw_group' parameter in the request.")
+            service_name = gateway_keys[0]
+            return (service_name, gateways[service_name][0]['service_url'],
+                    gateways[service_name][0]['daemon_name'])
+        return None
 
     # ---- gateway registry ------------------------------------------------
     #
@@ -171,3 +266,9 @@ class NVMeoF(MgrModule):
         if not self._pool_exists(POOL_NAME):
             self._create_pool(POOL_NAME)
             self._enable_application(POOL_NAME, 'nvmeof-meta')
+
+
+try:
+    from . import api  # noqa: F401,E402 pylint: disable=wrong-import-position
+except ImportError as e:
+    logger.warning("gateway commands unavailable: %s", e)
