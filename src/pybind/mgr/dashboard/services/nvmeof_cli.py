@@ -15,7 +15,7 @@ from prettytable import PrettyTable
 
 from ..cli import DBCLICommand
 from ..exceptions import DashboardException
-from ..model.nvmeof import CliEmptyMessage, CliFieldTransformer, CliFlags, CliHeader
+from nvmeof.model import CliEmptyMessage, CliFieldTransformer, CliFlags, CliHeader
 from ..rest_client import RequestException
 from .nvmeof_conf import ManagedByOrchestratorException, \
     NvmeofGatewayAlreadyExists, NvmeofGatewaysConfig

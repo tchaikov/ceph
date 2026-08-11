@@ -11,7 +11,7 @@ from mgr_module import HandleCommandResult
 from ..cli import DBCLICommand
 from ..controllers import EndpointDoc
 from ..exceptions import DashboardException
-from ..model.nvmeof import CliEmptyMessage, CliFieldTransformer, CliFlags, CliHeader
+from nvmeof.model import CliEmptyMessage, CliFieldTransformer, CliFlags, CliHeader
 from ..services.nvmeof_cli import AnnotatedDataTextOutputFormatter, \
     NvmeofCLICommand, convert_from_bytes, convert_to_bytes, \
     format_host_updates, resolve_nvmeof_server_address
@@ -2113,7 +2113,7 @@ class TestCliEmptyMessage:
 
 class TestCliEmptyMessageForAllListCommands:
     def test_subsystem_list_empty_message(self):
-        from ..model.nvmeof import SubsystemList
+        from nvmeof.model import SubsystemList
 
         test_cmd = "nvmeof test subsystem list empty"
 
@@ -2131,7 +2131,7 @@ class TestCliEmptyMessageForAllListCommands:
             del NvmeofCLICommand.COMMANDS[test_cmd]
 
     def test_subsystem_list_non_empty_returns_table(self):
-        from ..model.nvmeof import SubsystemList
+        from nvmeof.model import SubsystemList
 
         test_cmd = "nvmeof test subsystem list non empty"
 
@@ -2167,7 +2167,7 @@ class TestCliEmptyMessageForAllListCommands:
             del NvmeofCLICommand.COMMANDS[test_cmd]
 
     def test_connection_list_empty_message_with_subsystem(self):
-        from ..model.nvmeof import ConnectionList
+        from nvmeof.model import ConnectionList
 
         test_cmd = "nvmeof test connection list empty"
 
@@ -2190,7 +2190,7 @@ class TestCliEmptyMessageForAllListCommands:
             del NvmeofCLICommand.COMMANDS[test_cmd]
 
     def test_connection_list_non_empty_returns_table(self):
-        from ..model.nvmeof import ConnectionList
+        from nvmeof.model import ConnectionList
 
         test_cmd = "nvmeof test connection list non empty"
 
@@ -2227,7 +2227,7 @@ class TestCliEmptyMessageForAllListCommands:
             del NvmeofCLICommand.COMMANDS[test_cmd]
 
     def test_hosts_info_empty_message_with_subsystem(self):
-        from ..model.nvmeof import HostsInfo
+        from nvmeof.model import HostsInfo
 
         test_cmd = "nvmeof test hosts info empty"
 
@@ -2251,7 +2251,7 @@ class TestCliEmptyMessageForAllListCommands:
             del NvmeofCLICommand.COMMANDS[test_cmd]
 
     def test_hosts_info_non_empty_returns_table(self):
-        from ..model.nvmeof import HostsInfo
+        from nvmeof.model import HostsInfo
 
         test_cmd = "nvmeof test hosts info non empty"
 
@@ -2280,7 +2280,7 @@ class TestCliEmptyMessageForAllListCommands:
             del NvmeofCLICommand.COMMANDS[test_cmd]
 
     def test_all_empty_messages_work_with_json_format(self):
-        from ..model.nvmeof import ConnectionList, HostsInfo, SubsystemList
+        from nvmeof.model import ConnectionList, HostsInfo, SubsystemList
 
         test_cmd_subsys = "nvmeof test subsystem json"
 
@@ -2321,7 +2321,7 @@ class TestCliEmptyMessageForAllListCommands:
 
 class TestNamespaceListHosts:
     def test_non_empty_hosts_renders_table(self):
-        from ..model.nvmeof import NamespaceHostsList
+        from nvmeof.model import NamespaceHostsList
 
         test_cmd = "nvmeof test namespace list_hosts non empty"
 
@@ -2353,7 +2353,7 @@ class TestNamespaceListHosts:
             del NvmeofCLICommand.COMMANDS[test_cmd]
 
     def test_empty_hosts_renders_empty_table(self):
-        from ..model.nvmeof import NamespaceHostsList
+        from nvmeof.model import NamespaceHostsList
 
         test_cmd = "nvmeof test namespace list_hosts empty"
 
@@ -2382,7 +2382,7 @@ class TestNamespaceListHosts:
             del NvmeofCLICommand.COMMANDS[test_cmd]
 
     def test_multiple_hosts_per_namespace(self):
-        from ..model.nvmeof import NamespaceHostsList
+        from nvmeof.model import NamespaceHostsList
 
         test_cmd = "nvmeof test namespace list_hosts multi"
 
@@ -2422,7 +2422,7 @@ class TestNamespaceListHosts:
 
 class TestNamespaceListLocations:
     def test_non_empty_locations_renders_table(self):
-        from ..model.nvmeof import NamespaceLocationsList
+        from nvmeof.model import NamespaceLocationsList
 
         test_cmd = "nvmeof test namespace list_locations non empty"
 
@@ -2453,7 +2453,7 @@ class TestNamespaceListLocations:
             del NvmeofCLICommand.COMMANDS[test_cmd]
 
     def test_empty_locations_renders_empty_table(self):
-        from ..model.nvmeof import NamespaceLocationsList
+        from nvmeof.model import NamespaceLocationsList
 
         test_cmd = "nvmeof test namespace list_locations empty"
 
@@ -2475,7 +2475,7 @@ class TestNamespaceListLocations:
             del NvmeofCLICommand.COMMANDS[test_cmd]
 
     def test_multiple_locations_aggregated(self):
-        from ..model.nvmeof import NamespaceLocationsList
+        from nvmeof.model import NamespaceLocationsList
 
         test_cmd = "nvmeof test namespace list_locations multi"
 

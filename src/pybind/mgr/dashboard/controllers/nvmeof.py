@@ -9,7 +9,7 @@ from orchestrator import OrchestratorError
 
 from .. import mgr
 from ..exceptions import DashboardException
-from ..model import nvmeof as model
+from nvmeof import model
 from ..security import Scope
 from ..services.nvmeof_cli import NvmeofCLICommand, convert_to_bytes, \
     escape_address_if_ipv6, format_host_updates, \
