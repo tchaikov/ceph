@@ -1,0 +1,35 @@
+tasks:
+- nvmeof:
+    installer: host.a
+    gw_image: quay.io/ceph/nvmeof:devel
+    rbd:
+      image_name_prefix: myimage
+    gateway_config:
+      subsystems_count: 1
+      namespaces_count: 2
+      cli_image: quay.io/ceph/nvmeof-cli:devel
+      auto_pool_create: True
+
+- cephadm.wait_for_service:
+    service: nvmeof.nvmeof.mygroup0
+    refresh: True
+
+- workunit:
+    no_coverage_and_limits: true
+    clients:
+      client.0:
+        - nvmeof/setup_subsystem.sh
+    env:
+      RBD_POOL: .nvmeof
+      RBD_IMAGE_PREFIX: myimage
+
+# The "ceph nvmeof" commands live in the nvmeof mgr module; they must
+# keep working with the dashboard disabled.
+- cephadm.shell:
+    host.a:
+      - ceph mgr module disable dashboard
+      - ceph nvmeof gateway info
+      - ceph nvmeof subsystem list
+      - ceph nvmeof host list --nqn "$(ceph nvmeof subsystem list --format json | jq -er '.subsystems[0].nqn')"
+      - ceph nvmeof namespace list --nqn "$(ceph nvmeof subsystem list --format json | jq -er '.subsystems[0].nqn')"
+      - ceph mgr module enable dashboard
