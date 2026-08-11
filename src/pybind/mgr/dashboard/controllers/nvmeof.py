@@ -333,7 +333,6 @@ else:
     @APIDoc("NVMe-oF Subsystem Management API", "NVMe-oF Subsystem")
     class NVMeoFSubsystem(RESTController):
         @pick(field="subsystems")
-        @NvmeofCLICommand("nvmeof subsystem list", model.SubsystemList)
         @EndpointDoc(
             "List all NVMeoF subsystems",
             parameters={
@@ -344,25 +343,17 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             }
         )
-        @convert_to_model(model.SubsystemList)
-        @handle_nvmeof_error
         def list(self, nqn: Optional[str] = None, serial_number: Optional[str] = None,
                  gw_group: Optional[str] = None, server_address: Optional[str] = None,
                  traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'subsystem_list',
+                nqn=nqn,
+                serial_number=serial_number,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.list_subsystems(
-                NVMeoFClient.pb2.list_subsystems_req(subsystem_nqn=nqn,
-                                                     serial_number=serial_number)
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @pick(field="subsystems", first=True)
-        @NvmeofCLICommand("nvmeof subsystem get", model.SubsystemList)
         @EndpointDoc(
             "Get information from a specific NVMeoF subsystem",
             parameters={
@@ -372,25 +363,16 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.SubsystemList)
-        @handle_nvmeof_error
         def get(self, nqn: str, gw_group: Optional[str] = None,
                 server_address: Optional[str] = None,
                 traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'subsystem_get',
+                nqn=nqn,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.list_subsystems(
-                NVMeoFClient.pb2.list_subsystems_req(subsystem_nqn=nqn)
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @empty_response
-        @NvmeofCLICommand("nvmeof subsystem add", model.SubsystemStatus,
-                          success_message_template="Adding subsystem {nqn}: Successful")
         @EndpointDoc(
             "Create a new NVMeoF subsystem",
             parameters={
@@ -413,8 +395,6 @@ else:
                 "model_name": Param(str, "Subsystem model name", True, None),
             },
         )
-        @convert_to_model(model.SubsystemStatus)
-        @handle_nvmeof_error
         def create(self, nqn: str,
                    max_namespaces: Optional[int] = None, no_group_append: Optional[bool] = False,
                    serial_number: Optional[str] = None, dhchap_key: Optional[str] = None,
@@ -422,27 +402,21 @@ else:
                    network_mask: Optional[List[str]] = None,
                    port: Optional[int] = None, secure_listeners: Optional[bool] = False,
                    traddr: Optional[str] = None, model_name: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'subsystem_add',
+                nqn=nqn,
+                max_namespaces=max_namespaces,
+                no_group_append=no_group_append,
+                serial_number=serial_number,
+                dhchap_key=dhchap_key,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.create_subsystem(
-                NVMeoFClient.pb2.create_subsystem_req(
-                    subsystem_nqn=nqn, serial_number=serial_number,
-                    max_namespaces=max_namespaces, enable_ha=True,
-                    no_group_append=no_group_append,
-                    dhchap_key=dhchap_key, network_mask=network_mask,
-                    port=port, secure_listeners=secure_listeners,
-                    model_name=model_name
-                )
-            )
-
+                server_address=server_address,
+                network_mask=network_mask,
+                port=port,
+                secure_listeners=secure_listeners,
+                traddr=traddr,
+                model_name=model_name)
         @empty_response
-        @NvmeofCLICommand("nvmeof subsystem del", model.RequestStatus,
-                          success_message_template="Deleting subsystem {nqn}: Successful")
         @EndpointDoc(
             "Delete an existing NVMeoF subsystem",
             parameters={
@@ -453,29 +427,18 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def delete(self, nqn: str, force: Optional[str] = "false", gw_group: Optional[str] = None,
                    server_address: Optional[str] = None,
                    traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'subsystem_del',
+                nqn=nqn,
+                force=force,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.delete_subsystem(
-                NVMeoFClient.pb2.delete_subsystem_req(
-                    subsystem_nqn=nqn, force=str_to_bool(force)
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @Endpoint('PUT', '{nqn}/change_key')
         @UpdatePermission
-        @empty_response
-        @NvmeofCLICommand("nvmeof subsystem change_key", model.RequestStatus,
-                          success_message_template="Changing key for subsystem {nqn}: Successful")
         @EndpointDoc(
             "Change subsystem inband authentication key",
             parameters={
@@ -486,28 +449,17 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
+        @empty_response
         def change_key(self, nqn: str, dhchap_key: str, gw_group: Optional[str] = None,
                        server_address: Optional[str] = None,
                        traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'subsystem_change_key',
+                nqn=nqn,
+                dhchap_key=dhchap_key,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.change_subsystem_key(
-                NVMeoFClient.pb2.change_subsystem_key_req(
-                    subsystem_nqn=nqn,
-                    dhchap_key=dhchap_key
-                )
-            )
-
-        @empty_response
-        @NvmeofCLICommand("nvmeof subsystem del_key", model.RequestStatus,
-                          success_message_template="Deleting key for subsystem {nqn}: Successful")
+                server_address=server_address,
+                traddr=traddr)
         @EndpointDoc(
             "Delete subsystem inband authentication key",
             parameters={
@@ -517,30 +469,17 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
+        @empty_response
         def del_key(self, nqn: str, gw_group: Optional[str] = None,
                     server_address: Optional[str] = None,
                     traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'subsystem_del_key',
+                nqn=nqn,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.change_subsystem_key(
-                NVMeoFClient.pb2.change_subsystem_key_req(
-                    subsystem_nqn=nqn, dhchap_key=None
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @empty_response
-        @NvmeofCLICommand(
-            "nvmeof subsystem add_network", model.RequestStatus,
-            success_message_template=("Adding network mask {network_mask} for subsystem "
-                                      "{nqn}: Successful")
-        )
         @EndpointDoc(
             "Add subsystem network mask",
             parameters={
@@ -551,30 +490,17 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def add_network(self, nqn: str, network_mask: str, gw_group: Optional[str] = None,
                         server_address: Optional[str] = None,
                         traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'subsystem_add_network',
+                nqn=nqn,
+                network_mask=network_mask,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.add_subsystem_network(
-                NVMeoFClient.pb2.add_subsystem_network_req(
-                    subsystem_nqn=nqn, network_mask=network_mask
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @empty_response
-        @NvmeofCLICommand(
-            "nvmeof subsystem del_network", model.RequestStatus,
-            success_message_template=("Deleting network mask {network_mask} for subsystem "
-                                      "{nqn}: Successful")
-        )
         @EndpointDoc(
             "Delete subsystem network mask",
             parameters={
@@ -585,31 +511,17 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def del_network(self, nqn: str, network_mask: str, gw_group: Optional[str] = None,
                         server_address: Optional[str] = None,
                         traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'subsystem_del_network',
+                nqn=nqn,
+                network_mask=network_mask,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.del_subsystem_network(
-                NVMeoFClient.pb2.del_subsystem_network_req(
-                    subsystem_nqn=nqn, network_mask=network_mask
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @empty_response
-        @NvmeofCLICommand(
-            "nvmeof subsystem add_kmip_server_endpoint", model.RequestStatus,
-            success_message_template=("Adding an endpoint, with address {address}:{port}, "
-                                      "to KMIP server {server_name} on subsystem {nqn}: "
-                                      "Successful")
-        )
         @EndpointDoc(
             "Add a KMIP server endpoint to the subsystem",
             parameters={
@@ -622,34 +534,21 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def add_kmip_server_endpoint(self, nqn: str, server_name: str,
                                      address: Optional[str] = None,
                                      port: Optional[int] = 5696, gw_group: Optional[str] = None,
                                      server_address: Optional[str] = None,
                                      traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            ep = NVMeoFClient.pb2.kmip_server_endpoint(address=address, port=port)
-            return NVMeoFClient(
+            return _api(
+                'subsystem_add_kmip_server_endpoint',
+                nqn=nqn,
+                server_name=server_name,
+                address=address,
+                port=port,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.add_kmip_server_endpoints(
-                NVMeoFClient.pb2.add_kmip_server_endpoints_req(
-                    subsystem_nqn=nqn, server_name=server_name,
-                    endpoints=[ep]
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @empty_response
-        @NvmeofCLICommand(
-            "nvmeof subsystem del_kmip_server_endpoint", model.RequestStatus,
-            success_message_template=("Deleting endpoint, with address {address}:{port}, from "
-                                      "KMIP server {server_name} on subsystem {nqn}: Successful")
-        )
         @EndpointDoc(
             "Delete a KMIP server endpoint from the subsystem",
             parameters={
@@ -662,30 +561,20 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def del_kmip_server_endpoint(self, nqn: str, server_name: str,
                                      address: Optional[str] = None,
                                      port: Optional[int] = 5696, gw_group: Optional[str] = None,
                                      server_address: Optional[str] = None,
                                      traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            ep = NVMeoFClient.pb2.kmip_server_endpoint(address=address, port=port)
-            return NVMeoFClient(
+            return _api(
+                'subsystem_del_kmip_server_endpoint',
+                nqn=nqn,
+                server_name=server_name,
+                address=address,
+                port=port,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.del_kmip_server_endpoints(
-                NVMeoFClient.pb2.del_kmip_server_endpoints_req(
-                    subsystem_nqn=nqn, server_name=server_name,
-                    endpoints=[ep]
-                )
-            )
-
-        @NvmeofCLICommand("nvmeof subsystem list_kmip_server_endpoints",
-                          model.SubsystemListKMIPEndpoints)
+                server_address=server_address,
+                traddr=traddr)
         @EndpointDoc(
             "List KMIP server endpoints for a subsystem or all subsystems",
             parameters={
@@ -697,24 +586,16 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.SubsystemListKMIPEndpoints)
-        @handle_nvmeof_error
         def list_eps(self, nqn: Optional[str] = None, server_name: Optional[str] = None,
                      gw_group: Optional[str] = None, server_address: Optional[str] = None,
                      traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'subsystem_list_kmip_server_endpoints',
+                nqn=nqn,
+                server_name=server_name,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.list_kmip_server_endpoints(
-                NVMeoFClient.pb2.list_kmip_server_endpoints_req(subsystem_nqn=nqn,
-                                                                server_name=server_name)
-            )
-
-        @NvmeofCLICommand("nvmeof get_subsystems", model.GetSubsystems)
+                server_address=server_address,
+                traddr=traddr)
         @EndpointDoc(
             "Get NVMeoF subsystems",
             parameters={
@@ -723,25 +604,17 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             }
         )
-        @convert_to_model(model.GetSubsystems)
-        @handle_nvmeof_error
         def get_subsystems(
             self,
             gw_group: Optional[str] = None,
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'get_subsystems',
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.get_subsystems(
-                NVMeoFClient.pb2.get_subsystems_req()
-            )
-
+                server_address=server_address,
+                traddr=traddr)
     @APIRouter("/nvmeof/subsystem/{nqn}/listener", Scope.NVME_OF)
     @APIDoc("NVMe-oF Subsystem Listener Management API", "NVMe-oF Subsystem Listener")
     class NVMeoFListener(RESTController):
@@ -847,9 +720,6 @@ else:
     # pylint: disable=too-many-public-methods
     class NVMeoFNamespace(RESTController):
         @pick("namespaces")
-        @NvmeofCLICommand(
-            "nvmeof namespace list", model.NamespaceList, alias="nvmeof ns list"
-        )
         @EndpointDoc(
             "List all NVMeoF namespaces in a subsystem",
             parameters={
@@ -861,28 +731,19 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.NamespaceList)
-        @handle_nvmeof_error
         def list(self, nqn: Optional[str] = None, nsid: Optional[str] = None,
                  uuid: Optional[str] = None,
                  gw_group: Optional[str] = None, server_address: Optional[str] = None,
                  traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_list',
+                nqn=nqn,
+                nsid=nsid,
+                uuid=uuid,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.list_namespaces(
-                NVMeoFClient.pb2.list_namespaces_req(subsystem=nqn,
-                                                     nsid=int(nsid) if nsid else None,
-                                                     uuid=uuid)
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @pick("namespaces", first=True)
-        @NvmeofCLICommand(
-            "nvmeof namespace get", model.NamespaceList, alias="nvmeof ns get")
         @EndpointDoc(
             "Get info from specified NVMeoF namespace",
             parameters={
@@ -893,28 +754,18 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.NamespaceList)
-        @handle_nvmeof_error
         def get(self, nqn: str, nsid: str, gw_group: Optional[str] = None,
                 server_address: Optional[str] = None,
                 traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_get',
+                nqn=nqn,
+                nsid=nsid,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.list_namespaces(
-                NVMeoFClient.pb2.list_namespaces_req(subsystem=nqn, nsid=int(nsid))
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @ReadPermission
         @Endpoint('GET', '{nsid}/io_stats')
-        @NvmeofCLICommand(
-            "nvmeof namespace get_io_stats", model.NamespaceIOStats,
-            alias="nvmeof ns get_io_stats"
-        )
         @EndpointDoc(
             "Get IO stats from specified NVMeoF namespace",
             parameters={
@@ -925,23 +776,16 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.NamespaceIOStats)
-        @handle_nvmeof_error
         def io_stats(self, nqn: str, nsid: str, gw_group: Optional[str] = None,
                      server_address: Optional[str] = None,
                      traddr: Optional[str] = None):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_get_io_stats',
+                nqn=nqn,
+                nsid=nsid,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.namespace_get_io_stats(
-                NVMeoFClient.pb2.namespace_get_io_stats_req(
-                    subsystem_nqn=nqn, nsid=int(nsid))
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @EndpointDoc(
             "Create a new NVMeoF namespace.",
             parameters={
@@ -1060,13 +904,6 @@ else:
                 )
             )
 
-        @NvmeofCLICommand(
-            "nvmeof namespace add",
-            model.NamespaceCreation,
-            alias="nvmeof ns add",
-            success_message_template="Adding namespace {nsid} to {nqn}: Successful",
-            deprecated_params={"size": "--size is deprecated, please use --rbd-image-size"}
-        )
         @EndpointDoc(
             "Create a new NVMeoF namespace.",
             parameters={
@@ -1110,8 +947,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.NamespaceCreation)
-        @handle_nvmeof_error
         def create_cli(
             self,
             nqn: str,
@@ -1139,72 +974,34 @@ else:
             encryption_algorithm: Optional[str] = None,
             key_id: Optional[List[str]] = None,
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            if size and rbd_image_size:
-                raise DashboardException(
-                    msg="Can use size or rbd_image_size but not both",
-                    code="can_use_size_or_rbd_image_size_but_not_both",
-                    http_status_code=400,
-                    component="nvmeof",
-                )
-
-            size_b = rbd_image_size_b = None
-            if size:
-                size_b = convert_to_bytes(size, default_unit='MB')
-            if rbd_image_size:
-                rbd_image_size_b = convert_to_bytes(rbd_image_size, default_unit='MB')
-            if not encryption_format:
-                encryption_format = []
-            if not key_id:
-                key_id = []
-            if len(encryption_format) != len(key_id):
-                raise DashboardException(
-                    msg="The number of key IDs should match the number of encryption formats",
-                    code="key_ids_encryption_formats_mismatch",
-                    http_status_code=400,
-                    component="nvmeof",
-                )
-            enc_entries = [
-                NVMeoFClient.pb2.encryption_entry(
-                    format=f.strip().lower(),
-                    key_id=k.strip()
-                ) for f, k in zip(encryption_format, key_id)]
-            enc_alg = encryption_algorithm.strip().lower() if encryption_algorithm else None
-            return NVMeoFClient(
+            return _api(
+                'namespace_add',
+                nqn=nqn,
+                rbd_image_name=rbd_image_name,
+                rbd_pool=rbd_pool,
+                rbd_data_pool=rbd_data_pool,
+                nsid=nsid,
+                uuid=uuid,
+                create_image=create_image,
+                size=size,
+                rbd_image_size=rbd_image_size,
+                trash_image=trash_image,
+                block_size=block_size,
+                load_balancing_group=load_balancing_group,
+                force=force,
+                no_auto_visible=no_auto_visible,
+                disable_auto_resize=disable_auto_resize,
+                read_only=read_only,
+                location=location,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.namespace_add(
-                NVMeoFClient.pb2.namespace_add_req(
-                    subsystem_nqn=nqn,
-                    nsid=int(nsid) if nsid else None,
-                    uuid=uuid,
-                    rbd_image_name=rbd_image_name,
-                    rados_namespace_name=rados_namespace,
-                    rbd_pool_name=rbd_pool,
-                    rbd_data_pool_name=rbd_data_pool,
-                    block_size=block_size,
-                    create_image=create_image,
-                    size=rbd_image_size_b or size_b,
-                    trash_image=trash_image,
-                    anagrpid=load_balancing_group,
-                    force=force,
-                    no_auto_visible=no_auto_visible,
-                    disable_auto_resize=disable_auto_resize,
-                    read_only=read_only,
-                    location=location,
-                    encryption_entries=enc_entries,
-                    encryption_algorithm=enc_alg
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr,
+                rados_namespace=rados_namespace,
+                encryption_format=encryption_format,
+                encryption_algorithm=encryption_algorithm,
+                key_id=key_id)
         @ReadPermission
         @Endpoint('PUT', '{nsid}/set_qos')
-        @NvmeofCLICommand(
-            "nvmeof namespace set_qos", model=model.RequestStatus, alias="nvmeof ns set_qos",
-            success_message_template="Setting QOS limits of namespace {nsid} in {nqn}: Successful")
         @EndpointDoc(
             "set QOS for specified NVMeoF namespace",
             parameters={
@@ -1223,8 +1020,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def set_qos(
             self,
             nqn: str,
@@ -1238,34 +1033,20 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_set_qos',
+                nqn=nqn,
+                nsid=nsid,
+                rw_ios_per_second=rw_ios_per_second,
+                rw_mbytes_per_second=rw_mbytes_per_second,
+                r_mbytes_per_second=r_mbytes_per_second,
+                w_mbytes_per_second=w_mbytes_per_second,
+                force=force,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.namespace_set_qos_limits(
-                NVMeoFClient.pb2.namespace_set_qos_req(
-                    subsystem_nqn=nqn,
-                    nsid=int(nsid),
-                    rw_ios_per_second=rw_ios_per_second,
-                    rw_mbytes_per_second=rw_mbytes_per_second,
-                    r_mbytes_per_second=r_mbytes_per_second,
-                    w_mbytes_per_second=w_mbytes_per_second,
-                    force=force,
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @ReadPermission
         @Endpoint('PUT', '{nsid}/change_load_balancing_group')
-        @NvmeofCLICommand(
-            "nvmeof namespace change_load_balancing_group",
-            model=model.RequestStatus,
-            alias="nvmeof ns change_load_balancing_group",
-            success_message_template=("Changing load balancing group of namespace {nsid} "
-                                      "in {nqn} to {load_balancing_group}: Successful")
-        )
         @EndpointDoc(
             "set the load balancing group for specified NVMeoF namespace",
             parameters={
@@ -1277,8 +1058,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def change_load_balancing_group(
             self,
             nqn: str,
@@ -1288,19 +1067,14 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_change_load_balancing_group',
+                nqn=nqn,
+                nsid=nsid,
+                load_balancing_group=load_balancing_group,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.namespace_change_load_balancing_group(
-                NVMeoFClient.pb2.namespace_change_load_balancing_group_req(
-                    subsystem_nqn=nqn, nsid=int(nsid), anagrpid=load_balancing_group
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @ReadPermission
         @Endpoint('PUT', '{nsid}/resize')
         @EndpointDoc(
@@ -1341,13 +1115,6 @@ else:
                 )
             )
 
-        @NvmeofCLICommand(
-            "nvmeof namespace resize",
-            model=model.RequestStatus,
-            alias="nvmeof ns resize",
-            success_message_template=("Resizing namespace {nsid} in {nqn} "
-                                      "to {rbd_image_size}: Successful")
-        )
         @EndpointDoc(
             "resize the specified NVMeoF namespace",
             parameters={
@@ -1359,8 +1126,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def resize_cli(
             self,
             nqn: str,
@@ -1370,33 +1135,16 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            if rbd_image_size:
-                rbd_image_size_b = convert_to_bytes(rbd_image_size, default_unit='MB')
-            mib = 1024 * 1024
-            rbd_image_size_mb = rbd_image_size_b // mib
-
-            return NVMeoFClient(
+            return _api(
+                'namespace_resize',
+                nqn=nqn,
+                nsid=nsid,
+                rbd_image_size=rbd_image_size,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.namespace_resize(
-                NVMeoFClient.pb2.namespace_resize_req(
-                    subsystem_nqn=nqn, nsid=int(nsid), new_size=rbd_image_size_mb
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @ReadPermission
         @Endpoint('PUT', '{nsid}/add_host')
-        @NvmeofCLICommand(
-            "nvmeof namespace add_host",
-            model=model.RequestStatus,
-            alias="nvmeof ns add_host",
-            success_message_template=("Adding host {host_nqn} to "
-                                      "namespace {nsid} on {nqn}: Successful")
-        )
         @EndpointDoc(
             "Adds a host to the specified NVMeoF namespace",
             parameters={
@@ -1413,8 +1161,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def add_host(
             self,
             nqn: str,
@@ -1425,29 +1171,17 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_add_host',
+                nqn=nqn,
+                nsid=nsid,
+                host_nqn=host_nqn,
+                force=force,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.namespace_add_host(
-                NVMeoFClient.pb2.namespace_add_host_req(subsystem_nqn=nqn,
-                                                        nsid=int(nsid),
-                                                        host_nqn=host_nqn,
-                                                        force=str_to_bool(force) if force else None)
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @ReadPermission
         @Endpoint('PUT', '{nsid}/del_host')
-        @NvmeofCLICommand(
-            "nvmeof namespace del_host",
-            model=model.RequestStatus,
-            alias="nvmeof ns del_host",
-            success_message_template=("Deleting host {host_nqn} from "
-                                      "namespace {nsid} on {nqn}: Successful")
-        )
         @EndpointDoc(
             "Removes a host from the specified NVMeoF namespace",
             parameters={
@@ -1459,8 +1193,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def del_host(
             self,
             nqn: str,
@@ -1470,37 +1202,16 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_del_host',
+                nqn=nqn,
+                nsid=nsid,
+                host_nqn=host_nqn,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.namespace_delete_host(
-                NVMeoFClient.pb2.namespace_delete_host_req(
-                    subsystem_nqn=nqn,
-                    nsid=int(nsid),
-                    host_nqn=host_nqn,
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @ReadPermission
         @Endpoint('PUT', '{nsid}/change_visibility')
-        @NvmeofCLICommand(
-            "nvmeof namespace change_visibility",
-            model=model.RequestStatus,
-            alias="nvmeof ns change_visibility",
-            success_message_template=(
-                'Changing visibility of namespace {nsid} in {nqn} to "{auto_visible}": Successful'
-            ),
-            success_message_map={
-                "auto_visible": lambda v, _f: (
-                    "visible to all hosts" if str_to_bool(v)
-                    else "visible to selected hosts"
-                )
-            }
-        )
         @EndpointDoc(
             "changes the visibility of the specified NVMeoF namespace to all or selected hosts",
             parameters={
@@ -1513,8 +1224,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def change_visibility(
             self,
             nqn: str,
@@ -1525,32 +1234,17 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_change_visibility',
+                nqn=nqn,
+                nsid=nsid,
+                auto_visible=auto_visible,
+                force=force,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.namespace_change_visibility(
-                NVMeoFClient.pb2.namespace_change_visibility_req(
-                    subsystem_nqn=nqn,
-                    nsid=int(nsid),
-                    auto_visible=str_to_bool(auto_visible),
-                    force=str_to_bool(force),
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @ReadPermission
         @Endpoint('PUT', '{nsid}/change_location')
-        @NvmeofCLICommand(
-            "nvmeof namespace change_location",
-            model=model.RequestStatus,
-            alias="nvmeof ns change_location",
-            success_message_template=(
-                'Setting location for namespace {nsid} in {nqn} to "{location}": Successful'
-            )
-        )
         @EndpointDoc(
             "Change the location of the specified NVMeoF namespace",
             parameters={
@@ -1562,8 +1256,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def change_location(
             self,
             nqn: str,
@@ -1573,28 +1265,16 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_change_location',
+                nqn=nqn,
+                nsid=nsid,
+                location=location,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.namespace_change_location(
-                NVMeoFClient.pb2.namespace_change_location_req(
-                    subsystem_nqn=nqn,
-                    nsid=int(nsid),
-                    location=location,
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @ReadPermission
         @Endpoint('GET', 'list_hosts')
-        @NvmeofCLICommand(
-            "nvmeof namespace list_hosts",
-            model=model.NamespaceHostsList,
-            alias="nvmeof ns list_hosts"
-        )
         @EndpointDoc(
             "List all NVMeoF namespaces with their allowed hosts",
             parameters={
@@ -1606,48 +1286,22 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @handle_nvmeof_error
         def list_hosts(
             self, nqn: Optional[str] = None, nsid: Optional[str] = None,
             uuid: Optional[str] = None,
             gw_group: Optional[str] = None, server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            ns_list = NVMeoFClient(
+            return _api(
+                'namespace_list_hosts',
+                nqn=nqn,
+                nsid=nsid,
+                uuid=uuid,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.list_namespaces(
-                NVMeoFClient.pb2.list_namespaces_req(subsystem=nqn,
-                                                     nsid=int(nsid) if nsid else None,
-                                                     uuid=uuid)
-            )
-
-            # Transform to NamedTuple with only NQN, NSID, and Hosts
-            host_infos = []
-            for ns in ns_list.namespaces:
-                host_infos.append(model.NamespaceHostInfo(
-                    nqn=ns.ns_subsystem_nqn or nqn or "",
-                    nsid=ns.nsid,
-                    hosts=list(ns.hosts)
-                ))
-
-            return namedtuple_to_dict(model.NamespaceHostsList(
-                status=ns_list.status,
-                error_message=ns_list.error_message,
-                namespaces=host_infos
-            ))
-
+                server_address=server_address,
+                traddr=traddr)
         @ReadPermission
         @Endpoint('GET', 'list_locations')
-        @NvmeofCLICommand(
-            "nvmeof namespace list_locations",
-            model=model.NamespaceLocationsList,
-            alias="nvmeof ns list_locations"
-        )
         @EndpointDoc(
             "List namespace distribution per site locations",
             parameters={
@@ -1659,69 +1313,22 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @handle_nvmeof_error
         def list_locations(
             self, nqn: Optional[str] = None, nsid: Optional[str] = None,
             uuid: Optional[str] = None,
             gw_group: Optional[str] = None, server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            ns_list = NVMeoFClient(
+            return _api(
+                'namespace_list_locations',
+                nqn=nqn,
+                nsid=nsid,
+                uuid=uuid,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.list_namespaces(
-                NVMeoFClient.pb2.list_namespaces_req(subsystem=nqn,
-                                                     nsid=int(nsid) if nsid else None,
-                                                     uuid=uuid)
-            )
-
-            # Aggregate namespaces by subsystem, load balancing group, and location
-            location_counts: Dict[Tuple[str, int, str], int] = {}
-            for ns in ns_list.namespaces:
-                subsystem_nqn = ns.ns_subsystem_nqn or nqn or ""
-                lb_group = ns.load_balancing_group if ns.load_balancing_group else 0
-                location = ns.location if ns.location else "<default>"
-
-                key = (subsystem_nqn, lb_group, location)
-                location_counts[key] = location_counts.get(key, 0) + 1
-
-            # Convert to NamedTuple list
-            location_infos = []
-            for (subsystem_nqn, lb_group, location), count in sorted(location_counts.items()):
-                location_infos.append(model.NamespaceLocationInfo(
-                    subsystem=subsystem_nqn,
-                    load_balancing_group=lb_group,
-                    location=location,
-                    namespace_count=count
-                ))
-
-            return namedtuple_to_dict(model.NamespaceLocationsList(
-                status=ns_list.status,
-                error_message=ns_list.error_message,
-                locations=location_infos
-            ))
-
+                server_address=server_address,
+                traddr=traddr)
         @ReadPermission
         @Endpoint('PUT', '{nsid}/set_auto_resize')
-        @NvmeofCLICommand(
-            "nvmeof namespace set_auto_resize",
-            model=model.RequestStatus,
-            alias="nvmeof ns set_auto_resize",
-            success_message_template=(
-                'Setting auto resize flag for namespace {nsid} '
-                'in {nqn} to "{auto_resize_text}": Successful'
-            ),
-            success_message_map={
-                "auto_resize_text": lambda _v, f: (
-                    "auto resize namespace" if str_to_bool(f.get("auto_resize_enabled"))
-                    else "do not auto resize namespace"
-                )
-            }
-        )
         @EndpointDoc(
             "Enable or disable namespace auto resize when RBD image is resized",
             parameters={
@@ -1737,8 +1344,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def set_auto_resize(
             self,
             nqn: str,
@@ -1748,38 +1353,16 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_set_auto_resize',
+                nqn=nqn,
+                nsid=nsid,
+                auto_resize_enabled=auto_resize_enabled,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.namespace_set_auto_resize(
-                NVMeoFClient.pb2.namespace_set_auto_resize_req(
-                    subsystem_nqn=nqn,
-                    nsid=int(nsid),
-                    auto_resize=str_to_bool(auto_resize_enabled),
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @ReadPermission
         @Endpoint('PUT', '{nsid}/set_rbd_trash_image')
-        @NvmeofCLICommand(
-            "nvmeof namespace set_rbd_trash_image",
-            model=model.RequestStatus,
-            alias="nvmeof ns set_rbd_trash_image",
-            success_message_template=(
-                'Setting RBD trash image flag for namespace {nsid} '
-                'in {nqn} to "{trash_text}": Successful'
-            ),
-            success_message_map={
-                "trash_text": lambda _v, f: (
-                    "trash on namespace deletion" if str_to_bool(f.get("rbd_trash_image_on_delete"))
-                    else "do not trash on namespace deletion"
-                )
-            }
-        )
         @EndpointDoc(
             "changes the trash image on delete of the specified NVMeoF \
                 namespace to all or selected hosts",
@@ -1792,8 +1375,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def set_rbd_trash_image(
             self,
             nqn: str,
@@ -1803,28 +1384,16 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_set_rbd_trash_image',
+                nqn=nqn,
+                nsid=nsid,
+                rbd_trash_image_on_delete=rbd_trash_image_on_delete,
                 gw_group=gw_group,
                 server_address=server_address,
-            ).stub.namespace_set_rbd_trash_image(
-                NVMeoFClient.pb2.namespace_set_rbd_trash_image_req(
-                    subsystem_nqn=nqn,
-                    nsid=int(nsid),
-                    trash_image=str_to_bool(rbd_trash_image_on_delete),
-                )
-            )
-
+                traddr=traddr)
         @ReadPermission
         @Endpoint('PUT', '{nsid}/refresh_size')
-        @NvmeofCLICommand(
-            "nvmeof namespace refresh_size", model=model.RequestStatus,
-            alias="nvmeof ns refresh_size",
-            success_message_template="Refreshing size for namespace {nsid} in {nqn}: Successful"
-        )
         @EndpointDoc(
             "refresh the specified NVMeoF namespace to current RBD image size",
             parameters={
@@ -1835,8 +1404,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def refresh_size(
             self,
             nqn: str,
@@ -1845,32 +1412,15 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_refresh_size',
+                nqn=nqn,
+                nsid=nsid,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.namespace_resize(
-                NVMeoFClient.pb2.namespace_resize_req(
-                    subsystem_nqn=nqn,
-                    nsid=int(nsid),
-                    new_size=0
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @ReadPermission
         @Endpoint('PUT', '{nsid}/unpin')
-        @NvmeofCLICommand(
-            "nvmeof namespace unpin",
-            model=model.RequestStatus,
-            alias="nvmeof ns unpin",
-            success_message_template=(
-                'Unpinning load balancing group for namespace {nsid} '
-                'in {nqn}: Successful'
-            ),
-        )
         @EndpointDoc(
             "Unpin namespace load balancing group",
             parameters={
@@ -1881,8 +1431,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def unpin_ns(
             self,
             nqn: str,
@@ -1891,24 +1439,14 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_unpin',
+                nqn=nqn,
+                nsid=nsid,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.namespace_unpin(
-                NVMeoFClient.pb2.namespace_unpin_req(
-                    subsystem_nqn=nqn,
-                    nsid=int(nsid),
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
         @pick("namespaces", first=True)
-        @NvmeofCLICommand(
-            "nvmeof namespace update", model.NamespaceList, alias="nvmeof ns update"
-        )
         @EndpointDoc(
             "Update an existing NVMeoF namespace",
             parameters={
@@ -1927,8 +1465,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.NamespaceList)
-        @handle_nvmeof_error
         def update(
             self,
             nqn: str,
@@ -1945,102 +1481,22 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None,
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            contains_failure = False
-
-            if rbd_image_size:
-                mib = 1024 * 1024
-                new_size_mib = int((rbd_image_size + mib - 1) / mib)
-
-                resp = NVMeoFClient(
-                    gw_group=gw_group,
-                    server_address=server_address
-                ).stub.namespace_resize(
-                    NVMeoFClient.pb2.namespace_resize_req(
-                        subsystem_nqn=nqn, nsid=int(nsid), new_size=new_size_mib
-                    )
-                )
-                if resp.status != 0:
-                    contains_failure = True
-
-            if load_balancing_group:
-                resp = NVMeoFClient(
-                    gw_group=gw_group,
-                    server_address=server_address
-                ).stub.namespace_change_load_balancing_group(
-                    NVMeoFClient.pb2.namespace_change_load_balancing_group_req(
-                        subsystem_nqn=nqn, nsid=int(nsid), anagrpid=load_balancing_group
-                    )
-                )
-                if resp.status != 0:
-                    contains_failure = True
-
-            if rw_ios_per_second or rw_mbytes_per_second or r_mbytes_per_second \
-               or w_mbytes_per_second:
-                resp = NVMeoFClient(
-                    gw_group=gw_group,
-                    server_address=server_address
-                ).stub.namespace_set_qos_limits(
-                    NVMeoFClient.pb2.namespace_set_qos_req(
-                        subsystem_nqn=nqn,
-                        nsid=int(nsid),
-                        rw_ios_per_second=rw_ios_per_second,
-                        rw_mbytes_per_second=rw_mbytes_per_second,
-                        r_mbytes_per_second=r_mbytes_per_second,
-                        w_mbytes_per_second=w_mbytes_per_second,
-                    )
-                )
-                if resp.status != 0:
-                    contains_failure = True
-
-            if trash_image is not None:
-                resp = NVMeoFClient(
-                    gw_group=gw_group,
-                    server_address=server_address
-                ).stub.namespace_set_rbd_trash_image(
-                    NVMeoFClient.pb2.namespace_set_rbd_trash_image_req(
-                        subsystem_nqn=nqn,
-                        nsid=int(nsid),
-                        trash_image=str_to_bool(trash_image)
-                    )
-                )
-                if resp.status != 0:
-                    contains_failure = True
-
-            if location is not None:
-                resp = NVMeoFClient(
-                    gw_group=gw_group,
-                    server_address=server_address
-                ).stub.namespace_change_location(
-                    NVMeoFClient.pb2.namespace_change_location_req(
-                        subsystem_nqn=nqn,
-                        nsid=int(nsid),
-                        location=location
-                    )
-                )
-                if resp.status != 0:
-                    contains_failure = True
-
-            if contains_failure:
-                cherrypy.response.status = 202
-
-            response = NVMeoFClient(
+            return _api(
+                'namespace_update',
+                nqn=nqn,
+                nsid=nsid,
+                rbd_image_size=rbd_image_size,
+                load_balancing_group=load_balancing_group,
+                rw_ios_per_second=rw_ios_per_second,
+                rw_mbytes_per_second=rw_mbytes_per_second,
+                r_mbytes_per_second=r_mbytes_per_second,
+                w_mbytes_per_second=w_mbytes_per_second,
+                trash_image=trash_image,
+                location=location,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.list_namespaces(
-                NVMeoFClient.pb2.list_namespaces_req(subsystem=nqn, nsid=int(nsid))
-            )
-            return response
-
+                server_address=server_address,
+                traddr=traddr)
         @empty_response
-        @NvmeofCLICommand(
-            "nvmeof namespace del",
-            model.RequestStatus,
-            alias="nvmeof ns del",
-            success_message_template="Deleting namespace {nsid} from {nqn}: Successful")
         @EndpointDoc(
             "Delete an existing NVMeoF namespace",
             parameters={
@@ -2052,8 +1508,6 @@ else:
                 "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
             },
         )
-        @convert_to_model(model.RequestStatus)
-        @handle_nvmeof_error
         def delete(
             self,
             nqn: str,
@@ -2063,21 +1517,14 @@ else:
             server_address: Optional[str] = None,
             traddr: Optional[str] = None,
         ):
-            server_address = resolve_nvmeof_server_address(
-                server_address=server_address,
-                traddr=traddr
-            )
-            return NVMeoFClient(
+            return _api(
+                'namespace_del',
+                nqn=nqn,
+                nsid=nsid,
+                force=force,
                 gw_group=gw_group,
-                server_address=server_address
-            ).stub.namespace_delete(
-                NVMeoFClient.pb2.namespace_delete_req(
-                    subsystem_nqn=nqn,
-                    nsid=int(nsid),
-                    i_am_sure=str_to_bool(force)
-                )
-            )
-
+                server_address=server_address,
+                traddr=traddr)
     def _normalize_enum_key(val):
         return val.replace("_", " ").title()
 

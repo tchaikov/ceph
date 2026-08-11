@@ -2,14 +2,13 @@
   re-execs under GNU bash >= 4 when the system bash is too old, and honors a
   ``$GETOPT`` environment override so GNU getopt can be selected
   (``brew install bash gnu-getopt``).
-* The NVMe-oF gateway registry and the first batches of "ceph nvmeof"
-  commands (the connection, host and listener subcommands) moved from the dashboard module
-  into the always-on nvmeof module; the remaining subcommands follow in
-  subsequent releases. Command names are unchanged, the migrated
-  commands no longer require the dashboard module to be enabled, and
-  the "dashboard nvmeof-gateway-*" commands keep working as forwarding
-  aliases. The registry data migrates automatically on the first start
-  of the nvmeof module.
+* The NVMe-oF gateway registry and the "ceph nvmeof" commands moved
+  from the dashboard module into the always-on nvmeof module; only
+  "nvmeof top" still lives in the dashboard and follows later. Command
+  names are unchanged, the migrated commands no longer require the
+  dashboard module to be enabled, and the "dashboard nvmeof-gateway-*"
+  commands keep working as forwarding aliases. The registry data
+  migrates automatically on the first start of the nvmeof module.
   Related tracker: https://tracker.ceph.com/issues/79353
 
 * MGR: Several commands described a required argument to the monitor as optional.

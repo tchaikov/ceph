@@ -1388,87 +1388,33 @@ class TestNvmeofModuleContract(unittest.TestCase):
         ('gateway_cfg_rm', {'name': 'n', 'daemon_name': 'd'}),
     ]
 
-    # commands the dashboard invokes through NVMeoF.api_call()
-    API_CALLS = [
-        ('connection_list', {'nqn': 'n', 'gw_group': None,
-                             'server_address': None, 'traddr': None}),
-        ('connection_get_io_statistics',
-         {'nqn': 'n', 'host_nqn': 'h', 'gw_group': None,
-          'server_address': None, 'traddr': None}),
-        ('connection_reset_io_statistics',
-         {'nqn': 'n', 'host_nqn': 'h', 'gw_group': None,
-          'server_address': None, 'traddr': None}),
-        ('host_list', {'nqn': 'n', 'gw_group': None,
-                       'server_address': None, 'traddr': None}),
-        ('host_add', {'nqn': 'n', 'host_nqn': 'h', 'dhchap_key': None,
-                      'dhchap_controller_key': None, 'psk': None,
-                      'gw_group': None, 'server_address': None,
-                      'traddr': None}),
-        ('host_del', {'nqn': 'n', 'host_nqn': 'h', 'force': False,
-                      'gw_group': None, 'server_address': None,
-                      'traddr': None, 'keep_connections': False}),
-        ('host_change_key', {'nqn': 'n', 'host_nqn': 'h',
-                             'dhchap_key': 'k', 'gw_group': None,
-                             'server_address': None, 'traddr': None}),
-        ('host_change_controller_key',
-         {'nqn': 'n', 'host_nqn': 'h', 'dhchap_controller_key': 'k',
-          'gw_group': None, 'server_address': None, 'traddr': None}),
-        ('host_del_key', {'nqn': 'n', 'host_nqn': 'h', 'gw_group': None,
-                          'server_address': None, 'traddr': None}),
-        ('host_del_controller_key',
-         {'nqn': 'n', 'host_nqn': 'h', 'gw_group': None,
-          'server_address': None, 'traddr': None}),
-        ('listener_list', {'nqn': 'n', 'gw_group': None,
-                           'server_address': None, 'traddr': None}),
-        ('listener_add', {'nqn': 'n', 'host_name': 'h', 'traddr': 't',
-                          'trsvcid': None, 'adrfam': 0, 'gw_group': None,
-                          'server_address': None, 'secure': False,
-                          'force': False, 'verify_host_name': False}),
-        ('listener_del', {'nqn': 'n', 'host_name': 'h', 'traddr': 't',
-                          'trsvcid': 5, 'adrfam': 0, 'force': False,
-                          'gw_group': None, 'server_address': None}),
-        ('gateway_info', {'gw_group': None, 'server_address': None,
-                          'traddr': None}),
-        ('gateway_version', {'gw_group': None, 'server_address': None,
-                             'traddr': None}),
-        ('gateway_get_log_level', {'gw_group': None, 'server_address': None,
-                                   'traddr': None}),
-        ('gateway_set_log_level', {'log_level': 'info', 'gw_group': None,
-                                   'server_address': None, 'traddr': None}),
-        ('gateway_get_stats', {'gw_group': None, 'server_address': None,
-                               'traddr': None}),
-        ('gateway_listener_info', {'nqn': 'n', 'gw_group': None,
-                                   'server_address': None, 'traddr': None}),
-        ('gateway_set_io_stats_mode', {'enabled': True, 'gw_group': None,
-                                       'server_address': None,
-                                       'traddr': None}),
-        ('gateway_get_thread_stats', {'gw_group': None,
-                                      'server_address': None,
-                                      'traddr': None}),
-        ('gateway_refresh_network', {'nqn': 'n', 'gw_group': None,
-                                     'server_address': 'a', 'traddr': None}),
-        ('spdk_log_level_get', {'all_log_flags': None, 'gw_group': None,
-                                'server_address': None, 'traddr': None}),
-        ('spdk_log_level_set', {'log_level': None, 'print_level': None,
-                                'extra_log_flags': None, 'gw_group': None,
-                                'server_address': None, 'traddr': None}),
-        ('spdk_log_level_disable', {'extra_log_flags': None,
-                                    'gw_group': None,
-                                    'server_address': None, 'traddr': None}),
-    ]
-
     def test_api_calls_bind(self):
+        """Scan every _api('name', kw=...) call site in the controller and
+        verify it binds against the real function in nvmeof.api."""
         import inspect
+        import re
 
         import nvmeof.api as api
-        for method, kwargs in self.API_CALLS:
+
+        from .. import controllers
+        src_path = inspect.getsourcefile(controllers.nvmeof)
+        assert src_path
+        with open(src_path) as f:
+            src = f.read()
+
+        calls = re.findall(
+            r"_api\(\s*'(\w+)'((?:\s*,\s*\w+=[^,)]+)*)\s*\)", src)
+        self.assertGreater(len(calls), 50)
+        for method, kwargs_src in calls:
             fn = getattr(api, method, None)
             self.assertIsNotNone(fn, f'nvmeof.api lacks {method}()')
+            kwargs = dict.fromkeys(re.findall(r'(\w+)=', kwargs_src))
             sig = inspect.signature(fn)
             try:
                 sig.bind(None, **kwargs)  # None stands in for the module
             except TypeError as e:
-                self.fail(f'{method}{sig} does not accept {kwargs}: {e}')
+                self.fail(f'{method}{sig} does not accept '
+                          f'{sorted(kwargs)}: {e}')
 
     def test_remote_calls_bind(self):
         import inspect
