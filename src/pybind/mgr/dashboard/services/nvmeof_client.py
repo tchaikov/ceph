@@ -28,8 +28,8 @@ try:
     from nvmeof.errors import NvmeofError, NvmeofGatewayUnavailableError, \
         NvmeofStatusError
 
-    from .proto import gateway_pb2 as pb2  # type: ignore
-    from .proto import gateway_pb2_grpc as pb2_grpc  # type: ignore
+    from nvmeof.proto import gateway_pb2 as pb2  # type: ignore
+    from nvmeof.proto import gateway_pb2_grpc as pb2_grpc  # type: ignore
 except ImportError:
     grpc = None
 else:

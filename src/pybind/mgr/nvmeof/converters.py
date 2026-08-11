@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 import functools
 import inspect
+import os
+
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 from typing import Annotated, Any, Callable, Dict, Generator, NamedTuple, \
     Optional, Type, get_args, get_origin
 

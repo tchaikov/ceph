@@ -2,7 +2,10 @@
 """Client and server classes corresponding to protobuf-defined services."""
 import grpc
 
-from dashboard.services.proto import gateway_pb2 as dashboard_dot_services_dot_proto_dot_gateway__pb2
+# NOTE: hand-adjusted after moving out of the dashboard; the embedded
+# descriptor still carries the historical path. Both go away once the
+# bindings are generated at build time from the nvmeof submodule proto.
+from nvmeof.proto import gateway_pb2 as dashboard_dot_services_dot_proto_dot_gateway__pb2
 
 
 class GatewayStub(object):
