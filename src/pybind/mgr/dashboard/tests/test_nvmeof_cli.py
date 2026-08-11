@@ -1340,171 +1340,66 @@ class TestNvmeofCLICommandDeprecatedParams:  # pylint: disable=too-many-public-m
             self._cleanup(test_cmd)
 
 
-class TestNVMeoFConfCLI(unittest.TestCase, CLICommandTestMixin):
+class TestNVMeoFConfCLI(unittest.TestCase):
+    """The gateway registry commands forward to the nvmeof module; the
+    registry behaviour itself is covered by nvmeof/tests/test_registry.py."""
+
     def setUp(self):
-        self.mock_kv_store()
+        self.mgr = MagicMock()
+        self.mgr.remote.return_value = (0, 'Success', '')
 
-    def test_cli_add_gateway(self):
+    def test_cli_add_gateway_forwards(self):
+        from ..services.nvmeof_cli import add_nvmeof_gateway
+        res = add_nvmeof_gateway(self.mgr, inbuf='http://nvmf:port',
+                                 name='nvmeof.pool.group',
+                                 group='group', daemon_name='nvmeof_daemon')
+        self.mgr.remote.assert_called_once_with(
+            'nvmeof', 'gateway_cfg_add', service_url='http://nvmf:port',
+            name='nvmeof.pool.group', group='group',
+            daemon_name='nvmeof_daemon')
+        self.assertEqual(res, (0, 'Success', ''))
 
-        self.exec_cmd(
-            'nvmeof-gateway-add',
-            name='nvmeof.pool.group',
-            inbuf='http://nvmf:port',
-            daemon_name='nvmeof_daemon',
-            group='group'
-        )
+    def test_cli_rm_gateway_forwards(self):
+        from ..services.nvmeof_cli import remove_nvmeof_gateway
+        res = remove_nvmeof_gateway(self.mgr, name='nvmeof.pool.group')
+        self.mgr.remote.assert_called_once_with(
+            'nvmeof', 'gateway_cfg_rm', name='nvmeof.pool.group',
+            daemon_name='')
+        self.assertEqual(res, (0, 'Success', ''))
 
-        config = json.loads(self.get_key('_nvmeof_config'))
-        self.assertEqual(
-            config['gateways'], {
-                'nvmeof.pool.group': [{
-                    'group': 'group',
-                    'daemon_name': 'nvmeof_daemon',
-                    'service_url': 'http://nvmf:port'
-                }]
-            }
-        )
+    def test_cli_list_forwards(self):
+        from ..services.nvmeof_cli import list_nvmeof_gateways
+        self.mgr.remote.return_value = (0, '{"gateways": {}}', '')
+        res = list_nvmeof_gateways(self.mgr)
+        self.mgr.remote.assert_called_once_with('nvmeof', 'gateway_cfg_list')
+        self.assertEqual(res, (0, '{"gateways": {}}', ''))
 
-    def test_cli_migration_from_legacy_config(self):
-        legacy_config = json.dumps({
-            'gateways': {
-                'nvmeof.pool': {
-                    'service_url': 'http://nvmf:port'
-                }
-            }
-        })
-        self.set_key('_nvmeof_config', legacy_config)
 
-        self.exec_cmd(
-            'nvmeof-gateway-add',
-            name='nvmeof.pool',
-            inbuf='http://nvmf:port',
-            daemon_name='nvmeof_daemon',
-            group=''
-        )
+class TestNvmeofModuleContract(unittest.TestCase):
+    """Every mgr.remote('nvmeof', ...) call the dashboard makes must bind
+    against a real method of the nvmeof module (see tracker #79353: the
+    remote() boundary has no type checking of its own)."""
 
-        config = json.loads(self.get_key('_nvmeof_config'))
-        self.assertEqual(
-            config['gateways'], {
-                'nvmeof.pool': [{
-                    'daemon_name': 'nvmeof_daemon',
-                    'group': '',
-                    'service_url': 'http://nvmf:port'
-                }]
-            }
-        )
+    CALLS = [
+        ('get_gateways_config', {}),
+        ('gateway_cfg_list', {}),
+        ('gateway_cfg_add', {'service_url': 'u', 'name': 'n', 'group': 'g',
+                             'daemon_name': 'd'}),
+        ('gateway_cfg_rm', {'name': 'n', 'daemon_name': 'd'}),
+    ]
 
-    def test_cli_add_gw_to_existing(self):
-        self.exec_cmd(
-            'nvmeof-gateway-add',
-            name='nvmeof.pool',
-            inbuf='http://nvmf:port',
-            daemon_name='nvmeof_daemon',
-            group=''
-        )
+    def test_remote_calls_bind(self):
+        import inspect
 
-        self.exec_cmd(
-            'nvmeof-gateway-add',
-            name='nvmeof.pool',
-            inbuf='http://nvmf-2:port',
-            daemon_name='nvmeof_daemon_2',
-            group=''
-        )
-
-        config = json.loads(self.get_key('_nvmeof_config'))
-
-        self.assertEqual(
-            config['gateways'], {
-                'nvmeof.pool': [{
-                    'daemon_name': 'nvmeof_daemon',
-                    'group': '',
-                    'service_url': 'http://nvmf:port'
-                }, {
-                    'daemon_name': 'nvmeof_daemon_2',
-                    'group': '',
-                    'service_url': 'http://nvmf-2:port'
-                }]
-            }
-        )
-
-    def test_cli_add_new_gw(self):
-        self.exec_cmd(
-            'nvmeof-gateway-add',
-            name='nvmeof.pool',
-            inbuf='http://nvmf:port',
-            daemon_name='nvmeof_daemon',
-            group=''
-        )
-
-        self.exec_cmd(
-            'nvmeof-gateway-add',
-            name='nvmeof2.pool.group',
-            inbuf='http://nvmf-2:port',
-            daemon_name='nvmeof_daemon_2',
-            group='group'
-        )
-
-        config = json.loads(self.get_key('_nvmeof_config'))
-
-        self.assertEqual(
-            config['gateways'], {
-                'nvmeof.pool': [{
-                    'daemon_name': 'nvmeof_daemon',
-                    'group': '',
-                    'service_url': 'http://nvmf:port'
-                }],
-                'nvmeof2.pool.group': [{
-                    'daemon_name': 'nvmeof_daemon_2',
-                    'group': 'group',
-                    'service_url': 'http://nvmf-2:port'
-                }]
-            }
-        )
-
-    def test_cli_rm_gateway(self):
-        self.test_cli_add_gateway()
-        self.exec_cmd('nvmeof-gateway-rm', name='nvmeof.pool.group')
-
-        config = json.loads(self.get_key('_nvmeof_config'))
-        self.assertEqual(
-            config['gateways'], {}
-        )
-
-    def test_cli_rm_daemon_from_gateway(self):
-        self.test_cli_add_gw_to_existing()
-        self.exec_cmd(
-            'nvmeof-gateway-rm',
-            name='nvmeof.pool',
-            daemon_name='nvmeof_daemon'
-        )
-
-        config = json.loads(self.get_key('_nvmeof_config'))
-        self.assertEqual(
-            config['gateways'], {
-                'nvmeof.pool': [{
-                    'daemon_name': 'nvmeof_daemon_2',
-                    'group': '',
-                    'service_url': 'http://nvmf-2:port'
-                }]
-            }
-        )
-
-    def test_cli_legacy_config_rm(self):
-        legacy_config = json.dumps({
-            'gateways': {
-                'nvmeof.pool': {
-                    'service_url': 'http://nvmf:port'
-                }
-            }
-        })
-        self.set_key('_nvmeof_config', legacy_config)
-
-        self.exec_cmd('nvmeof-gateway-rm', name='nvmeof.pool')
-
-        config = json.loads(self.get_key('_nvmeof_config'))
-        self.assertEqual(
-            config['gateways'], {}
-        )
+        from nvmeof.module import NVMeoF
+        for method, kwargs in self.CALLS:
+            fn = getattr(NVMeoF, method, None)
+            self.assertIsNotNone(fn, f'nvmeof module lacks {method}()')
+            sig = inspect.signature(fn)
+            try:
+                sig.bind(None, **kwargs)  # None stands in for self
+            except TypeError as e:
+                self.fail(f'{method}{sig} does not accept {kwargs}: {e}')
 
 
 class TestAnnotatedDataTextOutputFormatter:

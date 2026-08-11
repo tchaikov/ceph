@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 NvmeofTopCollector = None
 
 try:
-    from .nvmeof_cli import NvmeofGatewaysConfig
+    from .nvmeof_conf import NvmeofGatewaysConfig
     from .nvmeof_client import NVMeoFClient
     from .nvmeof_conf import get_pool_group_name
 except ImportError as e:

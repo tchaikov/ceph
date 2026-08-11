@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 
-import json
 import logging
 
 from orchestrator import OrchestratorError
@@ -30,76 +29,14 @@ class ManagedByOrchestratorException(Exception):
             "NVMe-oF configuration is managed by the orchestrator")
 
 
-_NVMEOF_STORE_KEY = "_nvmeof_config"
-
-
 class NvmeofGatewaysConfig(object):
-    @classmethod
-    def _load_config_from_store(cls):
-        json_db = mgr.get_store(_NVMEOF_STORE_KEY,
-                                '{"gateways": {}}')
-        config = json.loads(json_db)
-        cls._save_config(config)
-        return config
-
-    @classmethod
-    def _save_config(cls, config):
-        mgr.set_store(_NVMEOF_STORE_KEY, json.dumps(config))
+    """Read-side view of the gateway registry, which the nvmeof module
+    owns. Writes go through the module as well, see the
+    'dashboard nvmeof-gateway-*' commands."""
 
     @classmethod
     def get_gateways_config(cls):
-        return cls._load_config_from_store()
-
-    @classmethod
-    def add_gateway(cls, name, service_url, group, daemon_name):
-        config = cls.get_gateways_config()
-
-        if name in config.get('gateways', {}):
-            # the nvmeof dashboard config used in v19.2.0 saves the below
-            # to a dict. Converting that to a list so that the upgrade
-            # properly migrate it to the newer format, and also keep it empty.
-            if isinstance(config['gateways'][name], dict):
-                config['gateways'][name] = []
-            else:
-                existing_gateways = config['gateways'][name]
-                for gateway in existing_gateways:
-                    if 'daemon_name' not in gateway:
-                        gateway['daemon_name'] = daemon_name
-                        break
-                    if gateway['service_url'] == service_url:
-                        return
-
-        new_gateway = {
-            'service_url': service_url,
-            'group': group,
-            'daemon_name': daemon_name
-        }
-
-        if name in config.get('gateways', {}):
-            config['gateways'][name].append(new_gateway)
-        else:
-            config['gateways'][name] = [new_gateway]
-
-        cls._save_config(config)
-
-    @classmethod
-    def remove_gateway(cls, name, daemon_name=None):
-        config = cls.get_gateways_config()
-        if name not in config['gateways']:
-            raise NvmeofGatewayDoesNotExist(name)
-
-        if not daemon_name:
-            del config['gateways'][name]
-        else:
-            # remove the daemon from the list of gateways
-            config['gateways'][name] = [daemon for daemon in config['gateways'][name]
-                                        if daemon['daemon_name'] != daemon_name]
-
-            # if there are no more daemons in the list, remove the gateway
-            if not config['gateways'][name]:
-                del config['gateways'][name]
-
-        cls._save_config(config)
+        return mgr.remote('nvmeof', 'get_gateways_config')
 
     @classmethod
     def get_service_info(cls, group=None):
