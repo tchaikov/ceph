@@ -23,6 +23,7 @@ try:
     import grpc._channel  # type: ignore
     from google.protobuf.message import Message  # type: ignore
 
+    from nvmeof.client import NVMeoFClient as _NVMeoFClientCore
     from nvmeof.client import \
         handle_nvmeof_error as _handle_nvmeof_error_core  # type: ignore
     from nvmeof.errors import NvmeofError, NvmeofGatewayUnavailableError, \
@@ -34,82 +35,32 @@ except ImportError:
     grpc = None
 else:
 
-    class NVMeoFClient(object):
-        pb2 = pb2
+    class _DashboardConf:
+        """Bridge the core client's registry lookups to the dashboard
+        services, keeping the existing test patch points effective."""
 
-        def __init__(self, gw_group: Optional[str] = None, server_address: Optional[str] = None):
+        @staticmethod
+        def get_service_info(group=None):
+            return NvmeofGatewaysConfig.get_service_info(group)
 
-            def encode_tls_bundle(bundle: Dict[str, str]) -> Dict[str, bytes]:
-                """Encode TLS bundle string values to bytes for gRPC."""
-                encoded: Dict[str, bytes] = {}
-                for key, value in bundle.items():
-                    if isinstance(value, str):
-                        encoded[key] = value.encode('utf-8')
-                    else:
-                        encoded[key] = value
-                return encoded
+        @staticmethod
+        def get_gateways_config():
+            return NvmeofGatewaysConfig.get_gateways_config()
 
-            logger.info("Initiating nvmeof gateway connection...")
-            try:
-                if not gw_group:
-                    res = NvmeofGatewaysConfig.get_service_info()
-                else:
-                    res = NvmeofGatewaysConfig.get_service_info(gw_group)
-                if res is None:
-                    raise DashboardException("Gateway group does not exist")
-                service_name, self.gateway_addr, self.daemon_name = res
-            except TypeError as e:
-                raise DashboardException(
-                    f'Unable to retrieve the gateway info: {e}'
-                )
+        @staticmethod
+        def is_mtls_enabled(service_name):
+            return is_mtls_enabled(service_name)
 
-            # While creating listener need to direct request to the gateway
-            # address where listener is supposed to be added.
-            if server_address:
-                gateways_info = NvmeofGatewaysConfig.get_gateways_config()
-                matched_gateway = next(
-                    (
-                        gateway
-                        for gateways in gateways_info['gateways'].values()
-                        for gateway in gateways
-                        if server_address in gateway['service_url']
-                    ),
-                    None
-                )
-                if matched_gateway:
-                    self.daemon_name = matched_gateway.get('daemon_name')
-                    self.gateway_addr = matched_gateway.get('service_url')
-                    logger.debug("Gateway address set to: %s", self.gateway_addr)
-                else:
-                    raise DashboardException(
-                        msg=f"No gateway found matching server address: {server_address}",
-                        code='server_address_not_found',
-                        component='nvmeof',
-                        http_status_code=400
-                    )
-            enable_auth = is_mtls_enabled(service_name)
-            if enable_auth:
-                tls_bundle = NvmeofGatewaysConfig.get_nvmeof_tls_bundle(service_name,
-                                                                        self.daemon_name)
-                if tls_bundle:
-                    logger.info('Securely connecting to: %s', self.gateway_addr)
-                    encoded_tls_bundle = encode_tls_bundle(tls_bundle)
-                    credentials = grpc.ssl_channel_credentials(
-                        root_certificates=encoded_tls_bundle['server_cert'],
-                        private_key=encoded_tls_bundle['client_key'],
-                        certificate_chain=encoded_tls_bundle['client_cert'],
-                    )
-                    self.channel = grpc.secure_channel(self.gateway_addr, credentials)
-                else:
-                    self.channel = None
-                    logger.error("Cannot obtain nvmeof TLS bundle for the service %s (gw: %s)",
-                                 service_name, self.gateway_addr)
-            else:
-                logger.info("Insecurely connecting to: %s", self.gateway_addr)
-                self.channel = grpc.insecure_channel(self.gateway_addr)
-            self.service_name = service_name
-            if self.channel is not None:
-                self.stub = pb2_grpc.GatewayStub(self.channel)
+        @staticmethod
+        def get_tls_bundle(service_name, daemon_name):
+            return NvmeofGatewaysConfig.get_nvmeof_tls_bundle(service_name,
+                                                              daemon_name)
+
+    class NVMeoFClient(_NVMeoFClientCore):
+        def __init__(self, gw_group: Optional[str] = None,
+                     server_address: Optional[str] = None):
+            super().__init__(_DashboardConf, gw_group=gw_group,
+                             server_address=server_address)
 
     import errno
 

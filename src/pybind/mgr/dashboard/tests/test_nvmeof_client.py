@@ -10,6 +10,7 @@ from nvmeof import converters as nvmeof_converters
 from ..services import nvmeof_client
 from nvmeof.converters import MaxRecursionDepthError, convert_to_model, \
     obj_to_namedtuple
+from nvmeof.errors import NvmeofInvalidInputError
 
 from ..services.nvmeof_client import NVMeoFClient, handle_nvmeof_error, pick
 
@@ -675,8 +676,8 @@ class TestNVMeoFClientInit:
              patch('dashboard.services.nvmeof_client.NvmeofGatewaysConfig.get_gateways_config',
                    return_value=self._GATEWAYS_CONFIG), \
              patch('dashboard.services.nvmeof_client.is_mtls_enabled', return_value=False), \
-             patch('dashboard.services.nvmeof_client.grpc') as mock_grpc, \
-             patch('dashboard.services.nvmeof_client.pb2_grpc'):
+             patch('nvmeof.client.grpc') as mock_grpc, \
+             patch('nvmeof.client.pb2_grpc'):
             mock_grpc.insecure_channel.return_value = MagicMock()
             yield
 
@@ -697,6 +698,6 @@ class TestNVMeoFClientInit:
 
     def test_client_server_address_not_found_raises(self, mock_env):
         # pylint: disable=unused-argument
-        with pytest.raises(DashboardException) as exc_info:
+        with pytest.raises(NvmeofInvalidInputError) as exc_info:
             NVMeoFClient(server_address='10.0.0.99')
         assert exc_info.value.code == 'server_address_not_found'
