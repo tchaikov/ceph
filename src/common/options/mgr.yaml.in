@@ -211,7 +211,11 @@ options:
     first started after installation, to populate the list of enabled manager modules.  Subsequent
     updates are done using the 'mgr module [enable|disable]' commands.  List may be
     comma or space separated.
-  default: iostat nfs nvmeof
+  # nvmeof is not listed here on purpose: it is always-on, and a module
+  # that is both explicitly enabled and always-on can never be disabled
+  # (regular disable refuses always-on modules, force disable refuses
+  # explicitly enabled ones)
+  default: iostat nfs
   services:
   - mon
   - common

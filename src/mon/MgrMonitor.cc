@@ -94,6 +94,14 @@ static const std::map<uint32_t, std::set<std::string>>& always_on_modules() {
     "pg_autoscaler",
     "telemetry",
   };
+  // the nvmeof module first shipped in umbrella, so older mgrs must not be
+  // told to load it: MgrMap::get_always_on_modules() selects the entry for
+  // the release the mgr itself was built as.
+  static const std::set<std::string> umbrella_modules = [] {
+    std::set<std::string> modules = octopus_modules;
+    modules.insert("nvmeof");
+    return modules;
+  }();
   static const std::map<uint32_t, std::set<std::string>> always_on_modules_map = {
     { CEPH_RELEASE_OCTOPUS, octopus_modules },
     { CEPH_RELEASE_PACIFIC, octopus_modules },
@@ -101,7 +109,7 @@ static const std::map<uint32_t, std::set<std::string>>& always_on_modules() {
     { CEPH_RELEASE_REEF, octopus_modules },
     { CEPH_RELEASE_SQUID, octopus_modules },
     { CEPH_RELEASE_TENTACLE, octopus_modules },
-    { CEPH_RELEASE_UMBRELLA, octopus_modules },
+    { CEPH_RELEASE_UMBRELLA, umbrella_modules },
   };
   return always_on_modules_map;
 };
