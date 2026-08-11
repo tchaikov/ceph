@@ -4,7 +4,7 @@ import inspect
 import json
 import logging
 from collections.abc import Mapping
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Type, Union
+from typing import Any, Callable, Dict, NamedTuple, Optional, Type, Union
 
 import yaml
 from mgr_module import CLICommandBase, HandleCommandResult
@@ -49,6 +49,8 @@ class NvmeofCLICommandMixin:
             self._alias_cmd = type(self)(
                 self._alias,
                 model=self._model,
+                perm=self.perm,
+                poll=self.poll,
                 success_message_template=self._success_message_template,
                 success_message_map=self._success_message_map,
                 success_message_fn=self._success_message_fn,
@@ -57,12 +59,7 @@ class NvmeofCLICommandMixin:
             self._alias_cmd(func)
             self._alias_cmd._func_defaults = self._alias_cmd._compute_func_defaults()
 
-        self._use_api_endpoint_desc_if_available(func)
         return resp
-
-    def _use_api_endpoint_desc_if_available(self, func):
-        if not self.desc and hasattr(func, 'doc_info'):
-            self.desc = func.doc_info.get('summary', '')
 
     def _compute_func_defaults(self) -> Dict[str, Any]:
         defaults: Dict[str, Any] = {}

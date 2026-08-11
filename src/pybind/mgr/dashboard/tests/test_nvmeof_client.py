@@ -7,7 +7,7 @@ import pytest
 from ..exceptions import DashboardException
 from nvmeof import converters as nvmeof_converters
 
-from ..services import nvmeof_client
+from ..services import nvmeof_client  # noqa: F401
 from nvmeof.converters import MaxRecursionDepthError, convert_to_model, \
     obj_to_namedtuple
 from nvmeof.errors import NvmeofInvalidInputError
@@ -673,11 +673,11 @@ class TestNVMeoFClientInit:
     def mock_env(self):
         with patch('dashboard.services.nvmeof_client.NvmeofGatewaysConfig.get_service_info',
                    return_value=self._SERVICE_INFO), \
-             patch('dashboard.services.nvmeof_client.NvmeofGatewaysConfig.get_gateways_config',
-                   return_value=self._GATEWAYS_CONFIG), \
-             patch('dashboard.services.nvmeof_client.is_mtls_enabled', return_value=False), \
-             patch('nvmeof.client.grpc') as mock_grpc, \
-             patch('nvmeof.client.pb2_grpc'):
+                patch('dashboard.services.nvmeof_client.NvmeofGatewaysConfig.get_gateways_config',
+                      return_value=self._GATEWAYS_CONFIG), \
+                patch('dashboard.services.nvmeof_client.is_mtls_enabled', return_value=False), \
+                patch('nvmeof.client.grpc') as mock_grpc, \
+                patch('nvmeof.client.pb2_grpc'):
             mock_grpc.insecure_channel.return_value = MagicMock()
             yield
 

@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 # pylint: disable=too-many-lines
 import logging
-from functools import partial
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import cherrypy
 from orchestrator import OrchestratorError
@@ -11,10 +10,8 @@ from .. import mgr
 from ..exceptions import DashboardException
 from nvmeof import model
 from ..security import Scope
-from nvmeof.utils import convert_to_bytes, escape_address_if_ipv6, \
-    format_host_updates, resolve_nvmeof_server_address
+from nvmeof.utils import resolve_nvmeof_server_address
 
-from ..services.nvmeof_cli import NvmeofCLICommand
 from ..services.nvmeof_client import get_gateway_locations
 from ..services.orchestrator import OrchClient
 from ..tools import str_to_bool
@@ -30,7 +27,7 @@ NVME_SCHEMA = {
 }
 
 try:
-    from nvmeof.converters import convert_to_model, namedtuple_to_dict
+    from nvmeof.converters import convert_to_model
 
     from ..services.nvmeof_client import NVMeoFClient, NVMeoFError2HTTP, \
         empty_response, handle_nvmeof_error, pick
@@ -38,13 +35,19 @@ except ImportError as e:
     logger.error("Failed to import NVMeoFClient and related components: %s", e)
 else:
 
-    _NVMEOF_KIND2HTTP = {'unavailable': 504}
+    _NVMEOF_KIND2HTTP = {'unavailable': 504, 'internal': 500}
 
     def _api(method, **kwargs):
         """Call a gateway command in the nvmeof module and re-raise its
         error envelope as DashboardException (exception types do not
         survive remote())."""
-        res = mgr.remote('nvmeof', 'api_call', method, **kwargs)
+        try:
+            res = mgr.remote('nvmeof', 'api_call', method, **kwargs)
+        except ImportError as e:
+            # the nvmeof module is not loaded (always-on, so this means
+            # it failed to start)
+            raise DashboardException(msg=str(e), code='nvmeof_module_unavailable',
+                                     http_status_code=503, component='nvmeof')
         err = res.get('__nvmeof_error__') if isinstance(res, dict) else None
         if err:
             if err['kind'] == 'status':
@@ -54,6 +57,11 @@ else:
             raise DashboardException(msg=err['msg'], code=err['code'],
                                      http_status_code=status,
                                      component='nvmeof')
+        if isinstance(res, dict) and '__nvmeof_partial__' in res:
+            # some of the operations behind the call failed; the REST
+            # contract reports this as 202
+            cherrypy.response.status = 202
+            return res['__nvmeof_partial__']
         return res
 
     @APIRouter("/nvmeof/gateway", Scope.NVME_OF)
@@ -353,6 +361,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @pick(field="subsystems", first=True)
         @EndpointDoc(
             "Get information from a specific NVMeoF subsystem",
@@ -372,6 +381,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @empty_response
         @EndpointDoc(
             "Create a new NVMeoF subsystem",
@@ -416,6 +426,7 @@ else:
                 secure_listeners=secure_listeners,
                 traddr=traddr,
                 model_name=model_name)
+
         @empty_response
         @EndpointDoc(
             "Delete an existing NVMeoF subsystem",
@@ -437,6 +448,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @Endpoint('PUT', '{nqn}/change_key')
         @UpdatePermission
         @EndpointDoc(
@@ -460,6 +472,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @EndpointDoc(
             "Delete subsystem inband authentication key",
             parameters={
@@ -479,6 +492,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @empty_response
         @EndpointDoc(
             "Add subsystem network mask",
@@ -500,6 +514,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @empty_response
         @EndpointDoc(
             "Delete subsystem network mask",
@@ -521,6 +536,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @empty_response
         @EndpointDoc(
             "Add a KMIP server endpoint to the subsystem",
@@ -548,6 +564,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @empty_response
         @EndpointDoc(
             "Delete a KMIP server endpoint from the subsystem",
@@ -575,6 +592,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @EndpointDoc(
             "List KMIP server endpoints for a subsystem or all subsystems",
             parameters={
@@ -596,6 +614,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @EndpointDoc(
             "Get NVMeoF subsystems",
             parameters={
@@ -615,6 +634,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
     @APIRouter("/nvmeof/subsystem/{nqn}/listener", Scope.NVME_OF)
     @APIDoc("NVMe-oF Subsystem Listener Management API", "NVMe-oF Subsystem Listener")
     class NVMeoFListener(RESTController):
@@ -743,6 +763,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @pick("namespaces", first=True)
         @EndpointDoc(
             "Get info from specified NVMeoF namespace",
@@ -764,6 +785,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @ReadPermission
         @Endpoint('GET', '{nsid}/io_stats')
         @EndpointDoc(
@@ -786,6 +808,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @EndpointDoc(
             "Create a new NVMeoF namespace.",
             parameters={
@@ -904,102 +927,6 @@ else:
                 )
             )
 
-        @EndpointDoc(
-            "Create a new NVMeoF namespace.",
-            parameters={
-                "nqn": Param(str, "NVMeoF subsystem NQN"),
-                "rbd_pool": Param(str, "RBD pool name"),
-                "rbd_data_pool": Param(str, "RBD data pool name", True, None),
-                "rados_namespace": Param(str, "RADOS namespace name", True, None),
-                "rbd_image_name": Param(str, "RBD image name"),
-                "nsid": Param(str, "Namespace ID", True, None),
-                "uuid": Param(str, "UUID", True, None),
-                "create_image": Param(bool, "Create RBD image"),
-                "size": Param(str, "Deprecated. Use `rbd_image_size` instead", True, None),
-                "rbd_image_size": Param(str, "RBD image size", True, None),
-                "trash_image": Param(bool, "Trash the RBD image when namespace is removed"),
-                "block_size": Param(int, "NVMeoF namespace block size"),
-                "load_balancing_group": Param(int, "Load balancing group"),
-                "disable_auto_resize": Param(str, "Disable auto resize", True, None),
-                "read_only": Param(str, "Read only namespace", True, None),
-                "location": Param(str, "Gateway location for namespace", True, None),
-                "force": Param(
-                    bool,
-                    "Force create namespace even it image is used by other namespace"
-                ),
-                "no_auto_visible": Param(
-                    bool,
-                    "Namespace will be visible only for the allowed hosts"
-                ),
-                "encryption_format": Param([str],
-                                           "Encryption format(s) to use, LUKS1 or LUKS2, "
-                                           "separated by commas",
-                                           True, None),
-                "encryption_algorithm": Param(str,
-                                              "Algorithm to use for encryption",
-                                              True, None),
-                "key_id": Param([str],
-                                "Key ID(s) to use for encryption pass phrases, "
-                                "separated by commas",
-                                True, None),
-                "gw_group": Param(str, "NVMeoF gateway group", True, None),
-                "server_address": Param(str, "Target gateway address", True, None),
-                "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
-            },
-        )
-        def create_cli(
-            self,
-            nqn: str,
-            rbd_image_name: str,
-            rbd_pool: str = "rbd",
-            rbd_data_pool: Optional[str] = None,
-            nsid: Optional[str] = None,
-            uuid: Optional[str] = None,
-            create_image: Optional[bool] = False,
-            size: Optional[str] = None,
-            rbd_image_size: Optional[str] = None,
-            trash_image: Optional[bool] = False,
-            block_size: int = 512,
-            load_balancing_group: Optional[int] = None,
-            force: Optional[bool] = False,
-            no_auto_visible: Optional[bool] = False,
-            disable_auto_resize: Optional[bool] = False,
-            read_only: Optional[bool] = False,
-            location: Optional[str] = None,
-            gw_group: Optional[str] = None,
-            server_address: Optional[str] = None,
-            traddr: Optional[str] = None,
-            rados_namespace: Optional[str] = None,
-            encryption_format: Optional[List[str]] = None,
-            encryption_algorithm: Optional[str] = None,
-            key_id: Optional[List[str]] = None,
-        ):
-            return _api(
-                'namespace_add',
-                nqn=nqn,
-                rbd_image_name=rbd_image_name,
-                rbd_pool=rbd_pool,
-                rbd_data_pool=rbd_data_pool,
-                nsid=nsid,
-                uuid=uuid,
-                create_image=create_image,
-                size=size,
-                rbd_image_size=rbd_image_size,
-                trash_image=trash_image,
-                block_size=block_size,
-                load_balancing_group=load_balancing_group,
-                force=force,
-                no_auto_visible=no_auto_visible,
-                disable_auto_resize=disable_auto_resize,
-                read_only=read_only,
-                location=location,
-                gw_group=gw_group,
-                server_address=server_address,
-                traddr=traddr,
-                rados_namespace=rados_namespace,
-                encryption_format=encryption_format,
-                encryption_algorithm=encryption_algorithm,
-                key_id=key_id)
         @ReadPermission
         @Endpoint('PUT', '{nsid}/set_qos')
         @EndpointDoc(
@@ -1045,6 +972,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @ReadPermission
         @Endpoint('PUT', '{nsid}/change_load_balancing_group')
         @EndpointDoc(
@@ -1075,6 +1003,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @ReadPermission
         @Endpoint('PUT', '{nsid}/resize')
         @EndpointDoc(
@@ -1115,34 +1044,6 @@ else:
                 )
             )
 
-        @EndpointDoc(
-            "resize the specified NVMeoF namespace",
-            parameters={
-                "nqn": Param(str, "NVMeoF subsystem NQN"),
-                "nsid": Param(str, "NVMeoF Namespace ID"),
-                "rbd_image_size": Param(str, "RBD image size"),
-                "gw_group": Param(str, "NVMeoF gateway group", True, None),
-                "server_address": Param(str, "NVMeoF gateway address", True, None),
-                "traddr": Param(str, "NVMeoF gateway address (deprecated)", True, None),
-            },
-        )
-        def resize_cli(
-            self,
-            nqn: str,
-            nsid: str,
-            rbd_image_size: str,
-            gw_group: Optional[str] = None,
-            server_address: Optional[str] = None,
-            traddr: Optional[str] = None
-        ):
-            return _api(
-                'namespace_resize',
-                nqn=nqn,
-                nsid=nsid,
-                rbd_image_size=rbd_image_size,
-                gw_group=gw_group,
-                server_address=server_address,
-                traddr=traddr)
         @ReadPermission
         @Endpoint('PUT', '{nsid}/add_host')
         @EndpointDoc(
@@ -1180,6 +1081,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @ReadPermission
         @Endpoint('PUT', '{nsid}/del_host')
         @EndpointDoc(
@@ -1210,6 +1112,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @ReadPermission
         @Endpoint('PUT', '{nsid}/change_visibility')
         @EndpointDoc(
@@ -1243,6 +1146,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @ReadPermission
         @Endpoint('PUT', '{nsid}/change_location')
         @EndpointDoc(
@@ -1273,6 +1177,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @ReadPermission
         @Endpoint('GET', 'list_hosts')
         @EndpointDoc(
@@ -1300,6 +1205,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @ReadPermission
         @Endpoint('GET', 'list_locations')
         @EndpointDoc(
@@ -1327,6 +1233,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @ReadPermission
         @Endpoint('PUT', '{nsid}/set_auto_resize')
         @EndpointDoc(
@@ -1361,6 +1268,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @ReadPermission
         @Endpoint('PUT', '{nsid}/set_rbd_trash_image')
         @EndpointDoc(
@@ -1392,6 +1300,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @ReadPermission
         @Endpoint('PUT', '{nsid}/refresh_size')
         @EndpointDoc(
@@ -1419,6 +1328,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @ReadPermission
         @Endpoint('PUT', '{nsid}/unpin')
         @EndpointDoc(
@@ -1446,6 +1356,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @pick("namespaces", first=True)
         @EndpointDoc(
             "Update an existing NVMeoF namespace",
@@ -1496,6 +1407,7 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
+
         @empty_response
         @EndpointDoc(
             "Delete an existing NVMeoF namespace",
@@ -1525,20 +1437,6 @@ else:
                 gw_group=gw_group,
                 server_address=server_address,
                 traddr=traddr)
-    def _normalize_enum_key(val):
-        return val.replace("_", " ").title()
-
-    def _update_hosts(hosts_info_resp):
-        if hosts_info_resp.get('allow_any_host'):
-            hosts_info_resp['hosts'].insert(0, {"nqn": "*"})
-        hosts = hosts_info_resp.get('hosts')
-        if not hosts:
-            hosts = []
-        for h in hosts:
-            orig = h.get("dhchap_controller_origin")
-            if orig:
-                h["dhchap_controller_origin"] = _normalize_enum_key(orig)
-        return hosts_info_resp
 
     @APIRouter("/nvmeof/subsystem/{nqn}/host", Scope.NVME_OF)
     @APIDoc("NVMe-oF Subsystem Host Allowlist Management API",
@@ -1705,17 +1603,6 @@ else:
             return _api('host_del_controller_key', nqn=nqn, host_nqn=host_nqn,
                         gw_group=gw_group, server_address=server_address,
                         traddr=traddr)
-
-    def _update_connections(connection_list_resp):
-        conns = connection_list_resp.get('connections')
-        if not conns:
-            conns = []
-        for con in conns:
-            orig = con.get("dhchap_controller_origin")
-            if orig:
-                con["dhchap_controller_origin"] = _normalize_enum_key(
-                    orig)
-        return connection_list_resp
 
     @APIRouter("/nvmeof/subsystem/{nqn}/connection", Scope.NVME_OF)
     @APIDoc("NVMe-oF Subsystem Connection Management API", "NVMe-oF Subsystem Connection")

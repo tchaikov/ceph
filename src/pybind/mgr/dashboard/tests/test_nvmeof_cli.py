@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 import pytest
 from mgr_module import HandleCommandResult
 
-from ..cli import DBCLICommand
 from ..controllers import EndpointDoc
 from ..exceptions import DashboardException
 from nvmeof.model import CliEmptyMessage, CliFieldTransformer, CliFlags, CliHeader
@@ -19,8 +18,7 @@ from nvmeof.utils import convert_from_bytes, convert_to_bytes, \
 from nvmeof.errors import NvmeofInvalidInputError
 from nvmeof.utils import resolve_nvmeof_server_address
 
-from ..services.nvmeof_cli import NvmeofCLICommand
-from ..tests import CLICommandTestMixin
+from nvmeof.cli import NvmeofCLICommand, NVMeoFCLICommand
 
 
 @pytest.fixture(scope="class", name="sample_command")
@@ -44,7 +42,7 @@ def fixture_base_call_mock(monkeypatch):
     mock_result = {'a': 'b'}
     super_mock = MagicMock()
     super_mock.return_value = mock_result
-    monkeypatch.setattr(DBCLICommand, 'call', super_mock)
+    monkeypatch.setattr(NVMeoFCLICommand, 'call', super_mock)
     return super_mock
 
 
@@ -53,7 +51,7 @@ def fixture_base_call_return_none_mock(monkeypatch):
     mock_result = None
     super_mock = MagicMock()
     super_mock.return_value = mock_result
-    monkeypatch.setattr(DBCLICommand, 'call', super_mock)
+    monkeypatch.setattr(NVMeoFCLICommand, 'call', super_mock)
     return super_mock
 
 
@@ -128,24 +126,6 @@ class TestNvmeofCLICommand:
 
     def test_command_empty_desc_by_default(self, sample_command):
         assert NvmeofCLICommand.COMMANDS[sample_command].desc == ''
-
-    def test_command_with_endpointdoc_get_desc(self):
-        test_cmd = "test command1"
-        test_desc = 'test desc1'
-
-        class Model(NamedTuple):
-            a: str
-            b: int
-
-        @NvmeofCLICommand(test_cmd, Model)
-        @EndpointDoc(test_desc)
-        def func(_):  # pylint: disable=unused-argument, unused-variable
-            return {'a': '1', 'b': 2}
-
-        assert NvmeofCLICommand.COMMANDS[test_cmd].desc == test_desc
-
-        del NvmeofCLICommand.COMMANDS[test_cmd]
-        assert test_cmd not in NvmeofCLICommand.COMMANDS
 
     def test_command_with_endpointdoc_and_docstr_get_docstr(self):
         test_cmd = "test command1"
@@ -1389,10 +1369,11 @@ class TestNvmeofModuleContract(unittest.TestCase):
     ]
 
     def test_api_calls_bind(self):
-        """Scan every _api('name', kw=...) call site in the controller and
-        verify it binds against the real function in nvmeof.api."""
+        """Walk every _api(...) call site in the controller and verify it
+        binds against the real function in nvmeof.api. An AST walk cannot
+        silently skip call sites the way a regex would."""
+        import ast
         import inspect
-        import re
 
         import nvmeof.api as api
 
@@ -1400,16 +1381,37 @@ class TestNvmeofModuleContract(unittest.TestCase):
         src_path = inspect.getsourcefile(controllers.nvmeof)
         assert src_path
         with open(src_path) as f:
-            src = f.read()
+            tree = ast.parse(f.read())
 
-        calls = re.findall(
-            r"_api\(\s*'(\w+)'((?:\s*,\s*\w+=[^,)]+)*)\s*\)", src)
+        calls = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name)
+                 and node.func.id == '_api']
         self.assertGreater(len(calls), 50)
-        for method, kwargs_src in calls:
+        for call in calls:
+            # every call site must be _api('literal', kw=..., ...):
+            # the method name positional-only and everything else by
+            # keyword, or the signature check below is meaningless
+            self.assertEqual(len(call.args), 1,
+                             f'line {call.lineno}: _api() must be called '
+                             'with the method name as its only positional '
+                             'argument')
+            self.assertIsInstance(call.args[0], ast.Constant,
+                                  f'line {call.lineno}: _api() method name '
+                                  'must be a string literal')
+            method = call.args[0].value
+            kwargs = {}
+            for kw in call.keywords:
+                self.assertIsNotNone(kw.arg,
+                                     f'line {call.lineno}: _api() must not '
+                                     'be called with **kwargs')
+                kwargs[kw.arg] = None
             fn = getattr(api, method, None)
             self.assertIsNotNone(fn, f'nvmeof.api lacks {method}()')
-            kwargs = dict.fromkeys(re.findall(r'(\w+)=', kwargs_src))
             sig = inspect.signature(fn)
+            self.assertNotIn('self', sig.parameters,
+                             f'{method}() still takes self; the first '
+                             'parameter must be the module instance (mgr)')
             try:
                 sig.bind(None, **kwargs)  # None stands in for the module
             except TypeError as e:

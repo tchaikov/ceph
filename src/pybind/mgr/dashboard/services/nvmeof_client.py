@@ -2,7 +2,7 @@
 
 import functools
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from ..exceptions import DashboardException
 from ..services.ceph_service import CephService
@@ -29,8 +29,10 @@ try:
     from nvmeof.errors import NvmeofError, NvmeofGatewayUnavailableError, \
         NvmeofStatusError
 
-    from nvmeof.proto import gateway_pb2 as pb2  # type: ignore
-    from nvmeof.proto import gateway_pb2_grpc as pb2_grpc  # type: ignore
+    # probe the generated bindings so a missing/broken gencode takes
+    # the ImportError path below
+    from nvmeof.proto import gateway_pb2 as pb2  # type: ignore # noqa: F401
+    from nvmeof.proto import gateway_pb2_grpc as pb2_grpc  # type: ignore # noqa: F401
 except ImportError:
     grpc = None
 else:
@@ -117,8 +119,8 @@ else:
 
         return wrapper
 
-
     # pylint: disable-next=redefined-outer-name
+
     def pick(field: str, first: bool = False,
              ) -> Callable[..., Callable[..., object]]:
         def decorator(func: Callable[..., Dict]) -> Callable[..., object]:

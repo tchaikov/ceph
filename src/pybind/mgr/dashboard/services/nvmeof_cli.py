@@ -2,7 +2,6 @@
 import logging
 
 from mgr_module import CLICheckNonemptyFileInput
-from nvmeof.cli import NvmeofCLICommandMixin
 
 from ..cli import DBCLICommand
 
@@ -37,8 +36,3 @@ def remove_nvmeof_gateway(mgr, name: str, daemon_name: str = ''):
     '''
     return tuple(mgr.remote('nvmeof', 'gateway_cfg_rm', name=name,
                             daemon_name=daemon_name))
-
-
-class NvmeofCLICommand(NvmeofCLICommandMixin, DBCLICommand):
-    """CLI command still registered on the dashboard's registry; batches
-    migrate to the nvmeof module one resource at a time."""
