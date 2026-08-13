@@ -22,6 +22,7 @@
 #include "crimson/mon/MonClient.h"
 #include "crimson/net/Messenger.h"
 
+#include <cstring>
 #include <fcntl.h>
 #include <sys/wait.h>
 
@@ -292,6 +293,18 @@ get_early_config(int argc, const char *argv[])
   if (ceph_argparse_need_usage(args)) {
     usage(argv[0]);
     exit(0);
+  }
+  // --help-seastar and --help-loggers are normally handled by
+  // seastar::app_template::run_deprecated(), but that only runs after
+  // get_early_config() has forked a child to contact the monitors, so
+  // these flags would otherwise fall through into
+  // populate_config_from_mon() and hang forever in the mon hunting loop.
+  // Bail out here too, before the fork.
+  for (auto a : args) {
+    if (strcmp(a, "--help-seastar") == 0 || strcmp(a, "--help-loggers") == 0) {
+      usage(argv[0]);
+      exit(0);
+    }
   }
   int pipes[2];
   int r = pipe2(pipes, O_CLOEXEC);
