@@ -284,8 +284,16 @@ public:
 	    return _fut;
 	  }
 	}
-	fut = target_shard_services.wait_for_pg(
-	  std::move(trigger), opref.get_pgid());
+	/* Release this shard's create_or_wait_pg exclusive phase before
+	 * entering the potentially-unbounded wait for the pg to be
+	 * created/loaded -- otherwise, an op waiting on a pg that never
+	 * shows up holds this phase forever, starving every other client
+	 * request dispatched to this shard regardless of target pg. */
+	fut = opref.get_handle().complete().then(
+	  [&target_shard_services, &opref, trigger=std::move(trigger)]() mutable {
+	    return target_shard_services.wait_for_pg(
+	      std::move(trigger), opref.get_pgid());
+	  });
       }
       return fut.safe_then([&logger, &target_shard_services, &opref](Ref<PG> pgref) {
 	logger.debug("{}: have_pg", opref);
