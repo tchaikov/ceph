@@ -278,7 +278,6 @@ public:
 	    logger.debug(
 	      "pg {} for {} is no longer here, discarding",
 	      opref.get_pgid(), opref);
-	    opref.get_handle().exit();
 	    auto _fut = seastar::now();
 	    if (osdmap->get_epoch() > opref.get_epoch_sent_at()) {
 	      _fut = target_shard_services.send_incremental_map(
@@ -425,21 +424,33 @@ public:
         core_store.first, std::move(op),
         [this, core_store](ShardServices &target_shard_services,
                typename T::IRef op) {
-        auto &opref = *op;
-        auto &logger = crimson::get_logger(ceph_subsys_osd);
-        logger.debug("{}: entering create_or_wait_pg", opref);
-        return opref.template enter_stage<>(
-          opref.get_pershard_pipeline(target_shard_services).create_or_wait_pg
-        ).then([this, &target_shard_services, op=std::move(op), core_store]() mutable {
-          if constexpr (T::can_create()) {
+        if constexpr (T::can_create()) {
+          auto &opref = *op;
+          auto &logger = crimson::get_logger(ceph_subsys_osd);
+          logger.debug("{}: entering create_or_wait_pg", opref);
+          return opref.template enter_stage<>(
+            opref.get_pershard_pipeline(target_shard_services).create_or_wait_pg
+          ).then([this, &target_shard_services, op=std::move(op), core_store]() mutable {
             return this->template run_with_pg_maybe_create<T>(
                 std::move(op), target_shard_services, core_store.second);
-          } else {
-            (void)core_store; // silence unused capture warning
-            return this->template run_with_pg_maybe_wait<T>(
-                std::move(op), target_shard_services);
-          }
-        });
+          });
+        } else {
+          /* An op that cannot create a pg needs no exclusion here.  Everything
+           * run_with_pg_maybe_wait() does before it awaits is synchronous, so
+           * it already runs to completion against any other op on this shard,
+           * and ops reach us in order, so they register on pgs_creating in
+           * order too.  Taking create_or_wait_pg would only add the hazard
+           * that an op parked on a pg which never appears holds an exclusive
+           * phase for as long as it waits, queueing every other op on the same
+           * pipeline behind it whatever pgid they target.
+           *
+           * This relies on there being no scheduling point between entry to
+           * run_with_pg_maybe_wait() and PGMap::wait_for_pg() taking its slot.
+           * Introducing one there would silently reorder same-pgid ops. */
+          (void)core_store; // silence unused capture warning
+          return this->template run_with_pg_maybe_wait<T>(
+              std::move(op), target_shard_services);
+        }
       });
     });
     return std::make_pair(id, std::move(fut));
