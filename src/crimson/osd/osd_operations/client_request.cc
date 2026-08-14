@@ -144,10 +144,12 @@ ClientRequest::interruptible_future<> ClientRequest::with_pg_process_interruptib
 
   DEBUGDPP("{}.{}: entering wait_pg_ready stage",
 	   *pgref, *this, this_instance_id);
-  // The prior stage is OrderedExclusive (PerShardPipeline::create_or_wait_pg)
-  // and wait_pg_ready is OrderedConcurrent.  This transition, therefore, cannot
-  // block and using enter_stage_sync is legal and more efficient than
-  // enter_stage.
+  // enter_stage_sync is legal because this transition cannot block, and it
+  // is cheaper than enter_stage.  wait_pg_ready is OrderedConcurrent, whose
+  // enter() is synchronous, and the handle arrives holding no exit barrier
+  // to drain: a client request cannot create a pg, so it never takes
+  // create_or_wait_pg, and a requeue arrives on a handle freshly allocated
+  // by reset_instance_handle().
   ihref.enter_stage_sync(client_pp(pg).wait_pg_ready, *this);
 
   if (pg.can_discard_op(*m)) {
