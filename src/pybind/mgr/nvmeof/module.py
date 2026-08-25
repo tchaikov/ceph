@@ -2,9 +2,10 @@ import errno
 import json
 import logging
 import threading
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, cast
 
 import orchestrator
+from ceph.deployment.service_spec import NvmeofServiceSpec
 from orchestrator import OrchestratorError
 
 from .cli import NVMeoFCLICommand
@@ -99,7 +100,7 @@ class NVMeoF(orchestrator.OrchestratorClientMixin, MgrModule):
                                  "registry of unexpected shape")
             self.set_store(MIGRATION_DONE_KEY, 'v1')
 
-    def _adopt_gateways(self, adopted):
+    def _adopt_gateways(self, adopted: Dict[str, Any]) -> None:
         """Merge the dashboard's registry into ours, keeping what is here.
 
         The store is not necessarily empty by the time this runs: a mon
@@ -136,13 +137,14 @@ class NVMeoF(orchestrator.OrchestratorClientMixin, MgrModule):
         logger.info("adopted %d gateway(s) from the dashboard registry",
                     adopted_daemons)
 
-    def get_nvmeof_collector(self, session_id: str = '', ttl: int = 3600):
+    def get_nvmeof_collector(self, session_id: Optional[str] = '',
+                             ttl: int = 3600) -> Optional[Any]:
         import time
 
         from .top import NvmeofTopCollector
         STALE_POLL_THRESHOLD = 5  # expire if 5 poll intervals passed without activity
 
-        def _expire_old_sessions():
+        def _expire_old_sessions() -> None:
             now = time.time()
             expired = []
 
@@ -233,7 +235,7 @@ class NVMeoF(orchestrator.OrchestratorClientMixin, MgrModule):
         try:
             services = orchestrator.raise_if_exception(
                 self.describe_service(service_name=service_name))
-            return services[0].spec.enable_auth
+            return cast(NvmeofServiceSpec, services[0].spec).enable_auth
         except (OrchestratorError, IndexError):
             return False
 
@@ -255,7 +257,8 @@ class NVMeoF(orchestrator.OrchestratorClientMixin, MgrModule):
                 # the group name provided
                 services = orchestrator.raise_if_exception(
                     self.describe_service(service_name=service_name))
-                if group == services[0].spec.group:
+                spec = cast(NvmeofServiceSpec, services[0].spec)
+                if group == spec.group:
                     daemons = orchestrator.raise_if_exception(
                         self.list_daemons(service_name=service_name))
                     running = [d.to_dict()['daemon_name'] for d in daemons

@@ -7,13 +7,17 @@ import ipaddress
 import json
 import logging
 import time
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, cast
 
 import orchestrator
+from ceph.deployment.service_spec import NvmeofServiceSpec
 from mgr_module import HandleCommandResult
 from orchestrator import OrchestratorError
 
 from .cli import NVMeoFCLICommand
+
+if TYPE_CHECKING:
+    from .module import NVMeoF
 
 logger = logging.getLogger(__name__)
 
@@ -26,19 +30,20 @@ except ImportError as e:
 else:
     MAX_SESSION_TTL = 60 * 60
 
-    def get_collector(mgr, session_id: Optional[str]):
+    def get_collector(mgr: 'NVMeoF', session_id: Optional[str]) -> Optional[Any]:
         return mgr.get_nvmeof_collector(session_id, MAX_SESSION_TTL)
 
-    def get_pool_group_name(mgr, service_name: str):
+    def get_pool_group_name(mgr: 'NVMeoF',
+                            service_name: str) -> Optional[Tuple[str, Optional[str]]]:
         try:
             services = orchestrator.raise_if_exception(
                 mgr.describe_service(service_name=service_name))
-            spec = services[0].spec
+            spec = cast(NvmeofServiceSpec, services[0].spec)
             return (spec.pool, spec.group)
         except (OrchestratorError, IndexError):
             return None
 
-    def get_lbg_gws_map(mgr, service_name: str):
+    def get_lbg_gws_map(mgr: 'NVMeoF', service_name: str) -> Dict[int, str]:
         pool_group = get_pool_group_name(mgr, service_name)
         if not pool_group:
             logger.error("Error getting pool name and group name of the service")
@@ -53,7 +58,7 @@ else:
             }
             ret_status, out, _ = mgr.mon_command(cmd)
             if ret_status == 0 and out is not None:
-                lbg_gws_map = {}
+                lbg_gws_map: Dict[int, str] = {}
                 gws_info = json.loads(out)
                 for gw in gws_info["Created Gateways:"]:
                     gw_id = str(gw["gw-id"]).removeprefix("client.")
@@ -66,21 +71,21 @@ else:
             return {}
 
     class Health:
-        def __init__(self):
+        def __init__(self) -> None:
             self.rc = 0
             self.msg = ''
 
     class Counter:
-        def __init__(self):
+        def __init__(self) -> None:
             self.current = 0.0
             self.last = 0.0
 
-        def update(self, new_value: float):
+        def update(self, new_value: float) -> None:
             """Update the stats maintaining current and last"""
             self.last = self.current
             self.current = new_value
 
-        def rate(self, interval: float):
+        def rate(self, interval: float) -> float:
             """Calculate the per second change rate"""
             if not interval:
                 return 0.0
@@ -96,19 +101,19 @@ else:
             self.write_bytes = Counter()
             self.write_secs = Counter()
 
-            self.read_ops_rate = 0
-            self.write_ops_rate = 0
-            self.read_bytes_rate = 0
-            self.write_bytes_rate = 0
+            self.read_ops_rate = 0.0
+            self.write_ops_rate = 0.0
+            self.read_bytes_rate = 0.0
+            self.write_bytes_rate = 0.0
             self.read_secs_rate = 0.0
             self.write_secs_rate = 0.0
-            self.total_ops_rate = 0
+            self.total_ops_rate = 0.0
             self.rareq_sz = 0.0
             self.wareq_sz = 0.0
             self.r_await = 0.0
             self.w_await = 0.0
 
-        def calculate(self, delay: float):
+        def calculate(self, delay: float) -> None:
             self.read_ops_rate = self.read_ops.rate(delay)
             self.read_bytes_rate = self.read_bytes.rate(delay)
             self.read_secs_rate = self.read_secs.rate(delay)
@@ -140,23 +145,23 @@ else:
             self.busy_rate = 0.0
             self.idle_rate = 0.0
 
-        def calculate(self, delay: float):
+        def calculate(self, delay: float) -> None:
             self.busy_rate = self.busy_secs.rate(delay)
             self.idle_rate = self.idle_secs.rate(delay)
 
     class NvmeofTopCollector:  # type: ignore[no-redef]  # noqa  # pylint: disable=function-redefined,too-many-instance-attributes
-        def __init__(self, mgr):
+        def __init__(self, mgr: 'NVMeoF') -> None:
             self.mgr = mgr
             self.tool: Any = None
             self.subsystem_nqn = ''
             self.service = ''
             self.group = ''
             self.delay: float = 0.0
-            self.namespaces = {}
+            self.namespaces: Dict[str, Any] = {}
             self.lbg_to_gateway: dict = {}
             self.subsystems: Any = None
-            self.reactor_stats = {}
-            self.iostats = {}
+            self.reactor_stats: Dict[str, Any] = {}
+            self.iostats: Dict[str, Any] = {}
             self.gw_info: Any = None
             self.client: Any = None
             self.timestamp = time.time()
@@ -164,7 +169,7 @@ else:
             self.clients: dict = {}
 
         @property
-        def nqn_list(self):
+        def nqn_list(self) -> List[Any]:
             return [subsys.nqn for subsys in self.subsystems.subsystems]
 
         @property
@@ -180,14 +185,14 @@ else:
             return len(self.nqn_list)
 
         @property
-        def total_namespaces_overall(self):
+        def total_namespaces_overall(self) -> int:
             total = 0
             for subsys in self.subsystems.subsystems:
                 total += subsys.namespace_count
             return total
 
         @property
-        def max_namespaces(self):
+        def max_namespaces(self) -> int:
             for subsys in self.subsystems.subsystems:
                 if subsys.nqn == self.subsystem_nqn:
                     return subsys.max_namespaces
@@ -196,10 +201,11 @@ else:
             return 0
 
         @property
-        def load_balancing_group(self):
+        def load_balancing_group(self) -> Any:
             return self.gw_info.load_balancing_group
 
-        def get_sorted_namespaces(self, sort_pos: int, reverse_sort: bool):
+        def get_sorted_namespaces(self, sort_pos: int,
+                                  reverse_sort: bool) -> List[Tuple[Any, ...]]:
             logger.debug("get_sorted_namespaces")
             ns_data = []
             for ns in self.namespaces[self.subsystem_nqn]:
@@ -250,7 +256,8 @@ else:
             ns_data.sort(key=lambda t: t[sort_pos], reverse=reverse_sort)
             return ns_data
 
-        def get_reactor_data(self, sort_pos: int, reverse_sort: bool):
+        def get_reactor_data(self, sort_pos: int,
+                             reverse_sort: bool) -> List[Tuple[Any, ...]]:
             reactor_data = []
             for gw_addr, threads in self.reactor_stats.items():
                 for _, thread_stats in threads.items():
@@ -264,20 +271,20 @@ else:
             reactor_data.sort(key=lambda t: t[sort_pos], reverse=reverse_sort)
             return reactor_data
 
-        def get_subsystem_summary_data(self):
+        def get_subsystem_summary_data(self) -> List[Any]:
             return [
                 self.subsystem_nqn,
                 f'{self.total_namespaces_defined} / {self.max_namespaces}',
             ]
 
-        def get_overall_summary_data(self):
+        def get_overall_summary_data(self) -> List[Any]:
             return [
                 self.group,
                 self.total_subsystems,
                 self.total_namespaces_overall,
             ]
 
-        def get_gateway_summary_data(self):
+        def get_gateway_summary_data(self) -> List[Any]:
             return [
                 self.client.gateway_addr,
                 self.load_balancing_group,
@@ -285,22 +292,23 @@ else:
                 self.total_namespaces_overall,
             ]
 
-        def qos_enabled(self, ns) -> str:
+        def qos_enabled(self, ns: Any) -> str:
             if (ns.rw_ios_per_second or ns.rw_mbytes_per_second
                     or ns.r_mbytes_per_second or ns.w_mbytes_per_second):
                 return 'Yes'
             return 'No'
 
-        def lb_group(self, grp_id: int):
+        def lb_group(self, grp_id: int) -> str:
             """Provide a meaningful default when load-balancing is not in use"""
             return "N/A" if grp_id == 0 else f"{grp_id}"
 
-        def bytes_to_MB(self, num_bytes: int, si: int = 1024):
+        def bytes_to_MB(self, num_bytes: float, si: int = 1024) -> float:
             """Simple conversion of bytes to MiB or MB"""
             return (num_bytes / si) / si
 
         # grpc methods
-        def _call_grpc(self, method_name, request, client=None):
+        def _call_grpc(self, method_name: str, request: Any,
+                       client: Any = None) -> Any:
             logger.debug("calling grpc method %s", method_name)
             if not client:
                 client = self.client
@@ -317,7 +325,7 @@ else:
             logger.debug("call to %s successful", method_name)
             return response
 
-        def _fetch_namespace_iostats(self, client):
+        def _fetch_namespace_iostats(self, client: Any) -> None:
             daemon_name = client.daemon_name
             logger.debug("fetching iostats for namespaces from %s", daemon_name)
             stats = self._call_grpc('list_namespaces_io_stats',
@@ -341,12 +349,12 @@ else:
                 ns_stats.write_bytes.update(ns.bytes_written)
                 ns_stats.write_secs.update((ns.write_latency_ticks / stats.tick_rate))
 
-        def _fetch_namespaces(self, subsystem_nqn):
+        def _fetch_namespaces(self, subsystem_nqn: str) -> Any:
             return self._call_grpc(
                 'list_namespaces',
                 NVMeoFClient.pb2.list_namespaces_req(subsystem=subsystem_nqn))
 
-        def _fetch_thread_stats(self, client):
+        def _fetch_thread_stats(self, client: Any) -> None:
             gateway_addr = client.gateway_addr
             logger.debug("fetching thread stats for %s", gateway_addr)
             stats = self._call_grpc('get_thread_stats',
@@ -365,15 +373,15 @@ else:
                 thread_stats.busy_secs.update(thread.busy / tick_rate)
                 thread_stats.idle_secs.update(thread.idle / tick_rate)
 
-        def _fetch_gateway_info(self, client):
+        def _fetch_gateway_info(self, client: Any) -> Any:
             return self._call_grpc(
                 'get_gateway_info',
                 NVMeoFClient.pb2.get_gateway_info_req(), client)
 
-        def _fetch_subsystems(self):
+        def _fetch_subsystems(self) -> Any:
             return self._call_grpc('list_subsystems', NVMeoFClient.pb2.list_subsystems_req())
 
-        def _get_client(self, group, server_addr):
+        def _get_client(self, group: str, server_addr: str) -> NVMeoFClient:
             key = (group, server_addr)
             if key not in self.clients:
                 self.clients[key] = NVMeoFClient(self.mgr, gw_group=group,
@@ -381,7 +389,7 @@ else:
             return self.clients[key]
 
         def _set_gateways(self, group_filter: str, addr_filter: str,
-                          port_filter: Optional[int] = None):
+                          port_filter: Optional[int] = None) -> None:
             if self.service and self.group:
                 return
 
@@ -435,7 +443,7 @@ else:
             for gw in matched_gws:
                 self._get_client(self.group, gw['service_url'])
 
-        def initialise(self, tool):
+        def initialise(self, tool: 'NVMeoFTopTool') -> None:
             self.health = Health()
             self.tool = tool
 
@@ -460,14 +468,14 @@ else:
                     return
                 logger.debug("Connected to %s", self.client.gateway_addr)
 
-        def collect_cpu_data(self):
+        def collect_cpu_data(self) -> None:
             for client in self.clients.values():
                 self._fetch_thread_stats(client)
                 if not self.ready:
                     return
             logger.debug("collect_cpu_data completed")
 
-        def _set_subsystem_and_namespaces(self):
+        def _set_subsystem_and_namespaces(self) -> None:
             if self.subsystems is not None and self.subsystem_nqn in self.namespaces:
                 return
 
@@ -497,7 +505,7 @@ else:
             logger.debug("Subsystem '%s' has %s namespaces",
                          self.subsystem_nqn, self.total_namespaces_defined)
 
-        def collect_io_data(self):
+        def collect_io_data(self) -> None:
             self.subsystem_nqn = self.tool.subsystem_nqn
 
             self._set_subsystem_and_namespaces()
@@ -551,8 +559,8 @@ else:
                 err = self._validate_args()
                 if err:
                     return err
-                self.collector = get_collector(self.args.get('mgr'),
-                                               self.args.get('session_id'))
+                mgr = cast('NVMeoF', self.args.get('mgr'))
+                self.collector = get_collector(mgr, self.args.get('session_id'))
                 if self.collector is None:
                     return (-errno.EINVAL, "Unable to initialise collector")
                 self.collector.initialise(self)
@@ -575,20 +583,20 @@ else:
                 logger.exception("top tool failed to run: %s", ex)
                 return (-errno.EINVAL, str(ex))
 
-        def _collect(self):
+        def _collect(self) -> None:
             raise NotImplementedError
 
-        def format_output(self):
+        def format_output(self) -> str:
             raise NotImplementedError
 
     class NVMeoFTopCPU(NVMeoFTopTool):
         reactors_headers = ['Gateway', 'Thread Name', 'Busy Rate%', 'Idle Rate%']
         reactors_template = "{:<30}   {:<30}   {:<20}   {:<20}\n"
 
-        def _collect(self):
+        def _collect(self) -> None:
             self.collector.collect_cpu_data()
 
-        def format_output(self):
+        def format_output(self) -> str:
             if self.sort_key not in NVMeoFTopCPU.reactors_headers:
                 raise ValueError(
                     f"Invalid sort key '{self.sort_key}'. "
@@ -632,10 +640,10 @@ else:
             super().__init__(args)
             self.subsystem_nqn = args.get('nqn')
 
-        def _collect(self):
+        def _collect(self) -> None:
             self.collector.collect_io_data()
 
-        def format_output(self):
+        def format_output(self) -> str:
             if self.sort_key not in NVMeoFTopIO.ns_headers:
                 raise ValueError(
                     f"Invalid sort key '{self.sort_key}'. "
@@ -677,12 +685,14 @@ else:
             return ''.join(rows)
 
     @NVMeoFCLICommand.Read('nvmeof top cpu', poll=True)
-    def nvmeof_top_cpu(mgr, server_address: str = '', server_port: Optional[int] = None,
+    def nvmeof_top_cpu(mgr: 'NVMeoF', server_address: str = '',
+                       server_port: Optional[int] = None,
                        gw_group: str = '',
                        descending: bool = False, sort_by: str = 'Thread Name',
                        with_timestamp: bool = False,
                        no_header: bool = False,
-                       period: float = 1.0, session_id: Optional[str] = None):
+                       period: float = 1.0,
+                       session_id: Optional[str] = None) -> HandleCommandResult:
         '''
         NVMeoF Top CPU Tool
         '''
@@ -710,13 +720,14 @@ else:
         return HandleCommandResult(stdout=output, retval=rc)
 
     @NVMeoFCLICommand.Read('nvmeof top io', poll=True)
-    def nvmeof_top_io(mgr, nqn: str = '',
+    def nvmeof_top_io(mgr: 'NVMeoF', nqn: str = '',
                       server_address: str = '', server_port: Optional[int] = None,
                       gw_group: str = '',
                       descending: bool = False, sort_by: str = 'NSID',
                       with_timestamp: bool = False,
                       summary: bool = False, no_header: bool = False,
-                      period: float = 1.0, session_id: Optional[str] = None):
+                      period: float = 1.0,
+                      session_id: Optional[str] = None) -> HandleCommandResult:
         '''
         NVMeoF Top IO Tool
         '''

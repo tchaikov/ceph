@@ -15,16 +15,17 @@ logger = logging.getLogger(__name__)
 
 class OutputFormatter(ABC):
     @abstractmethod
-    def format_output(self, data, model, template_context: Optional[Dict] = None):
+    def format_output(self, data: Any, model: Type[NamedTuple],
+                      template_context: Optional[Dict] = None) -> str:
         """Format the given data for output."""
         raise NotImplementedError()
 
 
 class AnnotatedDataTextOutputFormatter(OutputFormatter):
-    def _snake_case_to_title(self, s):
+    def _snake_case_to_title(self, s: str) -> str:
         return s.replace('_', ' ').title()
 
-    def _create_table(self, field_names):
+    def _create_table(self, field_names: List[str]) -> PrettyTable:
         table = PrettyTable(border=True)
         titles = [self._snake_case_to_title(field) for field in field_names]
         table.field_names = titles
@@ -32,12 +33,12 @@ class AnnotatedDataTextOutputFormatter(OutputFormatter):
         table.padding_width = 0
         return table
 
-    def _get_text_output(self, data):
+    def _get_text_output(self, data: Any) -> str:
         if isinstance(data, list):
             return self._get_list_text_output(data)
         return self._get_object_text_output(data)
 
-    def _get_row(self, columns, data_obj):
+    def _get_row(self, columns: List[str], data_obj: Dict[str, Any]) -> List[str]:
         row = []
         for col in columns:
             col_val = data_obj.get(col)
@@ -46,7 +47,7 @@ class AnnotatedDataTextOutputFormatter(OutputFormatter):
             row.append(str(col_val))
         return row
 
-    def _get_list_text_output(self, data):
+    def _get_list_text_output(self, data: List[Dict[str, Any]]) -> str:
         columns = list(dict.fromkeys([key for obj in data for key in obj.keys()]))
         if not columns:
             return ''
@@ -55,7 +56,7 @@ class AnnotatedDataTextOutputFormatter(OutputFormatter):
             table.add_row(self._get_row(columns, d))
         return table.get_string()
 
-    def _get_object_text_output(self, data):
+    def _get_object_text_output(self, data: Dict[str, Any]) -> str:
         columns = [k for k in data.keys() if k not in ["status", "error_message"]]
         if not columns:
             return ''
@@ -63,7 +64,7 @@ class AnnotatedDataTextOutputFormatter(OutputFormatter):
         table.add_row(self._get_row(columns, data))
         return table.get_string()
 
-    def _is_list_of_complex_type(self, value):
+    def _is_list_of_complex_type(self, value: Any) -> Optional[bool]:
         if not isinstance(value, list):
             return False
 
@@ -80,7 +81,7 @@ class AnnotatedDataTextOutputFormatter(OutputFormatter):
                 return key
         return None
 
-    def is_namedtuple_type(self, obj):
+    def is_namedtuple_type(self, obj: Any) -> bool:
         return isinstance(obj, type) and issubclass(obj, tuple) and hasattr(obj, '_fields')
 
     def get_enum_class(self, maybe_enum: Any) -> Optional[Type[Enum]]:
@@ -172,11 +173,13 @@ class AnnotatedDataTextOutputFormatter(OutputFormatter):
 
         return result
 
-    def _convert_to_text_output(self, data, model, template_context: Optional[Dict] = None):
+    def _convert_to_text_output(self, data: Any, model: Type[NamedTuple],
+                                template_context: Optional[Dict] = None) -> str:
         data = self.process_dict(data, model, True, template_context)
         if isinstance(data, str):
             return data
         return self._get_text_output(data)
 
-    def format_output(self, data, model, template_context: Optional[Dict] = None):
+    def format_output(self, data: Any, model: Type[NamedTuple],
+                      template_context: Optional[Dict] = None) -> str:
         return self._convert_to_text_output(data, model, template_context)

@@ -1,5 +1,6 @@
 from enum import Enum, Flag, auto
-from typing import Annotated, Any, Callable, List, NamedTuple, Optional
+from typing import Annotated, Any, Callable, Dict, List, NamedTuple, \
+    Optional
 
 
 class CliFlags(Flag):
@@ -371,7 +372,7 @@ class AnaGroupState(NamedTuple):
     state: List[AnaState]
 
 
-def transform_lb_states(lb_states):
+def transform_lb_states(lb_states: List[Dict[str, Any]]) -> Optional[str]:
     filtered = [f"{lb['grp_id']}:{lb['state']}" for lb in lb_states if lb["state"] == "OPTIMIZED"]
     first_lb = filtered[0] if filtered else None
     return first_lb

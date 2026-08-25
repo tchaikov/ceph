@@ -5,13 +5,14 @@ These deliberately carry no HTTP semantics: the dashboard maps them to
 DashboardException with the appropriate status code, while the CLI maps
 them to an errno.
 """
+from typing import Any
 
 
 class NvmeofError(Exception):
     """Base class; ``code`` is an errno, a JSONRPC error code or a grpc
     status, depending on the subclass."""
 
-    def __init__(self, msg, code=None):
+    def __init__(self, msg: str, code: Any = None) -> None:
         super().__init__(msg)
         self.code = code
 

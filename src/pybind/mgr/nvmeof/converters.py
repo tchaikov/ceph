@@ -21,7 +21,7 @@ class MaxRecursionDepthError(Exception):
     pass
 
 
-def _convert(value, field_type, depth, max_depth) -> Generator:
+def _convert(value: Any, field_type: Any, depth: int, max_depth: int) -> Generator:
     if depth > max_depth:
         raise MaxRecursionDepthError(
             f"Maximum nesting depth of {max_depth} exceeded at depth {depth}.")
@@ -102,7 +102,7 @@ def obj_to_namedtuple(data: Any, target_type: Type[NamedTuple],
     return namedtuple_values
 
 
-def namedtuple_to_dict(obj):
+def namedtuple_to_dict(obj: Any) -> Any:
     if isinstance(obj, tuple) and hasattr(obj, '_asdict'):
         # If it's a namedtuple, convert it to a dictionary
         return {k: namedtuple_to_dict(v) for k, v in obj._asdict().items()}
@@ -122,7 +122,7 @@ def convert_to_model(model: Type[NamedTuple],
                      ) -> Callable[..., Callable[..., Model]]:
     def decorator(func: Callable[..., Message]) -> Callable[..., Model]:
         @functools.wraps(func)
-        def wrapper(*args, **kwargs) -> Model:
+        def wrapper(*args: Any, **kwargs: Any) -> Model:
             message = func(*args, **kwargs)
             msg_dict = MessageToDict(message, preserving_proto_field_name=True,
                                      **_MESSAGE_TO_DICT_DEFAULTS)  # type: ignore

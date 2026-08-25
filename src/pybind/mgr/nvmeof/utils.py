@@ -47,7 +47,8 @@ def format_host_updates(args: Dict[str, Any],
     return "\n".join(messages)
 
 
-def convert_to_bytes(size: Union[int, str], default_unit=None):
+def convert_to_bytes(size: Union[int, str],
+                     default_unit: Optional[str] = None) -> int:
     if isinstance(size, int):
         number = size
         size = str(size)
@@ -65,7 +66,7 @@ def convert_to_bytes(size: Union[int, str], default_unit=None):
     raise ValueError(f"Invalid unit: {unit_str}")
 
 
-def convert_from_bytes(num_in_bytes):
+def convert_from_bytes(num_in_bytes: float) -> str:
     units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
     size = float(num_in_bytes)
     unit_index = 0
@@ -110,13 +111,18 @@ def resolve_nvmeof_server_address(
     return resolved
 
 
-def str_to_bool(val):
+def str_to_bool(val: Optional[Union[str, bool]]) -> bool:
     """Convert a string representation of truth to True or False.
 
+    An omitted CLI or REST argument arrives as None; take that as
+    the false the callers default it to.
+
     :param val: The value to convert.
-    :type val: str|bool
+    :type val: str|bool|None
     :rtype: bool
     """
     if isinstance(val, bool):
         return val
+    if val is None:
+        return False
     return bool(strtobool(val))

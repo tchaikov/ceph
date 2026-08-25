@@ -9,7 +9,9 @@ client.
 """
 import threading
 from functools import partial
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+from google.protobuf.message import Message  # type: ignore
 
 from . import model
 from .cli import NvmeofCLICommand
@@ -18,6 +20,9 @@ from .converters import convert_to_model, namedtuple_to_dict
 from .errors import NvmeofInvalidInputError
 from .utils import convert_to_bytes, escape_address_if_ipv6, \
     format_host_updates, resolve_nvmeof_server_address, str_to_bool
+
+if TYPE_CHECKING:
+    from .module import NVMeoF
 
 
 # Side channel for REST-only semantics that must not leak HTTP concepts
@@ -40,11 +45,11 @@ def _flag_partial_failure() -> None:
     _thread_ctx.partial_failure = True
 
 
-def _normalize_enum_key(val):
+def _normalize_enum_key(val: str) -> str:
     return val.replace("_", " ").title()
 
 
-def _update_connections(connection_list_resp):
+def _update_connections(connection_list_resp: Dict[str, Any]) -> Dict[str, Any]:
     conns = connection_list_resp.get('connections')
     if not conns:
         conns = []
@@ -58,10 +63,10 @@ def _update_connections(connection_list_resp):
 @NvmeofCLICommand("nvmeof connection list", model.ConnectionList)
 @convert_to_model(model.ConnectionList, finalize=_update_connections)
 @handle_nvmeof_error
-def connection_list(mgr, nqn: Optional[str] = None,
+def connection_list(mgr: 'NVMeoF', nqn: Optional[str] = None,
                     gw_group: Optional[str] = None,
                     server_address: Optional[str] = None,
-                    traddr: Optional[str] = None):
+                    traddr: Optional[str] = None) -> Message:
     """List all NVMeoF Subsystem Connections"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -84,10 +89,10 @@ def connection_list(mgr, nqn: Optional[str] = None,
 )
 @convert_to_model(model.ConnectionIOStatistics)
 @handle_nvmeof_error
-def connection_get_io_statistics(mgr, nqn: str, host_nqn: str,
+def connection_get_io_statistics(mgr: 'NVMeoF', nqn: str, host_nqn: str,
                                  gw_group: Optional[str] = None,
                                  server_address: Optional[str] = None,
-                                 traddr: Optional[str] = None):
+                                 traddr: Optional[str] = None) -> Message:
     """Get the IO statistics for a connection"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -112,10 +117,10 @@ def connection_get_io_statistics(mgr, nqn: str, host_nqn: str,
 )
 @convert_to_model(model.ConnectionIOStatistics)
 @handle_nvmeof_error
-def connection_reset_io_statistics(mgr, nqn: str, host_nqn: str,
+def connection_reset_io_statistics(mgr: 'NVMeoF', nqn: str, host_nqn: str,
                                    gw_group: Optional[str] = None,
                                    server_address: Optional[str] = None,
-                                   traddr: Optional[str] = None):
+                                   traddr: Optional[str] = None) -> Message:
     """Reset the IO statistics for a connection"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -131,7 +136,7 @@ def connection_reset_io_statistics(mgr, nqn: str, host_nqn: str,
     )
 
 
-def _update_hosts(hosts_info_resp):
+def _update_hosts(hosts_info_resp: Dict[str, Any]) -> Dict[str, Any]:
     if hosts_info_resp.get('allow_any_host'):
         hosts_info_resp['hosts'].insert(0, {"nqn": "*"})
     hosts = hosts_info_resp.get('hosts')
@@ -147,9 +152,9 @@ def _update_hosts(hosts_info_resp):
 @NvmeofCLICommand("nvmeof host list", model.HostsInfo)
 @convert_to_model(model.HostsInfo, finalize=_update_hosts)
 @handle_nvmeof_error
-def host_list(mgr, nqn: str, gw_group: Optional[str] = None,
+def host_list(mgr: 'NVMeoF', nqn: str, gw_group: Optional[str] = None,
               server_address: Optional[str] = None,
-              traddr: Optional[str] = None):
+              traddr: Optional[str] = None) -> Message:
     """List all allowed hosts for an NVMeoF subsystem"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -174,11 +179,11 @@ def host_list(mgr, nqn: str, gw_group: Optional[str] = None,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def host_add(mgr, nqn: str, host_nqn: str, dhchap_key: Optional[str] = None,
+def host_add(mgr: 'NVMeoF', nqn: str, host_nqn: str, dhchap_key: Optional[str] = None,
              dhchap_controller_key: Optional[str] = None,
              psk: Optional[str] = None, gw_group: Optional[str] = None,
              server_address: Optional[str] = None,
-             traddr: Optional[str] = None):
+             traddr: Optional[str] = None) -> Message:
     """Allow hosts to access an NVMeoF subsystem"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -207,11 +212,11 @@ def host_add(mgr, nqn: str, host_nqn: str, dhchap_key: Optional[str] = None,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def host_del(mgr, nqn: str, host_nqn: str, force: Optional[bool] = False,
+def host_del(mgr: 'NVMeoF', nqn: str, host_nqn: str, force: Optional[bool] = False,
              gw_group: Optional[str] = None,
              server_address: Optional[str] = None,
              traddr: Optional[str] = None,
-             keep_connections: Optional[bool] = False):
+             keep_connections: Optional[bool] = False) -> Message:
     """Disallow hosts from accessing an NVMeoF subsystem"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -227,8 +232,12 @@ def host_del(mgr, nqn: str, host_nqn: str, force: Optional[bool] = False,
     )
 
 
-def _host_change_key(mgr, nqn, host_nqn, dhchap_key, dhchap_ctrlr_key,
-                     gw_group, server_address, traddr):
+def _host_change_key(mgr: 'NVMeoF', nqn: str, host_nqn: str,
+                     dhchap_key: Optional[str],
+                     dhchap_ctrlr_key: Optional[str],
+                     gw_group: Optional[str],
+                     server_address: Optional[str],
+                     traddr: Optional[str]) -> Message:
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
         traddr=traddr
@@ -252,10 +261,10 @@ def _host_change_key(mgr, nqn, host_nqn, dhchap_key, dhchap_ctrlr_key,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def host_change_key(mgr, nqn: str, host_nqn: str, dhchap_key: str,
+def host_change_key(mgr: 'NVMeoF', nqn: str, host_nqn: str, dhchap_key: str,
                     gw_group: Optional[str] = None,
                     server_address: Optional[str] = None,
-                    traddr: Optional[str] = None):
+                    traddr: Optional[str] = None) -> Message:
     """Change host DH-HMAC-CHAP key"""
     return _host_change_key(mgr, nqn, host_nqn, dhchap_key, "-",
                             gw_group, server_address, traddr)
@@ -269,11 +278,11 @@ def host_change_key(mgr, nqn: str, host_nqn: str, dhchap_key: str,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def host_change_controller_key(mgr, nqn: str, host_nqn: str,
+def host_change_controller_key(mgr: 'NVMeoF', nqn: str, host_nqn: str,
                                dhchap_controller_key: str,
                                gw_group: Optional[str] = None,
                                server_address: Optional[str] = None,
-                               traddr: Optional[str] = None):
+                               traddr: Optional[str] = None) -> Message:
     """Change host DH-HMAC-CHAP controller key"""
     return _host_change_key(mgr, nqn, host_nqn, "-", dhchap_controller_key,
                             gw_group, server_address, traddr)
@@ -287,10 +296,10 @@ def host_change_controller_key(mgr, nqn: str, host_nqn: str,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def host_del_key(mgr, nqn: str, host_nqn: str,
+def host_del_key(mgr: 'NVMeoF', nqn: str, host_nqn: str,
                  gw_group: Optional[str] = None,
                  server_address: Optional[str] = None,
-                 traddr: Optional[str] = None):
+                 traddr: Optional[str] = None) -> Message:
     """Delete host DH-HMAC-CHAP key"""
     return _host_change_key(mgr, nqn, host_nqn, None, "-",
                             gw_group, server_address, traddr)
@@ -304,10 +313,10 @@ def host_del_key(mgr, nqn: str, host_nqn: str,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def host_del_controller_key(mgr, nqn: str, host_nqn: str,
+def host_del_controller_key(mgr: 'NVMeoF', nqn: str, host_nqn: str,
                             gw_group: Optional[str] = None,
                             server_address: Optional[str] = None,
-                            traddr: Optional[str] = None):
+                            traddr: Optional[str] = None) -> Message:
     """Delete host DH-HMAC-CHAP controller key"""
     return _host_change_key(mgr, nqn, host_nqn, "-", None,
                             gw_group, server_address, traddr)
@@ -316,9 +325,9 @@ def host_del_controller_key(mgr, nqn: str, host_nqn: str,
 @NvmeofCLICommand("nvmeof listener list", model.ListenerList)
 @convert_to_model(model.ListenerList)
 @handle_nvmeof_error
-def listener_list(mgr, nqn: str, gw_group: Optional[str] = None,
+def listener_list(mgr: 'NVMeoF', nqn: str, gw_group: Optional[str] = None,
                   server_address: Optional[str] = None,
-                  traddr: Optional[str] = None):
+                  traddr: Optional[str] = None) -> Message:
     """List all NVMeoF listeners"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -339,14 +348,14 @@ def listener_list(mgr, nqn: str, gw_group: Optional[str] = None,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def listener_add(mgr, nqn: str, host_name: str, traddr: str,
+def listener_add(mgr: 'NVMeoF', nqn: str, host_name: str, traddr: str,
                  trsvcid: Optional[int] = None,
                  adrfam: int = 0,  # IPv4,
                  gw_group: Optional[str] = None,
                  server_address: Optional[str] = None,
                  secure: Optional[bool] = False,
                  force: Optional[bool] = False,
-                 verify_host_name: Optional[bool] = False):
+                 verify_host_name: Optional[bool] = False) -> Message:
     """Create a new NVMeoF listener"""
     client = NVMeoFClient(
         mgr, gw_group=gw_group,
@@ -382,11 +391,11 @@ def listener_add(mgr, nqn: str, host_name: str, traddr: str,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def listener_del(mgr, nqn: str, host_name: str, traddr: str, trsvcid: int,
+def listener_del(mgr: 'NVMeoF', nqn: str, host_name: str, traddr: str, trsvcid: int,
                  adrfam: int = 0,  # IPv4
                  force: bool = False,
                  gw_group: Optional[str] = None,
-                 server_address: Optional[str] = None):
+                 server_address: Optional[str] = None) -> Message:
     """Delete an existing NVMeoF listener"""
     client = NVMeoFClient(
         mgr, gw_group=gw_group,
@@ -409,9 +418,9 @@ def listener_del(mgr, nqn: str, host_name: str, traddr: str, trsvcid: int,
 )
 @convert_to_model(model.GatewayInfo)
 @handle_nvmeof_error
-def gateway_info(mgr, gw_group: Optional[str] = None,
+def gateway_info(mgr: 'NVMeoF', gw_group: Optional[str] = None,
                  server_address: Optional[str] = None,
-                 traddr: Optional[str] = None):
+                 traddr: Optional[str] = None) -> Message:
     """Get information about the NVMeoF gateway"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -430,9 +439,9 @@ def gateway_info(mgr, gw_group: Optional[str] = None,
 )
 @convert_to_model(model.GatewayVersion)
 @handle_nvmeof_error
-def gateway_version(mgr, gw_group: Optional[str] = None,
+def gateway_version(mgr: 'NVMeoF', gw_group: Optional[str] = None,
                     server_address: Optional[str] = None,
-                    traddr: Optional[str] = None):
+                    traddr: Optional[str] = None) -> Message:
     """Get the version of the NVMeoF gateway"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -455,9 +464,9 @@ def gateway_version(mgr, gw_group: Optional[str] = None,
 )
 @convert_to_model(model.GatewayLogLevelInfo)
 @handle_nvmeof_error
-def gateway_get_log_level(mgr, gw_group: Optional[str] = None,
+def gateway_get_log_level(mgr: 'NVMeoF', gw_group: Optional[str] = None,
                           server_address: Optional[str] = None,
-                          traddr: Optional[str] = None):
+                          traddr: Optional[str] = None) -> Message:
     """Get NVMeoF gateway log level information"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -477,9 +486,9 @@ def gateway_get_log_level(mgr, gw_group: Optional[str] = None,
     success_message_template="Set gateway log level to {log_level}: Successful")
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def gateway_set_log_level(mgr, log_level: str, gw_group: Optional[str] = None,
+def gateway_set_log_level(mgr: 'NVMeoF', log_level: str, gw_group: Optional[str] = None,
                           server_address: Optional[str] = None,
-                          traddr: Optional[str] = None):
+                          traddr: Optional[str] = None) -> Message:
     """Set NVMeoF gateway log levels"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -499,9 +508,9 @@ def gateway_set_log_level(mgr, log_level: str, gw_group: Optional[str] = None,
     alias="nvmeof gw get_stats")
 @convert_to_model(model.GatewayStatsInfo)
 @handle_nvmeof_error
-def gateway_get_stats(mgr, gw_group: Optional[str] = None,
+def gateway_get_stats(mgr: 'NVMeoF', gw_group: Optional[str] = None,
                       server_address: Optional[str] = None,
-                      traddr: Optional[str] = None):
+                      traddr: Optional[str] = None) -> Message:
     """Get NVMeoF statistics for the gateway"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -520,9 +529,9 @@ def gateway_get_stats(mgr, gw_group: Optional[str] = None,
     alias="nvmeof gw listener_info")
 @convert_to_model(model.GatewayListenersInfo)
 @handle_nvmeof_error
-def gateway_listener_info(mgr, nqn: str, gw_group: Optional[str] = None,
+def gateway_listener_info(mgr: 'NVMeoF', nqn: str, gw_group: Optional[str] = None,
                           server_address: Optional[str] = None,
-                          traddr: Optional[str] = None):
+                          traddr: Optional[str] = None) -> Message:
     """Get NVMeoF gateway's listeners info"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -542,10 +551,10 @@ def gateway_listener_info(mgr, nqn: str, gw_group: Optional[str] = None,
     success_message_template="Set gateway IO statistics mode to {enabled}: Successful")
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def gateway_set_io_stats_mode(mgr, enabled: bool,
+def gateway_set_io_stats_mode(mgr: 'NVMeoF', enabled: bool,
                               gw_group: Optional[str] = None,
                               server_address: Optional[str] = None,
-                              traddr: Optional[str] = None):
+                              traddr: Optional[str] = None) -> Message:
     """Enable or disable IO statistics collection"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -564,9 +573,9 @@ def gateway_set_io_stats_mode(mgr, enabled: bool,
     alias="nvmeof gw get_thread_stats")
 @convert_to_model(model.ThreadStatsInfo)
 @handle_nvmeof_error
-def gateway_get_thread_stats(mgr, gw_group: Optional[str] = None,
+def gateway_get_thread_stats(mgr: 'NVMeoF', gw_group: Optional[str] = None,
                              server_address: Optional[str] = None,
-                             traddr: Optional[str] = None):
+                             traddr: Optional[str] = None) -> Message:
     """Get NVMeoF thread statistics for the gateway"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -594,9 +603,9 @@ def gateway_get_thread_stats(mgr, gw_group: Optional[str] = None,
 )
 @convert_to_model(model.GwRefreshNetworkStatus)
 @handle_nvmeof_error
-def gateway_refresh_network(mgr, nqn: str = "", gw_group: Optional[str] = None,
+def gateway_refresh_network(mgr: 'NVMeoF', nqn: str = "", gw_group: Optional[str] = None,
                             server_address: Optional[str] = None,
-                            traddr: Optional[str] = None):
+                            traddr: Optional[str] = None) -> Message:
     """Re-evaluate subsystem network masks and update auto-listeners for this gateway"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -615,10 +624,10 @@ def gateway_refresh_network(mgr, nqn: str = "", gw_group: Optional[str] = None,
                   model.SpdkNvmfLogFlagsAndLevelInfo)
 @convert_to_model(model.SpdkNvmfLogFlagsAndLevelInfo)
 @handle_nvmeof_error
-def spdk_log_level_get(mgr, all_log_flags: Optional[bool] = None,
+def spdk_log_level_get(mgr: 'NVMeoF', all_log_flags: Optional[bool] = None,
                        gw_group: Optional[str] = None,
                        server_address: Optional[str] = None,
-                       traddr: Optional[str] = None):
+                       traddr: Optional[str] = None) -> Message:
     """Get NVMeoF gateway spdk log levels"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -639,12 +648,12 @@ def spdk_log_level_get(mgr, all_log_flags: Optional[bool] = None,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def spdk_log_level_set(mgr, log_level: Optional[str] = None,
+def spdk_log_level_set(mgr: 'NVMeoF', log_level: Optional[str] = None,
                        print_level: Optional[str] = None,
                        extra_log_flags: Optional[List[str]] = None,
                        gw_group: Optional[str] = None,
                        server_address: Optional[str] = None,
-                       traddr: Optional[str] = None):
+                       traddr: Optional[str] = None) -> Message:
     """Set NVMeoF gateway spdk log levels"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -666,10 +675,10 @@ def spdk_log_level_set(mgr, log_level: Optional[str] = None,
                   success_message_template="Disable SPDK log flags: Successful")
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def spdk_log_level_disable(mgr, extra_log_flags: Optional[List[str]] = None,
+def spdk_log_level_disable(mgr: 'NVMeoF', extra_log_flags: Optional[List[str]] = None,
                            gw_group: Optional[str] = None,
                            server_address: Optional[str] = None,
-                           traddr: Optional[str] = None):
+                           traddr: Optional[str] = None) -> Message:
     """Disable NVMeoF gateway spdk log"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -686,9 +695,9 @@ def spdk_log_level_disable(mgr, extra_log_flags: Optional[List[str]] = None,
 @NvmeofCLICommand("nvmeof subsystem list", model.SubsystemList)
 @convert_to_model(model.SubsystemList)
 @handle_nvmeof_error
-def subsystem_list(mgr, nqn: Optional[str] = None, serial_number: Optional[str] = None,
+def subsystem_list(mgr: 'NVMeoF', nqn: Optional[str] = None, serial_number: Optional[str] = None,
                    gw_group: Optional[str] = None, server_address: Optional[str] = None,
-                   traddr: Optional[str] = None):
+                   traddr: Optional[str] = None) -> Message:
     """List all NVMeoF subsystems"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -706,9 +715,9 @@ def subsystem_list(mgr, nqn: Optional[str] = None, serial_number: Optional[str] 
 @NvmeofCLICommand("nvmeof subsystem get", model.SubsystemList)
 @convert_to_model(model.SubsystemList)
 @handle_nvmeof_error
-def subsystem_get(mgr, nqn: str, gw_group: Optional[str] = None,
+def subsystem_get(mgr: 'NVMeoF', nqn: str, gw_group: Optional[str] = None,
                   server_address: Optional[str] = None,
-                  traddr: Optional[str] = None):
+                  traddr: Optional[str] = None) -> Message:
     """Get information from a specific NVMeoF subsystem"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -726,13 +735,13 @@ def subsystem_get(mgr, nqn: str, gw_group: Optional[str] = None,
                   success_message_template="Adding subsystem {nqn}: Successful")
 @convert_to_model(model.SubsystemStatus)
 @handle_nvmeof_error
-def subsystem_add(mgr, nqn: str,
+def subsystem_add(mgr: 'NVMeoF', nqn: str,
                   max_namespaces: Optional[int] = None, no_group_append: Optional[bool] = False,
                   serial_number: Optional[str] = None, dhchap_key: Optional[str] = None,
                   gw_group: Optional[str] = None, server_address: Optional[str] = None,
                   network_mask: Optional[List[str]] = None,
                   port: Optional[int] = None, secure_listeners: Optional[bool] = False,
-                  traddr: Optional[str] = None, model_name: Optional[str] = None):
+                  traddr: Optional[str] = None, model_name: Optional[str] = None) -> Message:
     """Create a new NVMeoF subsystem"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -757,9 +766,9 @@ def subsystem_add(mgr, nqn: str,
                   success_message_template="Deleting subsystem {nqn}: Successful")
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def subsystem_del(mgr, nqn: str, force: Optional[str] = "false", gw_group: Optional[str] = None,
+def subsystem_del(mgr: 'NVMeoF', nqn: str, force: Optional[str] = "false", gw_group: Optional[str] = None,
                   server_address: Optional[str] = None,
-                  traddr: Optional[str] = None):
+                  traddr: Optional[str] = None) -> Message:
     """Delete an existing NVMeoF subsystem"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -779,9 +788,9 @@ def subsystem_del(mgr, nqn: str, force: Optional[str] = "false", gw_group: Optio
                   success_message_template="Changing key for subsystem {nqn}: Successful")
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def subsystem_change_key(mgr, nqn: str, dhchap_key: str, gw_group: Optional[str] = None,
+def subsystem_change_key(mgr: 'NVMeoF', nqn: str, dhchap_key: str, gw_group: Optional[str] = None,
                          server_address: Optional[str] = None,
-                         traddr: Optional[str] = None):
+                         traddr: Optional[str] = None) -> Message:
     """Change subsystem inband authentication key"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -802,9 +811,9 @@ def subsystem_change_key(mgr, nqn: str, dhchap_key: str, gw_group: Optional[str]
                   success_message_template="Deleting key for subsystem {nqn}: Successful")
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def subsystem_del_key(mgr, nqn: str, gw_group: Optional[str] = None,
+def subsystem_del_key(mgr: 'NVMeoF', nqn: str, gw_group: Optional[str] = None,
                       server_address: Optional[str] = None,
-                      traddr: Optional[str] = None):
+                      traddr: Optional[str] = None) -> Message:
     """Delete subsystem inband authentication key"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -827,9 +836,9 @@ def subsystem_del_key(mgr, nqn: str, gw_group: Optional[str] = None,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def subsystem_add_network(mgr, nqn: str, network_mask: str, gw_group: Optional[str] = None,
+def subsystem_add_network(mgr: 'NVMeoF', nqn: str, network_mask: str, gw_group: Optional[str] = None,
                           server_address: Optional[str] = None,
-                          traddr: Optional[str] = None):
+                          traddr: Optional[str] = None) -> Message:
     """Add subsystem network mask"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -852,9 +861,9 @@ def subsystem_add_network(mgr, nqn: str, network_mask: str, gw_group: Optional[s
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def subsystem_del_network(mgr, nqn: str, network_mask: str, gw_group: Optional[str] = None,
+def subsystem_del_network(mgr: 'NVMeoF', nqn: str, network_mask: str, gw_group: Optional[str] = None,
                           server_address: Optional[str] = None,
-                          traddr: Optional[str] = None):
+                          traddr: Optional[str] = None) -> Message:
     """Delete subsystem network mask"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -878,11 +887,11 @@ def subsystem_del_network(mgr, nqn: str, network_mask: str, gw_group: Optional[s
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def subsystem_add_kmip_server_endpoint(mgr, nqn: str, server_name: str,
+def subsystem_add_kmip_server_endpoint(mgr: 'NVMeoF', nqn: str, server_name: str,
                                        address: Optional[str] = None,
                                        port: Optional[int] = 5696, gw_group: Optional[str] = None,
                                        server_address: Optional[str] = None,
-                                       traddr: Optional[str] = None):
+                                       traddr: Optional[str] = None) -> Message:
     """Add a KMIP server endpoint to the subsystem"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -907,11 +916,11 @@ def subsystem_add_kmip_server_endpoint(mgr, nqn: str, server_name: str,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def subsystem_del_kmip_server_endpoint(mgr, nqn: str, server_name: str,
+def subsystem_del_kmip_server_endpoint(mgr: 'NVMeoF', nqn: str, server_name: str,
                                        address: Optional[str] = None,
                                        port: Optional[int] = 5696, gw_group: Optional[str] = None,
                                        server_address: Optional[str] = None,
-                                       traddr: Optional[str] = None):
+                                       traddr: Optional[str] = None) -> Message:
     """Delete a KMIP server endpoint from the subsystem"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -933,9 +942,9 @@ def subsystem_del_kmip_server_endpoint(mgr, nqn: str, server_name: str,
                   model.SubsystemListKMIPEndpoints)
 @convert_to_model(model.SubsystemListKMIPEndpoints)
 @handle_nvmeof_error
-def subsystem_list_kmip_server_endpoints(mgr, nqn: Optional[str] = None, server_name: Optional[str] = None,
+def subsystem_list_kmip_server_endpoints(mgr: 'NVMeoF', nqn: Optional[str] = None, server_name: Optional[str] = None,
                                          gw_group: Optional[str] = None, server_address: Optional[str] = None,
-                                         traddr: Optional[str] = None):
+                                         traddr: Optional[str] = None) -> Message:
     """List KMIP server endpoints for a subsystem or all subsystems"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -953,11 +962,11 @@ def subsystem_list_kmip_server_endpoints(mgr, nqn: Optional[str] = None, server_
 @NvmeofCLICommand("nvmeof get_subsystems", model.GetSubsystems)
 @convert_to_model(model.GetSubsystems)
 @handle_nvmeof_error
-def get_subsystems(mgr,
+def get_subsystems(mgr: 'NVMeoF',
                    gw_group: Optional[str] = None,
                    server_address: Optional[str] = None,
                    traddr: Optional[str] = None
-                   ):
+                   ) -> Message:
     """Get NVMeoF subsystems"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -976,10 +985,10 @@ def get_subsystems(mgr,
 )
 @convert_to_model(model.NamespaceList)
 @handle_nvmeof_error
-def namespace_list(mgr, nqn: Optional[str] = None, nsid: Optional[str] = None,
+def namespace_list(mgr: 'NVMeoF', nqn: Optional[str] = None, nsid: Optional[str] = None,
                    uuid: Optional[str] = None,
                    gw_group: Optional[str] = None, server_address: Optional[str] = None,
-                   traddr: Optional[str] = None):
+                   traddr: Optional[str] = None) -> Message:
     """List all NVMeoF namespaces in a subsystem"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -999,9 +1008,9 @@ def namespace_list(mgr, nqn: Optional[str] = None, nsid: Optional[str] = None,
     "nvmeof namespace get", model.NamespaceList, alias="nvmeof ns get")
 @convert_to_model(model.NamespaceList)
 @handle_nvmeof_error
-def namespace_get(mgr, nqn: str, nsid: str, gw_group: Optional[str] = None,
+def namespace_get(mgr: 'NVMeoF', nqn: str, nsid: str, gw_group: Optional[str] = None,
                   server_address: Optional[str] = None,
-                  traddr: Optional[str] = None):
+                  traddr: Optional[str] = None) -> Message:
     """Get info from specified NVMeoF namespace"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1021,9 +1030,9 @@ def namespace_get(mgr, nqn: str, nsid: str, gw_group: Optional[str] = None,
 )
 @convert_to_model(model.NamespaceIOStats)
 @handle_nvmeof_error
-def namespace_get_io_stats(mgr, nqn: str, nsid: str, gw_group: Optional[str] = None,
+def namespace_get_io_stats(mgr: 'NVMeoF', nqn: str, nsid: str, gw_group: Optional[str] = None,
                            server_address: Optional[str] = None,
-                           traddr: Optional[str] = None):
+                           traddr: Optional[str] = None) -> Message:
     """Get IO stats from specified NVMeoF namespace"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1047,7 +1056,7 @@ def namespace_get_io_stats(mgr, nqn: str, nsid: str, gw_group: Optional[str] = N
 )
 @convert_to_model(model.NamespaceCreation)
 @handle_nvmeof_error
-def namespace_add(mgr,
+def namespace_add(mgr: 'NVMeoF',
                   nqn: str,
                   rbd_image_name: str,
                   rbd_pool: str = "rbd",
@@ -1072,7 +1081,7 @@ def namespace_add(mgr,
                   encryption_format: Optional[List[str]] = None,
                   encryption_algorithm: Optional[str] = None,
                   key_id: Optional[List[str]] = None,
-                  ):
+                  ) -> Message:
     """Create a new NVMeoF namespace."""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1137,7 +1146,7 @@ def namespace_add(mgr,
     success_message_template="Setting QOS limits of namespace {nsid} in {nqn}: Successful")
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def namespace_set_qos(mgr,
+def namespace_set_qos(mgr: 'NVMeoF',
                       nqn: str,
                       nsid: str,
                       rw_ios_per_second: Optional[int] = None,
@@ -1148,7 +1157,7 @@ def namespace_set_qos(mgr,
                       gw_group: Optional[str] = None,
                       server_address: Optional[str] = None,
                       traddr: Optional[str] = None
-                      ):
+                      ) -> Message:
     """set QOS for specified NVMeoF namespace"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1179,14 +1188,14 @@ def namespace_set_qos(mgr,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def namespace_change_load_balancing_group(mgr,
+def namespace_change_load_balancing_group(mgr: 'NVMeoF',
                                           nqn: str,
                                           nsid: str,
                                           load_balancing_group: Optional[int] = None,
                                           gw_group: Optional[str] = None,
                                           server_address: Optional[str] = None,
                                           traddr: Optional[str] = None
-                                          ):
+                                          ) -> Message:
     """set the load balancing group for specified NVMeoF namespace"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1211,14 +1220,14 @@ def namespace_change_load_balancing_group(mgr,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def namespace_resize(mgr,
+def namespace_resize(mgr: 'NVMeoF',
                      nqn: str,
                      nsid: str,
                      rbd_image_size: str,
                      gw_group: Optional[str] = None,
                      server_address: Optional[str] = None,
                      traddr: Optional[str] = None
-                     ):
+                     ) -> Message:
     """resize the specified NVMeoF namespace"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1248,7 +1257,7 @@ def namespace_resize(mgr,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def namespace_add_host(mgr,
+def namespace_add_host(mgr: 'NVMeoF',
                        nqn: str,
                        nsid: str,
                        host_nqn: str,
@@ -1256,7 +1265,7 @@ def namespace_add_host(mgr,
                        gw_group: Optional[str] = None,
                        server_address: Optional[str] = None,
                        traddr: Optional[str] = None
-                       ):
+                       ) -> Message:
     """Adds a host to the specified NVMeoF namespace"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1282,14 +1291,14 @@ def namespace_add_host(mgr,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def namespace_del_host(mgr,
+def namespace_del_host(mgr: 'NVMeoF',
                        nqn: str,
                        nsid: str,
                        host_nqn: str,
                        gw_group: Optional[str] = None,
                        server_address: Optional[str] = None,
                        traddr: Optional[str] = None
-                       ):
+                       ) -> Message:
     """Removes a host from the specified NVMeoF namespace"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1323,7 +1332,7 @@ def namespace_del_host(mgr,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def namespace_change_visibility(mgr,
+def namespace_change_visibility(mgr: 'NVMeoF',
                                 nqn: str,
                                 nsid: str,
                                 auto_visible: str,
@@ -1331,7 +1340,7 @@ def namespace_change_visibility(mgr,
                                 gw_group: Optional[str] = None,
                                 server_address: Optional[str] = None,
                                 traddr: Optional[str] = None
-                                ):
+                                ) -> Message:
     """changes the visibility of the specified NVMeoF namespace to all or selected hosts"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1360,14 +1369,14 @@ def namespace_change_visibility(mgr,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def namespace_change_location(mgr,
+def namespace_change_location(mgr: 'NVMeoF',
                               nqn: str,
                               nsid: str,
                               location: str,
                               gw_group: Optional[str] = None,
                               server_address: Optional[str] = None,
                               traddr: Optional[str] = None
-                              ):
+                              ) -> Message:
     """Change the location of the specified NVMeoF namespace"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1392,11 +1401,11 @@ def namespace_change_location(mgr,
 )
 @handle_nvmeof_error
 def namespace_list_hosts(
-    mgr, nqn: Optional[str] = None, nsid: Optional[str] = None,
+    mgr: 'NVMeoF', nqn: Optional[str] = None, nsid: Optional[str] = None,
     uuid: Optional[str] = None,
     gw_group: Optional[str] = None, server_address: Optional[str] = None,
     traddr: Optional[str] = None
-):
+) -> Dict[str, Any]:
     """List all NVMeoF namespaces with their allowed hosts"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1434,11 +1443,11 @@ def namespace_list_hosts(
 )
 @handle_nvmeof_error
 def namespace_list_locations(
-    mgr, nqn: Optional[str] = None, nsid: Optional[str] = None,
+    mgr: 'NVMeoF', nqn: Optional[str] = None, nsid: Optional[str] = None,
     uuid: Optional[str] = None,
     gw_group: Optional[str] = None, server_address: Optional[str] = None,
     traddr: Optional[str] = None
-):
+) -> Dict[str, Any]:
     """List namespace distribution per site locations"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1497,14 +1506,14 @@ def namespace_list_locations(
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def namespace_set_auto_resize(mgr,
+def namespace_set_auto_resize(mgr: 'NVMeoF',
                               nqn: str,
                               nsid: str,
                               auto_resize_enabled: bool,
                               gw_group: Optional[str] = None,
                               server_address: Optional[str] = None,
                               traddr: Optional[str] = None
-                              ):
+                              ) -> Message:
     """Enable or disable namespace auto resize when RBD image is resized"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1539,14 +1548,14 @@ def namespace_set_auto_resize(mgr,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def namespace_set_rbd_trash_image(mgr,
+def namespace_set_rbd_trash_image(mgr: 'NVMeoF',
                                   nqn: str,
                                   nsid: str,
                                   rbd_trash_image_on_delete: str,
                                   gw_group: Optional[str] = None,
                                   server_address: Optional[str] = None,
                                   traddr: Optional[str] = None
-                                  ):
+                                  ) -> Message:
     """changes the trash image on delete of the specified NVMeoF \
                 namespace to all or selected hosts"""
     server_address = resolve_nvmeof_server_address(
@@ -1572,13 +1581,13 @@ def namespace_set_rbd_trash_image(mgr,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def namespace_refresh_size(mgr,
+def namespace_refresh_size(mgr: 'NVMeoF',
                            nqn: str,
                            nsid: str,
                            gw_group: Optional[str] = None,
                            server_address: Optional[str] = None,
                            traddr: Optional[str] = None
-                           ):
+                           ) -> Message:
     """refresh the specified NVMeoF namespace to current RBD image size"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1607,13 +1616,13 @@ def namespace_refresh_size(mgr,
 )
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def namespace_unpin(mgr,
+def namespace_unpin(mgr: 'NVMeoF',
                     nqn: str,
                     nsid: str,
                     gw_group: Optional[str] = None,
                     server_address: Optional[str] = None,
                     traddr: Optional[str] = None
-                    ):
+                    ) -> Message:
     """Unpin namespace load balancing group"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1635,7 +1644,7 @@ def namespace_unpin(mgr,
 )
 @convert_to_model(model.NamespaceList)
 @handle_nvmeof_error
-def namespace_update(mgr,
+def namespace_update(mgr: 'NVMeoF',
                      nqn: str,
                      nsid: str,
                      rbd_image_size: Optional[int] = None,
@@ -1649,7 +1658,7 @@ def namespace_update(mgr,
                      gw_group: Optional[str] = None,
                      server_address: Optional[str] = None,
                      traddr: Optional[str] = None,
-                     ):
+                     ) -> Message:
     """Update an existing NVMeoF namespace"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,
@@ -1746,14 +1755,14 @@ def namespace_update(mgr,
     success_message_template="Deleting namespace {nsid} from {nqn}: Successful")
 @convert_to_model(model.RequestStatus)
 @handle_nvmeof_error
-def namespace_del(mgr,
+def namespace_del(mgr: 'NVMeoF',
                   nqn: str,
                   nsid: str,
                   force: Optional[str] = "false",
                   gw_group: Optional[str] = None,
                   server_address: Optional[str] = None,
                   traddr: Optional[str] = None,
-                  ):
+                  ) -> Message:
     """Delete an existing NVMeoF namespace"""
     server_address = resolve_nvmeof_server_address(
         server_address=server_address,

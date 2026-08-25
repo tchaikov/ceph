@@ -2,7 +2,7 @@
 import errno
 import functools
 import logging
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import grpc  # type: ignore
 import grpc._channel  # type: ignore
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 def handle_nvmeof_error(func: Callable[..., Message]) -> Callable[..., Message]:
     @functools.wraps(func)
-    def wrapper(*args, **kwargs) -> Message:
+    def wrapper(*args: Any, **kwargs: Any) -> Message:
         try:
             response = func(*args, **kwargs)
         except grpc._channel._InactiveRpcError as e:  # pylint: disable=protected-access
@@ -54,8 +54,8 @@ class NVMeoFClient(object):
 
     pb2 = pb2
 
-    def __init__(self, conf, gw_group: Optional[str] = None,
-                 server_address: Optional[str] = None):
+    def __init__(self, conf: Any, gw_group: Optional[str] = None,
+                 server_address: Optional[str] = None) -> None:
 
         def encode_tls_bundle(bundle: Dict[str, str]) -> Dict[str, bytes]:
             """Encode TLS bundle string values to bytes for gRPC."""

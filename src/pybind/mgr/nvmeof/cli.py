@@ -4,7 +4,8 @@ import inspect
 import json
 import logging
 from collections.abc import Mapping
-from typing import Any, Callable, Dict, NamedTuple, Optional, Type, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, NamedTuple, \
+    Optional, Type, Union
 
 import yaml
 from mgr_module import CLICommandBase, HandleCommandResult
@@ -15,12 +16,24 @@ logger = logging.getLogger(__name__)
 
 NVMeoFCLICommand = CLICommandBase.make_registry_subtype("NVMeoFCLICommand")
 
+# NVMeoFCLICommand is built by type() at import time, so it is a value as
+# far as mypy is concerned and cannot be followed as a base class. Give
+# the mixin the CLICommandBase it ends up in front of instead, and drop
+# the registry subtype from the bases; the two are the same class to the
+# type checker.
+if TYPE_CHECKING:
+    _MixinBase = CLICommandBase
+    _RegistryBase = object
+else:
+    _MixinBase = object
+    _RegistryBase = NVMeoFCLICommand
 
-class NvmeofCLICommandMixin:
+
+class NvmeofCLICommandMixin(_MixinBase):
     desc: str
 
     def __init__(self,
-                 prefix,
+                 prefix: str,
                  model: Type[NamedTuple],
                  alias: Optional[str] = None,
                  perm: str = 'rw',
@@ -28,12 +41,12 @@ class NvmeofCLICommandMixin:
                  success_message_template: Optional[str] = None,
                  success_message_map: Optional[Dict[str, Any]] = None,
                  success_message_fn: Optional[Callable[[Dict[str, Any]], str]] = None,
-                 deprecated_params: Optional[Dict[str, str]] = None):
+                 deprecated_params: Optional[Dict[str, str]] = None) -> None:
         super().__init__(prefix, perm, poll)
         self._output_formatter = AnnotatedDataTextOutputFormatter()
         self._model = model
         self._alias = alias
-        self._alias_cmd: Optional[NvmeofCLICommand] = None
+        self._alias_cmd: Optional['NvmeofCLICommandMixin'] = None
 
         self._success_message_template = success_message_template
         self._success_message_map = success_message_map or {}
@@ -41,7 +54,10 @@ class NvmeofCLICommandMixin:
         self._func_defaults: Dict[str, Any] = {}
         self._deprecated_params: Dict[str, str] = deprecated_params or {}
 
-    def __call__(self, func):
+    # the registered handlers return a model dict rather than the
+    # (retval, stdout, stderr) tuple HandlerFuncType describes; call()
+    # below is what turns one into a HandleCommandResult
+    def __call__(self, func: Callable[..., Any]) -> Any:
         resp = super().__call__(func)
         self._func_defaults = self._compute_func_defaults()
 
@@ -63,6 +79,7 @@ class NvmeofCLICommandMixin:
 
     def _compute_func_defaults(self) -> Dict[str, Any]:
         defaults: Dict[str, Any] = {}
+        assert self.func
         sig = inspect.signature(self.func)
 
         for name, param in sig.parameters.items():
@@ -92,7 +109,7 @@ class NvmeofCLICommandMixin:
                                inbuf: Optional[str] = None) -> Dict[str, Any]:
         kwargs, specials = self._collect_args_by_argspec(cmd_dict)
         kwargs = kwargs or {}
-        specials = specials or {}
+        specials = specials or set()
 
         if inbuf and 'inbuf' in specials:
             kwargs['inbuf'] = inbuf
@@ -194,7 +211,10 @@ class NvmeofCLICommandMixin:
                     if args_map.get(param) is not None:
                         deprecated_warnings += f"\nWarning: {msg}"
 
-            ret = super().call(mgr, cmd_dict, inbuf)
+            # the registered handlers return the model dict the output
+            # formatter expects, not the HandleCommandResult the base
+            # class advertises
+            ret: Any = super().call(mgr, cmd_dict, inbuf)
             if ret is None:
                 ret = {}
 
@@ -232,5 +252,5 @@ class NvmeofCLICommandMixin:
             return HandleCommandResult(-errno.EINVAL, '', str(e) + deprecated_warnings)
 
 
-class NvmeofCLICommand(NvmeofCLICommandMixin, NVMeoFCLICommand):
+class NvmeofCLICommand(NvmeofCLICommandMixin, _RegistryBase):
     """CLI command registered on the nvmeof module's registry."""
