@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import inspect
 import logging
 from typing import Any, Dict, List, Optional, Union
 
@@ -267,6 +268,17 @@ class Docs(BaseController):
         return parameters
 
     @staticmethod
+    def _get_description(func):
+        """Return the endpoint's docstring, indentation normalised.
+
+        Python 3.13 strips the common leading whitespace off a docstring
+        at compile time and older ones do not, so reading __doc__ raw
+        makes the generated spec depend on the interpreter that ran the
+        generator. cleandoc() lands on the same text either way.
+        """
+        return inspect.cleandoc(func.__doc__) if func.__doc__ else func.__doc__
+
+    @staticmethod
     def _process_func_attr(func):
         summary = ''
         version = None
@@ -336,7 +348,7 @@ class Docs(BaseController):
 
                 methods[method.lower()] = {
                     'tags': [cls._get_tag(endpoint)],
-                    'description': func.__doc__,
+                    'description': cls._get_description(func),
                     'parameters': params,
                     'responses': cls._gen_responses(method, resp, version)
                 }
