@@ -7,18 +7,15 @@ from unittest.mock import MagicMock
 
 import pytest
 from mgr_module import HandleCommandResult
+from nvmeof.cli import NvmeofCLICommand, NVMeoFCLICommand
+from nvmeof.errors import NvmeofInvalidInputError
+from nvmeof.formatter import AnnotatedDataTextOutputFormatter
+from nvmeof.model import CliEmptyMessage, CliFieldTransformer, CliFlags, CliHeader
+from nvmeof.utils import convert_from_bytes, convert_to_bytes, \
+    format_host_updates, resolve_nvmeof_server_address
 
 from ..controllers import EndpointDoc
 from ..exceptions import DashboardException
-from nvmeof.model import CliEmptyMessage, CliFieldTransformer, CliFlags, CliHeader
-from nvmeof.formatter import AnnotatedDataTextOutputFormatter
-from nvmeof.utils import convert_from_bytes, convert_to_bytes, \
-    format_host_updates
-
-from nvmeof.errors import NvmeofInvalidInputError
-from nvmeof.utils import resolve_nvmeof_server_address
-
-from nvmeof.cli import NvmeofCLICommand, NVMeoFCLICommand
 
 
 @pytest.fixture(scope="class", name="sample_command")

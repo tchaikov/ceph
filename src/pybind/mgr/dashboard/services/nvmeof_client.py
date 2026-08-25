@@ -1,6 +1,7 @@
 # pylint: disable=unexpected-keyword-arg
 
 import functools
+import importlib
 import logging
 from typing import Callable, Dict, List, Optional
 
@@ -11,22 +12,17 @@ from .nvmeof_conf import NvmeofGatewaysConfig, is_mtls_enabled
 logger = logging.getLogger("nvmeof_client")
 
 try:
-    import grpc  # type: ignore
-    import grpc._channel  # type: ignore
     from google.protobuf.message import Message  # type: ignore
-
     from nvmeof.client import NVMeoFClient as _NVMeoFClientCore
-    from nvmeof.client import \
-        handle_nvmeof_error as _handle_nvmeof_error_core  # type: ignore
-    from nvmeof.errors import NvmeofError, NvmeofGatewayUnavailableError, \
-        NvmeofStatusError
+    from nvmeof.client import handle_nvmeof_error as _handle_nvmeof_error_core  # type: ignore
+    from nvmeof.errors import NvmeofError, NvmeofGatewayUnavailableError, NvmeofStatusError
 
-    # probe the generated bindings so a missing/broken gencode takes
-    # the ImportError path below
-    from nvmeof.proto import gateway_pb2 as pb2  # type: ignore # noqa: F401
-    from nvmeof.proto import gateway_pb2_grpc as pb2_grpc  # type: ignore # noqa: F401
+    # probe the generated bindings so a missing or broken gencode takes
+    # the ImportError path below; nothing here needs the names
+    importlib.import_module('nvmeof.proto.gateway_pb2')
+    importlib.import_module('nvmeof.proto.gateway_pb2_grpc')
 except ImportError:
-    grpc = None
+    pass
 else:
 
     class _DashboardConf:

@@ -3,15 +3,12 @@ from typing import Dict, List, NamedTuple, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from ..exceptions import DashboardException
 from nvmeof import converters as nvmeof_converters
-
-from ..services import nvmeof_client  # noqa: F401
-from nvmeof.converters import MaxRecursionDepthError, convert_to_model, \
-    obj_to_namedtuple
+from nvmeof.converters import MaxRecursionDepthError, convert_to_model, obj_to_namedtuple
 from nvmeof.errors import NvmeofInvalidInputError
 
+from ..exceptions import DashboardException
+from ..services import nvmeof_client  # noqa: F401  # pylint: disable=unused-import
 from ..services.nvmeof_client import NVMeoFClient, handle_nvmeof_error, pick
 
 
@@ -376,7 +373,6 @@ class TestConvertToModel:
         result = get()
         assert result == {'a': 'bla', 'b': "iamdefault"}
 
-        # pylint: disable=unused-argument
         @convert_to_model(ModelWithDefaultParam)
         def get2() -> dict:
             return {"a": "bla", "b": 'notdefault'}
