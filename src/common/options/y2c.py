@@ -207,9 +207,19 @@ TEMPLATE_CC = '''#include "common/options.h"
 {headers}
 
 std::vector<Option> get_{name}_options() {{
-  return std::vector<Option>({{
+  // Built by appending one Option at a time rather than via a single
+  // braced initializer_list: with hundreds of entries the list form puts
+  // every Option temporary in one stack frame at once, which for the
+  // largest tables exceeds 64KiB and forces the compiler to emit a
+  // stack-clash probing loop. See https://gcc.gnu.org/PR119610 for a case
+  // where that loop's unwind info was generated incorrectly, corrupting
+  // backtraces (and, on arm64 with pointer authentication, crashing with
+  // SIGILL) for any caller -- including the allocator -- that unwinds
+  // through this function while it runs.
+  std::vector<Option> result;
+  result.reserve({count});
 @body@
-  }});
+  return result;
 }}
 '''
 
@@ -252,11 +262,31 @@ def translate(opts):
          open(opts.legacy, 'w') as h_file:
         yml = yaml.load(infile, Loader=UniqueKeySafeLoader)
         headers = yml.get('headers', '')
-        cc_file.write(prelude.format(name=name, headers=headers))
         options = yml['options']
+        cc_file.write(prelude.format(name=name, headers=headers,
+                                      count=len(options)))
         for option in options:
             try:
-                cc_file.write(yaml_to_cxx(option, opts.indent) + '\n')
+                elem = yaml_to_cxx(option, opts.indent)
+                if opts.raw:
+                    # --raw asks for bare, comma-terminated list elements
+                    # (e.g. to paste into some other initializer_list), so
+                    # leave yaml_to_cxx's usual list-element form alone.
+                    cc_file.write(elem + '\n')
+                else:
+                    # yaml_to_cxx() ends the element with a trailing ",\n"
+                    # for use inside a braced initializer_list. Turn it
+                    # into its own push_back() statement instead: each
+                    # Option temporary (and its .set_...() chain of
+                    # temporaries) is then built and moved into the
+                    # vector one at a time, so only one entry's worth of
+                    # that lives on the stack at once, rather than every
+                    # entry in the table simultaneously.
+                    stmt = elem.rstrip('\n')
+                    if stmt.endswith(','):
+                        stmt = stmt[:-1]
+                    cc_file.write('  result.push_back(\n' + stmt +
+                                   '\n  );\n')
                 if option.get('with_legacy', False):
                     h_file.write(yaml_to_h(option) + '\n')
             except ValueError as e:
