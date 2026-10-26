@@ -142,6 +142,33 @@ ClientRequest::interruptible_future<> ClientRequest::with_pg_process_interruptib
   DEBUGDPP("{} start", *pgref, *this);
   PG &pg = *pgref;
 
+  // wait until the pg can serve the op before taking a slot, so ops on a pg
+  // that is still peering do not hold slots that other pgs need.  These
+  // waits are repeated in wait_pg_ready, in case the pg changes again
+  // before the op gets there.
+  co_await interruptor::make_interruptible(
+    ihref.enter_blocker(
+      *this, pg.osdmap_gate, &decltype(pg.osdmap_gate)::wait_for_map,
+      m->get_min_epoch(), nullptr));
+  co_await interruptor::make_interruptible(
+    ihref.enter_blocker(
+      *this,
+      pg.wait_for_active_blocker,
+      &decltype(pg.wait_for_active_blocker)::wait));
+
+  int cost  = std::max<int>(m->get_cost(), 1);
+  unsigned prio  = m->get_priority();
+  uint64_t owner = m->get_source().num();
+
+  // admit in QoS order, then HOLD the slot for the op's lifetime
+  // (its destructor == mClock RequestCompletion).  Take it before entering
+  // wait_pg_ready: ops leave that phase in the order they entered it, so an
+  // op admitted inside it could wait for an earlier op still waiting for
+  // a slot.
+  auto throttle = co_await interruptor::make_interruptible(
+    shard_services->get_throttle(
+      scheduler::params_t{cost, prio, owner, SchedulerClass::client}));
+
   DEBUGDPP("{}.{}: entering wait_pg_ready stage",
 	   *pgref, *this, this_instance_id);
   // enter_stage_sync is legal because this transition cannot block, and it
@@ -173,16 +200,6 @@ ClientRequest::interruptible_future<> ClientRequest::with_pg_process_interruptib
       *this,
       pg.wait_for_active_blocker,
       &decltype(pg.wait_for_active_blocker)::wait));
-
-  int cost  = std::max<int>(m->get_cost(), 1);
-  unsigned prio  = m->get_priority();
-  uint64_t owner = m->get_source().num();
-
-  // admit in QoS order, then HOLD the slot for the op's lifetime
-  // (its destructor == mClock RequestCompletion).
-  auto throttle = co_await interruptor::make_interruptible(
-    shard_services->get_throttle(
-      scheduler::params_t{cost, prio, owner, SchedulerClass::client}));
 
   DEBUGDPP("{}.{}: waited for active, entering get_obc stage ",
            pg, *this, this_instance_id);
