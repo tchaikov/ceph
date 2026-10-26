@@ -715,6 +715,11 @@ void PGRecovery::update_peers_last_backfill(
 
 bool PGRecovery::budget_available() const
 {
+  // the slot held by budget_retry_releaser is the budget for the operation
+  // being enqueued
+  if (budget_retry_releaser.has_value()) {
+    return true;
+  }
   auto &ss = pg->get_shard_services();
   return ss.throttle_available();
 }
