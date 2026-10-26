@@ -573,7 +573,9 @@ PGRecovery::interruptible_future<OperationThrottler::ThrottleReleaser>
 PGRecovery::get_backfill_throttle()
 {
   return interruptor::make_interruptible(
-    pg->get_shard_services().get_throttle(backfill_throttle_params));
+    pg->get_shard_services().get_throttle(
+      backfill_throttle_params,
+      crimson::osd::scheduler::throttle_level_t::recovery));
 }
 
 PGRecovery::interruptible_future<>
@@ -721,7 +723,8 @@ bool PGRecovery::budget_available() const
     return true;
   }
   auto &ss = pg->get_shard_services();
-  return ss.throttle_available();
+  return ss.throttle_available(
+    crimson::osd::scheduler::throttle_level_t::recovery);
 }
 
 PGRecovery::interruptible_future<>
