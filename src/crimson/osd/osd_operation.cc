@@ -241,7 +241,21 @@ uint64_t OperationThrottler::in_progress_from(size_t level) const
   return n;
 }
 
-bool OperationThrottler::available(throttle_level_t level) const
+uint64_t OperationThrottler::committed_from(size_t level) const
+{
+  uint64_t n = 0;
+  for (size_t l = level; l < num_levels; ++l) {
+    n += in_progress[l] + parked[l].size();
+    for (auto queued : in_scheduler[l]) {
+      n += queued;
+    }
+  }
+  return n;
+}
+
+bool OperationThrottler::fits(
+  size_t level,
+  uint64_t (OperationThrottler::*count)(size_t) const) const
 {
   if (!max_in_progress) {
     return true;
@@ -249,13 +263,51 @@ bool OperationThrottler::available(throttle_level_t level) const
   // admitting an operation at this level adds a slot to every level at or
   // below it, so each of those levels must still be within its limit: all
   // slots, minus the ones reserved for each level below it
-  for (size_t l = 0; l <= static_cast<size_t>(level); ++l) {
+  for (size_t l = 0; l <= level; ++l) {
     const uint64_t limit = max_in_progress - reserved_per_level * l;
-    if (in_progress_from(l) + 1 > limit) {
+    if ((this->*count)(l) + 1 > limit) {
       return false;
     }
   }
   return true;
+}
+
+bool OperationThrottler::available(throttle_level_t level) const
+{
+  return fits(static_cast<size_t>(level), &OperationThrottler::in_progress_from);
+}
+
+bool OperationThrottler::can_feed() const
+{
+  for (size_t l = 1; l < num_levels; ++l) {
+    const bool room = fits(l, &OperationThrottler::committed_from);
+    for (size_t c = 0; c < num_classes; ++c) {
+      if (!unfed[l][c].empty() &&
+          (room || in_scheduler[l][c] + parked_by_class[l][c] == 0)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void OperationThrottler::feed()
+{
+  // besides what fits, let each class have one item in the scheduler, so
+  // the scheduler still chooses between classes when a level has room for
+  // just one more
+  for (size_t l = 1; l < num_levels; ++l) {
+    for (size_t c = 0; c < num_classes; ++c) {
+      auto &q = unfed[l][c];
+      while (!q.empty() &&
+             (fits(l, &OperationThrottler::committed_from) ||
+              in_scheduler[l][c] + parked_by_class[l][c] == 0)) {
+        scheduler->enqueue(std::move(q.front()));
+        q.pop_front();
+        ++in_scheduler[l][c];
+      }
+    }
+  }
 }
 
 bool OperationThrottler::has_parked_admissible() const
@@ -284,6 +336,7 @@ seastar::future<> OperationThrottler::background_task() {
     co_await cv.wait([this] {
       return stopped ||
         has_parked_admissible() ||
+        can_feed() ||
         (!scheduler->empty() && available(throttle_level_t::leaf));
     });
 
@@ -293,12 +346,16 @@ seastar::future<> OperationThrottler::background_task() {
       for (size_t l = 0; l < num_levels; ++l) {
         while (!parked[l].empty() &&
                available(static_cast<throttle_level_t>(l))) {
-          admit(parked[l].front());
+          auto &item = parked[l].front();
+          --parked_by_class[l][static_cast<size_t>(item.params.klass)];
+          admit(item);
           parked[l].pop_front();
         }
       }
-      // an item whose level is full is parked once dequeued, so dequeuing
-      // only stops when nothing at all can be admitted
+      feed();
+      // the scheduler only holds leaf items and items whose level had room
+      // when they were fed, so dequeuing stops as soon as nothing at all
+      // can be admitted
       if (scheduler->empty() || !available(throttle_level_t::leaf)) {
         break;
       }
@@ -319,14 +376,21 @@ seastar::future<> OperationThrottler::background_task() {
         continue;
       }
       if (auto *item = std::get_if<crimson::osd::scheduler::item_t>(&work_item)) {
+        const auto l = static_cast<size_t>(item->level);
+        const auto c = static_cast<size_t>(item->params.klass);
+        if (item->level != throttle_level_t::leaf) {
+          ceph_assert(in_scheduler[l][c] > 0);
+          --in_scheduler[l][c];
+        }
         if (available(item->level)) {
           admit(*item);
         } else {
-          const auto l = static_cast<size_t>(item->level);
+          ++parked_by_class[l][c];
           parked[l].push_back(std::move(*item));
           DEBUG("Parking a work item at level {}: in_progress={}, pending={}, "
-                "parked={}",
-                l, in_progress_from(0), pending, parked[l].size());
+                "parked={}, in_scheduler={}",
+                l, in_progress_from(0), pending, parked[l].size(),
+                committed_from(l) - in_progress_from(l) - parked[l].size());
         }
       } else {
         DEBUG("Unexpected variant in WorkItem — neither time nor item");
@@ -362,7 +426,13 @@ seastar::future<> OperationThrottler::acquire_throttle(
 {
   crimson::osd::scheduler::item_t item{params, level, seastar::promise<>()};
   auto fut = item.wake.get_future();
-  scheduler->enqueue(std::move(item));
+  if (level == throttle_level_t::leaf) {
+    scheduler->enqueue(std::move(item));
+  } else {
+    const auto c = static_cast<size_t>(params.klass);
+    ceph_assert(c < num_classes);
+    unfed[static_cast<size_t>(level)][c].push_back(std::move(item));
+  }
   ++pending;
   wake();
   return fut;
@@ -416,6 +486,13 @@ void OperationThrottler::dump_detail(Formatter *f) const
     f->dump_unsigned("level", l);
     f->dump_unsigned("in_progress", in_progress[l]);
     f->dump_unsigned("parked", parked[l].size());
+    uint64_t queued = 0, waiting = 0;
+    for (size_t c = 0; c < num_classes; ++c) {
+      queued += in_scheduler[l][c];
+      waiting += unfed[l][c].size();
+    }
+    f->dump_unsigned("in_scheduler", queued);
+    f->dump_unsigned("unfed", waiting);
     f->close_section();
   }
   f->close_section();

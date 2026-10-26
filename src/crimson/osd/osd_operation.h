@@ -454,6 +454,11 @@ private:
   // each lower level, so the operations they wait on can always be admitted
   static constexpr uint64_t reserved_per_level = 1;
 
+  static constexpr size_t num_classes =
+    static_cast<size_t>(SchedulerClass::immediate) + 1;
+  template <typename T>
+  using per_level_class_t = std::array<std::array<T, num_classes>, num_levels>;
+
   // the smallest limit that still leaves a slot for foreground operations
   static constexpr uint64_t min_in_progress =
     1 + reserved_per_level * (num_levels - 1);
@@ -462,9 +467,16 @@ private:
   // may use reserved_per_level fewer slots than the level below it
   uint64_t max_in_progress = 0;
   std::array<uint64_t, num_levels> in_progress = {};
-  // items dequeued while their level had no room, so the scheduler can
-  // still hand out items of the levels below
+  // Leaf items go straight to the scheduler.  Items of a higher level wait
+  // here and are only fed to the scheduler while their level has room, so
+  // the scheduler never has to dequeue past a full level, and its tags keep
+  // following what is actually admitted.
+  per_level_class_t<std::deque<crimson::osd::scheduler::item_t>> unfed;
+  per_level_class_t<uint64_t> in_scheduler = {};
+  // items dequeued while their level had no room; one per class and level
+  // at most, as each class may only have one item fed beyond its room
   std::array<std::deque<crimson::osd::scheduler::item_t>, num_levels> parked;
+  per_level_class_t<uint64_t> parked_by_class = {};
 
   uint64_t pending = 0;
   bool started = false;
@@ -483,6 +495,13 @@ private:
 
   // slots held by operations at the given level and above
   uint64_t in_progress_from(size_t level) const;
+  // as above, but also counting fed and parked items, which are admitted
+  // as soon as they are dequeued or their level has room
+  uint64_t committed_from(size_t level) const;
+  bool fits(size_t level, uint64_t (OperationThrottler::*count)(size_t) const) const;
+  // feed unfed items to the scheduler while their level has room
+  void feed();
+  bool can_feed() const;
   bool has_parked_admissible() const;
   void admit(crimson::osd::scheduler::item_t &item);
   void release_throttle(throttle_level_t level);
