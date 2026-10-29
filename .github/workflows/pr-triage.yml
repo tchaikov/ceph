@@ -17,6 +17,7 @@ jobs:
           repo-token: "${{ secrets.GITHUB_TOKEN }}"
       - name: Assign to Dashboard project
         # https://github.com/marketplace/actions/add-to-project?version=v2.0.0
+        continue-on-error: true
         uses: actions/add-to-project@5afcf98fcd03f1c2f92c3c83f58ae24323cc57fd # v2.0.0
         with:
           project-url: https://github.com/orgs/ceph/projects/2
