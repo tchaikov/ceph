@@ -1082,7 +1082,7 @@ options:
   desc: mark any OSD 'out' that has been 'down' for this long (seconds)
   fmt_desc: The number of seconds Ceph waits before marking a Ceph OSD Daemon
               ``down`` and ``out`` if it doesn't respond.
-  default: 10_min
+  default: 15_min
   services:
   - mon
   with_legacy: true
