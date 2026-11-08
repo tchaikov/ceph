@@ -66,8 +66,9 @@ class CephadmServe:
     CLI handlers, to avoid blocking the CLI
     """
 
-    def __init__(self, mgr: "CephadmOrchestrator"):
+    def __init__(self, mgr: "CephadmOrchestrator", ssh_manager: Optional[ssh.SSHManager] = None):
         self.mgr: "CephadmOrchestrator" = mgr
+        self.ssh = ssh_manager or mgr.ssh
         self.log = logger
         self.last_certificates_check: Optional[datetime.datetime] = None
 
@@ -1979,7 +1980,7 @@ class CephadmServe:
         :env_vars: in format -> [KEY=VALUE, ..]
         """
 
-        await self.mgr.ssh._remote_connection(host, addr)
+        await self.ssh._remote_connection(host, addr)
 
         self.log.debug(f"[{host}] _run_cephadm : command = {command}")
         self.log.debug(f"[{host}] _run_cephadm : args = {args}")
@@ -2074,7 +2075,7 @@ class CephadmServe:
                 )
 
             try:
-                out, err, code = await self.mgr.ssh._execute_command(
+                out, err, code = await self.ssh._execute_command(
                     host, cmd, stdin=stdin, addr=addr)
                 if code == 2 or code == 127 or 'command not found' in err:
                     # Use invoker to check file existence when SSH hardening is enabled
@@ -2088,11 +2089,11 @@ class CephadmServe:
                             ssh.Executables.LS,
                             [self.mgr.cephadm_binary_path]
                         )
-                    out_ls, err_ls, code_ls = await self.mgr.ssh._execute_command(host, check_cmd, addr=addr,
-                                                                                  log_command=log_output)
+                    out_ls, err_ls, code_ls = await self.ssh._execute_command(host, check_cmd, addr=addr,
+                                                                              log_command=log_output)
                     if code_ls == 2:
                         await self._deploy_cephadm_binary(host, addr)
-                        out, err, code = await self.mgr.ssh._execute_command(
+                        out, err, code = await self.ssh._execute_command(
                             host, cmd, stdin=stdin, addr=addr)
                         # if there is an agent on this host, make sure it is using the most recent
                         # version of cephadm binary
@@ -2101,7 +2102,6 @@ class CephadmServe:
                                 self.mgr._schedule_daemon_action(agent.name(), 'redeploy')
 
             except Exception as e:
-                await self.mgr.ssh._reset_con(host)
                 if error_ok:
                     return [], [str(e)], 1
                 raise
@@ -2116,10 +2116,9 @@ class CephadmServe:
                     )
                 else:
                     cmd = ssh.RemoteCommand(CEPHADM_EXE, final_args)
-                out, err, code = await self.mgr.ssh._execute_command(
+                out, err, code = await self.ssh._execute_command(
                     host, cmd, stdin=stdin, addr=addr)
             except Exception as e:
-                await self.mgr.ssh._reset_con(host)
                 if error_ok:
                     return [], [str(e)], 1
                 raise
@@ -2216,11 +2215,11 @@ class CephadmServe:
         self.log.info(f"Deploying cephadm binary to {host}")
         if self.mgr.sudo_hardening and self.mgr.invoker_path:
             # Use invoker for secure deployment when SSH hardening is enabled
-            await self.mgr.ssh._deploy_cephadm_binary_via_invoker(
+            await self.ssh._deploy_cephadm_binary_via_invoker(
                 host, self.mgr.cephadm_binary_path, self.mgr._cephadm, addr=addr)
         else:
-            await self.mgr.ssh._write_remote_file(host, self.mgr.cephadm_binary_path,
-                                                  self.mgr._cephadm, addr=addr, mode=0o744)
+            await self.ssh._write_remote_file(host, self.mgr.cephadm_binary_path,
+                                              self.mgr._cephadm, addr=addr, mode=0o744)
 
     def _retry_failed_operations(self) -> None:
         self.log.debug('_retry_failed_operations')

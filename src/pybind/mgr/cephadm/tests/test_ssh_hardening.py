@@ -54,7 +54,7 @@ class TestSudoHardening:
             with pytest.raises(OrchestratorError,
                                match='command is not wrapped with invoker'):
                 setup_sudo_hardening.wait_async(
-                    ssh_manager._execute_command('test-host', cmd)
+                    ssh_manager._execute_command('test-host', cmd, addr='192.0.2.1')
                 )
 
     def test_sudo_hardening_disabled_no_wrapping(
@@ -73,7 +73,7 @@ class TestSudoHardening:
                                return_value=mock_connection):
             cmd = RemoteCommand(Executables.LS, ['-la', '/tmp'])
             cephadm_module.wait_async(
-                ssh_manager._execute_command('test-host', cmd)
+                ssh_manager._execute_command('test-host', cmd, addr='192.0.2.1')
             )
 
             mock_connection.run.assert_called_once()
@@ -93,7 +93,7 @@ class TestSudoHardening:
                 ['run', '/var/lib/ceph/fsid/cephadm.abc123', '--help']
             )
             setup_sudo_hardening.wait_async(
-                ssh_manager._execute_command('test-host', cmd)
+                ssh_manager._execute_command('test-host', cmd, addr='192.0.2.1')
             )
 
             mock_connection.run.assert_called()
@@ -106,7 +106,7 @@ class TestSudoHardening:
         """Integration test for check_host with SSH hardening enabled."""
         with mock.patch.object(setup_sudo_hardening,
                                '_prepare_new_host_for_sudo_hardening'):
-            with mock.patch.object(setup_sudo_hardening.ssh, '_remote_connection',
+            with mock.patch.object(SSHManager, '_remote_connection',
                                    return_value=mock_connection):
                 with with_host(setup_sudo_hardening, 'test-host'):
                     code, _, err = setup_sudo_hardening.check_host('test-host')
@@ -130,7 +130,7 @@ class TestSudoHardening:
         cephadm_module.ssh_user = 'root'
         cephadm_module.cephadm_binary_path = '/var/lib/ceph/fsid/cephadm.abc123'
 
-        with mock.patch.object(cephadm_module.ssh, '_remote_connection',
+        with mock.patch.object(SSHManager, '_remote_connection',
                                return_value=mock_connection):
             with with_host(cephadm_module, 'test-host'):
                 code, _, err = cephadm_module.check_host('test-host')

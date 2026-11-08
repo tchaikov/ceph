@@ -1702,15 +1702,30 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule):
         self.cache.distribute_new_registry_login_info()
         return 0, "registry login scheduled", ''
 
+    async def _run_host_command(self, host: str, addr: Optional[str], command: str,
+                                update_addr: bool = False) -> Tuple[List[str], List[str], int]:
+        ssh_manager = self.ssh
+        if addr and (update_addr or not ssh_manager._is_inventory_addr(host, addr)):
+            ssh_manager = ssh.SSHManager(self)
+        try:
+            result = await CephadmServe(self, ssh_manager)._run_cephadm(
+                host, cephadmNoImage, command, ['--expect-hostname', host],
+                addr=addr, error_ok=True, no_fsid=True)
+            if update_addr and result[2] == 0:
+                assert addr
+                self.ssh.commit_host_addr(host, addr, ssh_manager)
+            return result
+        finally:
+            if ssh_manager is not self.ssh:
+                await ssh_manager._reset_connections()
+
     @CephadmCLICommand.Read('cephadm check-host')
     def check_host(self, host: str, addr: Optional[str] = None) -> Tuple[int, str, str]:
         """Check whether we can access and manage a remote host"""
         try:
             with self.async_timeout_handler(host, f'cephadm check-host --expect-hostname {host}'):
                 out, err, code = self.wait_async(
-                    CephadmServe(self)._run_cephadm(
-                        host, cephadmNoImage, 'check-host', ['--expect-hostname', host],
-                        addr=addr, error_ok=True, no_fsid=True))
+                    self._run_host_command(host, addr, 'check-host'))
             if code:
                 return 1, '', ('check-host failed:\n' + '\n'.join(err))
         except ssh.HostConnectionError as e:
@@ -1736,9 +1751,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule):
         """Prepare a remote host for use with cephadm"""
         with self.async_timeout_handler(host, 'cephadm prepare-host'):
             out, err, code = self.wait_async(
-                CephadmServe(self)._run_cephadm(
-                    host, cephadmNoImage, 'prepare-host', ['--expect-hostname', host],
-                    addr=addr, error_ok=True, no_fsid=True))
+                self._run_host_command(host, addr, 'prepare-host'))
         if code:
             return 1, '', ('prepare-host failed:\n' + '\n'.join(err))
         # if we have an outstanding health alert for this host, give the
@@ -2246,7 +2259,7 @@ class CephadmOrchestrator(orchestrator.Orchestrator, MgrModule):
 
         return image
 
-    def _check_valid_addr(self, host: str, addr: str) -> str:
+    def _check_valid_addr(self, host: str, addr: str, update_addr: bool = False) -> str:
         # make sure hostname is resolvable before trying to make a connection
         try:
             ip_addr = utils.resolve_ip(addr)
@@ -2280,11 +2293,8 @@ Then run the following:
             ip_addr = self.inventory.get_addr(host)
         try:
             with self.async_timeout_handler(host, f'cephadm check-host --expect-hostname {host}'):
-                out, err, code = self.wait_async(CephadmServe(self)._run_cephadm(
-                    host, cephadmNoImage, 'check-host',
-                    ['--expect-hostname', host],
-                    addr=addr,
-                    error_ok=True, no_fsid=True))
+                out, err, code = self.wait_async(
+                    self._run_host_command(host, addr, 'check-host', update_addr=update_addr))
             if code:
                 msg = 'check-host failed:\n' + '\n'.join(err)
                 # err will contain stdout and stderr, so we filter on the message text to
@@ -2346,19 +2356,10 @@ Then run the following:
         :param host: host name
         """
         HostSpec.validate(spec)
-        # Drop the cached SSH connection when re-adding a host with a new
-        # address. Otherwise check-host may reuse the old connection and
-        # validate the wrong machine.
-        addr_changed = spec.hostname in self.inventory and self.inventory.get_addr(spec.hostname) != spec.addr
-        if addr_changed:
-            self.ssh.reset_con(spec.hostname)
+        old_addr = self.inventory.get_addr(spec.hostname) if spec.hostname in self.inventory else None
         try:
             ip_addr = self._check_valid_addr(spec.hostname, spec.addr)
         except Exception:
-            # Validation failed. Clear the connection we just created to the
-            # wrong address so future operations use a fresh connection.
-            if addr_changed:
-                self.ssh.reset_con(spec.hostname)
             # The SSH failure in _check_valid_addr may have added the hostname
             # to offline_hosts. Only undo that for hosts we never registered.
             # An existing inventory host that just failed SSH should stay offline.
@@ -2396,6 +2397,8 @@ Then run the following:
             self.cache.prime_empty_host(spec.hostname)
         self.inventory.add_host(spec)
         self.cache.registry_login_queue.add(spec.hostname)
+        if old_addr and old_addr != spec.addr:
+            self.ssh.reset_con(spec.hostname, old_addr)
         self.offline_hosts_remove(spec.hostname)
         if spec.status == 'maintenance':
             self.update_maintenance_healthcheck()
@@ -2601,12 +2604,7 @@ Then run the following:
     @handle_orch_error
     def update_host_addr(self, host: str, addr: str) -> str:
         host = normalize_hostname(host)
-        # Drop the cached connection before validating so check-host
-        # runs on the new address, not the old one.
-        self.ssh.reset_con(host)
-        self._check_valid_addr(host, addr)
-        self.inventory.set_addr(host, addr)
-        self.ssh.reset_con(host)
+        self._check_valid_addr(host, addr, update_addr=True)
         self.event.set()  # refresh stray health check
         self.log.info('Set host %s addr to %s' % (host, addr))
         return "Updated host '{}' addr to '{}'".format(host, addr)
