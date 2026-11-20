@@ -2741,25 +2741,42 @@ Then run the following:
         })
         return rc, err
 
-    def _protect_maintenance_osds(self, hostname: str, force: bool) -> None:
+    @contextmanager
+    def _maintenance_noout_before_stop(self, hostname: str, host_daemons: Set[str],
+                                       force: bool) -> Iterator[None]:
+        """Roll back our noout flags if preparation fails before the stop attempt."""
         host = self.inventory._inventory[hostname]
-        pending = host.get('maintenance_noout', [])
-        osds = self._get_host_osd_ids(hostname)
-        # Keep flags from interrupted attempts, but leave administrator flags alone.
-        owned = sorted(set(pending) | (set(osds) - self._get_noout_osd_ids(osds)))
-        host['maintenance_noout'] = owned
-        self.inventory.save()  # Record ownership before a possible mgr failover.
-        rc, err = self._maintenance_noout('set', [f'osd.{i}' for i in owned])
-        if rc:
-            if pending:
-                host['maintenance_noout'] = pending
-            else:
-                host.pop('maintenance_noout')
-            self.inventory.save()
-            msg = f"Unable to set the osds on {hostname} to noout (rc={rc}): {err}"
-            if not force:
-                raise OrchestratorError(msg, errno=errno.EIO)
-            self.log.warning(msg)
+        if 'osd' in host_daemons:
+            osds = self._get_host_osd_ids(hostname)
+            pending = host.get('maintenance_noout', [])
+            # Retain our flags from interrupted attempts and skip administrator flags.
+            owned = sorted(set(pending) | (set(osds) - self._get_noout_osd_ids(osds)))
+            host['maintenance_noout'] = owned
+            self.inventory.save()  # Record ownership before a possible mgr failover.
+            rc, err = self._maintenance_noout('set', [f'osd.{i}' for i in owned])
+            if rc:
+                if pending:
+                    host['maintenance_noout'] = pending
+                else:
+                    del host['maintenance_noout']
+                self.inventory.save()
+                msg = f"Unable to set the osds on {hostname} to noout (rc={rc}): {err}"
+                if not force:
+                    raise OrchestratorError(msg, errno=errno.EIO)
+                self.log.warning(msg)
+
+        try:
+            yield
+        except Exception:
+            if 'maintenance_noout' in host:
+                targets = [f'osd.{i}' for i in host['maintenance_noout']]
+                rc, err = self._maintenance_noout('unset', targets)
+                if rc:
+                    self.log.warning(f"Unable to roll back noout for {hostname}: {err}")
+                else:
+                    del host['maintenance_noout']
+                    self.inventory.save()
+            raise
 
     @handle_orch_error
     @host_exists()
@@ -2816,31 +2833,14 @@ Then run the following:
                 raise OrchestratorError(
                     msg + '\nNote: Warnings can be bypassed with the --force flag', errno=rc)
 
-            if 'osd' in host_daemons:
-                self._protect_maintenance_osds(hostname, yes_i_really_mean_it)
-
-            try:
+            with self._maintenance_noout_before_stop(hostname, host_daemons, yes_i_really_mean_it):
                 if 'nvmeof' in host_daemons:
-                    _updated, nvmeof_err = self._set_nvmeof_gateways_admin_state(
-                        hostname, enabled=False)
+                    _, nvmeof_err = self._set_nvmeof_gateways_admin_state(hostname, enabled=False)
                     if nvmeof_err:
-                        if yes_i_really_mean_it:
-                            self.log.warning(
-                                f"maintenance mode request for {hostname} failed to disable "
-                                f"some NVMe-oF gateways: {nvmeof_err}")
-                        else:
-                            raise OrchestratorError(
-                                f"Unable to disable NVMe-oF gateways on {hostname}: {nvmeof_err}",
-                                errno=errno.EIO)
-            except Exception:
-                targets = [f'osd.{i}' for i in tgt_host.get('maintenance_noout', [])]
-                rc, err = self._maintenance_noout('unset', targets)
-                if rc:
-                    self.log.warning(f"Unable to roll back noout for {hostname}: {err}")
-                elif 'maintenance_noout' in tgt_host:
-                    del tgt_host['maintenance_noout']
-                    self.inventory.save()
-                raise
+                        msg = f"Unable to disable NVMe-oF gateways on {hostname}: {nvmeof_err}"
+                        if not yes_i_really_mean_it:
+                            raise OrchestratorError(msg, errno=errno.EIO)
+                        self.log.warning(msg)
 
             try:
                 with self.async_timeout_handler(hostname, 'cephadm host-maintenance enter'):
