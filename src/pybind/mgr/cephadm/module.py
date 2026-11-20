@@ -2732,16 +2732,34 @@ Then run the following:
             if o.get('osd') in osd_ids and 'noout' in o.get('state', [])
         }
 
-    def _save_maintenance_noout(self, hostname: str, tgt_host: Dict[str, Any],
-                                osd_ids: List[int]) -> None:
-        """Keep the OSDs maintenance has flagged with noout in the host's
-        inventory entry, or drop the record if there are none."""
-        if osd_ids:
-            tgt_host['maintenance_noout'] = osd_ids
-        else:
-            tgt_host.pop('maintenance_noout', None)
-        self.inventory._inventory[hostname] = tgt_host
-        self.inventory.save()
+    def _maintenance_noout(self, action: str, targets: List[str]) -> Tuple[int, str]:
+        if not targets:
+            return 0, ''
+        rc, _, err = self.mon_command({
+            'prefix': f'osd {action}-group', 'flags': 'noout',
+            'who': targets, 'format': 'json',
+        })
+        return rc, err
+
+    def _protect_maintenance_osds(self, hostname: str, force: bool) -> None:
+        host = self.inventory._inventory[hostname]
+        pending = host.get('maintenance_noout', [])
+        osds = self._get_host_osd_ids(hostname)
+        # Keep flags from interrupted attempts, but leave administrator flags alone.
+        owned = sorted(set(pending) | (set(osds) - self._get_noout_osd_ids(osds)))
+        host['maintenance_noout'] = owned
+        self.inventory.save()  # Record ownership before a possible mgr failover.
+        rc, err = self._maintenance_noout('set', [f'osd.{i}' for i in owned])
+        if rc:
+            if pending:
+                host['maintenance_noout'] = pending
+            else:
+                host.pop('maintenance_noout')
+            self.inventory.save()
+            msg = f"Unable to set the osds on {hostname} to noout (rc={rc}): {err}"
+            if not force:
+                raise OrchestratorError(msg, errno=errno.EIO)
+            self.log.warning(msg)
 
     @handle_orch_error
     @host_exists()
@@ -2789,7 +2807,7 @@ Then run the following:
 
         host_daemons = self.cache.get_daemon_types(hostname)
         self.log.debug("daemons on host {}".format(','.join(host_daemons)))
-        noout_osds: List[int] = []
+        stop_error: Optional[str] = None
         if host_daemons:
             # daemons on this host, so check the daemons can be stopped
             # and if so, place the host into maintenance by disabling the target
@@ -2798,50 +2816,8 @@ Then run the following:
                 raise OrchestratorError(
                     msg + '\nNote: Warnings can be bypassed with the --force flag', errno=rc)
 
-            # Set noout before any daemon is stopped, so that a failure
-            # here does not leave the host with its daemons stopped while
-            # not being marked as in maintenance. The flag is set on the
-            # host's OSDs rather than on its CRUSH bucket, which does not
-            # depend on how the CRUSH map is organised. OSDs that have the
-            # flag already are left alone, and only the OSDs flagged here
-            # are rolled back and unset on exit.
-            #
-            # The record is saved before the flags are set, so that an
-            # interrupted entry (e.g. a mgr failover) leaves a record of
-            # them. A record on a host that is not in maintenance thus
-            # comes from such an entry, and its OSDs are ours rather than
-            # the administrator's.
-            pending = tgt_host.get('maintenance_noout', [])
-            if "osd" in host_daemons:
-                osd_ids = self._get_host_osd_ids(hostname)
-                flagged = self._get_noout_osd_ids(osd_ids) - set(pending)
-                if flagged:
-                    self.log.info(
-                        f"maintenance mode request for {hostname}: noout already set on "
-                        f"{', '.join(f'osd.{i}' for i in sorted(flagged))}, leaving it as it is")
-                noout_osds = sorted(set(osd_ids) - flagged | set(pending))
-                self._save_maintenance_noout(hostname, tgt_host, noout_osds)
-            noout_targets = [f'osd.{i}' for i in noout_osds]
-            if noout_targets:
-                rc, out, err = self.mon_command({
-                    'prefix': 'osd set-group',
-                    'flags': 'noout',
-                    'who': noout_targets,
-                    'format': 'json'
-                })
-                if rc:
-                    # only the flags of an interrupted entry may be set
-                    noout_osds = list(pending)
-                    noout_targets = [f'osd.{i}' for i in noout_osds]
-                    self._save_maintenance_noout(hostname, tgt_host, noout_osds)
-                    self.log.warning(
-                        f"maintenance mode request for {hostname} failed to SET the noout group (rc={rc}): {err}")
-                    if not yes_i_really_mean_it:
-                        raise OrchestratorError(
-                            f"Unable to set the osds on {hostname} to noout (rc={rc}): {err}", errno=errno.EIO)
-                else:
-                    self.log.info(
-                        f"maintenance mode request for {hostname} has SET the noout group")
+            if 'osd' in host_daemons:
+                self._protect_maintenance_osds(hostname, yes_i_really_mean_it)
 
             try:
                 if 'nvmeof' in host_daemons:
@@ -2857,24 +2833,15 @@ Then run the following:
                                 f"Unable to disable NVMe-oF gateways on {hostname}: {nvmeof_err}",
                                 errno=errno.EIO)
             except Exception:
-                # no daemon has been stopped yet, roll back
-                if noout_targets:
-                    rc, _rb_out, rb_err = self.mon_command({
-                        'prefix': 'osd unset-group',
-                        'flags': 'noout',
-                        'who': noout_targets,
-                        'format': 'json'
-                    })
-                    if rc:
-                        self.log.warning(
-                            f"maintenance mode request for {hostname} failed to roll back "
-                            f"the noout group (rc={rc}): {rb_err}")
-                    else:
-                        self._save_maintenance_noout(hostname, tgt_host, [])
+                targets = [f'osd.{i}' for i in tgt_host.get('maintenance_noout', [])]
+                rc, err = self._maintenance_noout('unset', targets)
+                if rc:
+                    self.log.warning(f"Unable to roll back noout for {hostname}: {err}")
+                elif 'maintenance_noout' in tgt_host:
+                    del tgt_host['maintenance_noout']
+                    self.inventory.save()
                 raise
 
-            # call the host-maintenance function
-            stop_err = ''
             try:
                 with self.async_timeout_handler(hostname, 'cephadm host-maintenance enter'):
                     _out, _err, _code = self.wait_async(
@@ -2883,38 +2850,23 @@ Then run the following:
                             ["enter"],
                             error_ok=True))
                 returned_msg = _err[0].split('\n')[-1]
-                if (returned_msg.startswith('failed') or returned_msg.startswith('ERROR')) and not yes_i_really_mean_it:
-                    stop_err = returned_msg
+                if returned_msg.startswith(('failed', 'ERROR')) and not yes_i_really_mean_it:
+                    stop_error = returned_msg
             except Exception as e:
-                stop_err = str(e)
-            if stop_err:
-                # The daemons may have been stopped in part, as cephadm does not
-                # tell a failure to disable the target from a failure to stop
-                # it, and a timeout says nothing at all. Rather than removing
-                # the noout protection, keep the host in maintenance with its
-                # flags, so that exiting maintenance can bring it back.
-                tgt_host["status"] = "maintenance"
-                self.inventory._inventory[hostname] = tgt_host
-                self.inventory.save()
-                self.update_maintenance_healthcheck()
-                raise OrchestratorError(
-                    f"Failed to place {hostname} into maintenance for cluster "
-                    f"{self._cluster_fsid}: {stop_err}\n"
-                    f"Its daemons may have been stopped in part, so the host is kept in "
-                    f"maintenance with noout set. Run 'ceph orch host "
-                    f"maintenance exit {hostname}' to bring it back.",
-                    errno=errno.EPERM)
+                stop_error = str(e)
 
-        # update the host status in the inventory
-        tgt_host["status"] = "maintenance"
-        if "osd" in host_daemons:
-            # recorded even if empty, so that exit knows the flags it has
-            # to unset rather than guessing them
-            tgt_host["maintenance_noout"] = noout_osds
-        self.inventory._inventory[hostname] = tgt_host
+        # A failed stop may already have stopped some daemons. In either case
+        # record maintenance so that exit can restart them and release noout.
+        tgt_host.setdefault('maintenance_noout', [])
+        tgt_host['status'] = 'maintenance'
         self.inventory.save()
-
         self.update_maintenance_healthcheck()
+        if stop_error is not None:
+            raise OrchestratorError(
+                f"Failed to place {hostname} into maintenance for cluster {self._cluster_fsid}: "
+                f"{stop_error}\nThe host is in maintenance because some daemons may have stopped. "
+                f"Run 'ceph orch host maintenance exit {hostname}' to bring it back.",
+                errno=errno.EPERM)
         return f'Daemons for Ceph cluster {self._cluster_fsid} stopped on host {hostname}. Host {hostname} moved to maintenance mode'
 
     @handle_orch_error
@@ -2968,9 +2920,11 @@ Then run the following:
         if offline and not force:
             raise OrchestratorValidationError("Taking an offline host out of maintenance mode requires --force", errno=errno.EAGAIN)
 
-        # noout flags that are left set, and why, to tell the administrator
-        noout_left: List[str] = []
-        noout_left_reason = ''
+        targets = [f'osd.{i}' for i in tgt_host.get('maintenance_noout', [])]
+        if 'maintenance_noout' not in tgt_host and 'osd' in self.cache.get_daemon_types(hostname):
+            # Older releases protected the bucket named after the short hostname.
+            targets = [hostname.split('.')[0]]
+        noout_left_reason = "The host is offline" if host_offline else ""
 
         # no point trying these parts if we know the host is offline
         if not host_offline:
@@ -2986,31 +2940,13 @@ Then run the following:
                     raise OrchestratorError(
                         f"Failed to exit maintenance state for host {hostname}, cluster {self._cluster_fsid}", errno=errno.EPERM)
 
-            noout_targets: List[str] = []
-            if 'maintenance_noout' in tgt_host:
-                # unset exactly the flags set when entering maintenance
-                noout_targets = [f'osd.{i}' for i in tgt_host['maintenance_noout']]
-            elif "osd" in self.cache.get_daemon_types(hostname):
-                # entered maintenance with a version that set noout on the
-                # CRUSH bucket named after the short hostname
-                noout_targets = [hostname.split('.')[0]]
-            if noout_targets:
-                rc, _out, _err = self.mon_command({
-                    'prefix': 'osd unset-group',
-                    'flags': 'noout',
-                    'who': noout_targets,
-                    'format': 'json'
-                })
-                if rc:
-                    self.log.warning(
-                        f"exit maintenance request failed to UNSET the noout group for {hostname}, (rc={rc})")
-                    if not force:
-                        raise OrchestratorError(f"Unable to unset noout for the osds on {hostname} (rc={rc}): {_err}", errno=errno.EIO)
-                    noout_left = noout_targets
-                    noout_left_reason = f"Unsetting noout failed (rc={rc}: {_err})"
-                else:
-                    self.log.info(
-                        f"exit maintenance request has UNSET for the noout group on host {hostname}")
+            rc, err = self._maintenance_noout('unset', targets)
+            if rc:
+                if not force:
+                    raise OrchestratorError(
+                        f"Unable to unset noout for the osds on {hostname} (rc={rc}): {err}",
+                        errno=errno.EIO)
+                noout_left_reason = f"Unsetting noout failed (rc={rc}: {err})"
 
             if 'nvmeof' in self.cache.get_daemon_types(hostname):
                 _updated, nvmeof_err = self._set_nvmeof_gateways_admin_state(
@@ -3023,16 +2959,6 @@ Then run the following:
                         raise OrchestratorError(
                             f"Unable to enable NVMe-oF gateways on {hostname}: {nvmeof_err}",
                             errno=errno.EIO)
-
-        # The flags of an offline host are not unset, as its OSDs would be
-        # marked out.
-        if host_offline:
-            noout_left = [f'osd.{i}' for i in tgt_host.get('maintenance_noout', [])]
-            noout_left_reason = "The host is offline"
-        if noout_left:
-            self.log.warning(
-                f"exit maintenance request for {hostname} left noout set on "
-                f"{', '.join(noout_left)}: {noout_left_reason}")
 
         # update the host record status
         tgt_host['status'] = ""
@@ -3047,9 +2973,10 @@ Then run the following:
         self.update_maintenance_healthcheck()
 
         msg = f"Ceph cluster {self._cluster_fsid} on {hostname} has exited maintenance mode"
-        if noout_left:
-            msg += (f"\n{noout_left_reason}, so noout was left set on {', '.join(noout_left)}. "
-                    f"Unset it with 'ceph osd unset-group noout {' '.join(noout_left)}' "
+        if targets and noout_left_reason:
+            self.log.warning(f"{hostname}: {noout_left_reason}; leaving noout on {targets}")
+            msg += (f"\n{noout_left_reason}, so noout was left set on {', '.join(targets)}. "
+                    f"Unset it with 'ceph osd unset-group noout {' '.join(targets)}' "
                     "when appropriate.")
         return msg
 

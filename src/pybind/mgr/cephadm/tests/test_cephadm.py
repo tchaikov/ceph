@@ -2793,13 +2793,14 @@ class TestCephadm(object):
                         'host1', force=True, yes_i_really_mean_it=True).exception_str
                     assert _mon_command.call_args_list == [noout_call('set', ['osd.0'])]
 
+    @pytest.mark.parametrize("owned", [[0], []])
     @pytest.mark.parametrize("enter_fails", [False, True])
     @mock.patch("cephadm.module.CephadmOrchestrator.mon_command")
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
-    def test_maintenance_keeps_noout_set_by_admin(self, _run_cephadm, _mon_command, enter_fails,
+    def test_maintenance_keeps_noout_set_by_admin(self, _run_cephadm, _mon_command, enter_fails, owned,
                                                   cephadm_module: CephadmOrchestrator):
         _mon_command.return_value = (0, '', '')
-        with with_osd_host_for_maintenance(cephadm_module, 'host1', (0, 1)):
+        with with_osd_host_for_maintenance(cephadm_module, 'host1', (*owned, 1)):
             # an admin has set noout on osd.1 before
             cephadm_module.mock_store_set('_ceph_get', 'osd_map', {
                 'osds': [{'osd': 0, 'state': ['exists', 'up']},
@@ -2816,15 +2817,14 @@ class TestCephadm(object):
                 _run_cephadm.side_effect = async_side_effect(
                     ([''], ['something\nsuccess - systemd target xxx disabled'], 0))
                 assert not cephadm_module.enter_host_maintenance('host1').exception_str
-            assert cephadm_module.inventory._inventory['host1']['maintenance_noout'] == [0]
+            assert cephadm_module.inventory._inventory['host1']['maintenance_noout'] == owned
             _run_cephadm.side_effect = async_side_effect(
                 ([''], ['something\nsuccess - systemd target xxx enabled and started'], 0))
             assert not cephadm_module.exit_host_maintenance('host1').exception_str
             # osd.1 had the flag before, so it is neither set nor removed
-            assert _mon_command.call_args_list == [
-                noout_call('set', ['osd.0']),
-                noout_call('unset', ['osd.0']),
-            ]
+            targets = [f'osd.{i}' for i in owned]
+            assert _mon_command.call_args_list == (
+                [noout_call('set', targets), noout_call('unset', targets)] if targets else [])
 
     @mock.patch("cephadm.module.CephadmOrchestrator.mon_command")
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm")
